@@ -1,0 +1,868 @@
+{
+  "cases": [
+    {
+      "number": 1,
+      "shape": [
+        16,
+        16
+      ],
+      "dtype": "float32",
+      "atol": 0,
+      "rtol": -1,
+      "name": "mock_01",
+      "seed": 89,
+      "fixture": {
+        "first_word_hex": "40d09e4a",
+        "first_batch_positive_diagonal": true,
+        "batch_conditions": [
+          24
+        ],
+        "inverse_near_zero_counts": [
+          0
+        ],
+        "batch_similarity_diagonals": [
+          [
+            1.0,
+            8.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        ]
+      }
+    },
+    {
+      "number": 2,
+      "shape": [
+        4,
+        64,
+        64
+      ],
+      "dtype": "float32",
+      "atol": 0,
+      "rtol": -1,
+      "name": "mock_02",
+      "seed": 44,
+      "fixture": {
+        "first_word_hex": "3dd35ff9",
+        "first_batch_positive_diagonal": true,
+        "batch_conditions": [
+          3072,
+          200,
+          200,
+          200
+        ],
+        "inverse_near_zero_counts": [
+          5,
+          5,
+          5,
+          6
+        ]
+      }
+    },
+    {
+      "number": 3,
+      "shape": [
+        4,
+        256,
+        256
+      ],
+      "dtype": "float32",
+      "atol": 0,
+      "rtol": -1,
+      "name": "mock_03",
+      "seed": 45,
+      "fixture": {
+        "first_word_hex": "c00d3719",
+        "first_batch_positive_diagonal": false,
+        "batch_conditions": [
+          768,
+          14000,
+          3000,
+          3400
+        ],
+        "inverse_near_zero_counts": [
+          0,
+          26,
+          0,
+          681
+        ],
+        "batch_seeds": [
+          null,
+          149,
+          304,
+          34
+        ],
+        "batch_scales": [
+          1,
+          2.771120309829712,
+          1.0,
+          16.0
+        ],
+        "batch_adjustments": [
+          [],
+          [
+            {
+              "row": 3,
+              "column": 0,
+              "value_hex": "be735c6e"
+            },
+            {
+              "row": 7,
+              "column": 0,
+              "value_hex": "40407ade"
+            },
+            {
+              "row": 10,
+              "column": 0,
+              "value_hex": "4072b837"
+            },
+            {
+              "row": 10,
+              "column": 255,
+              "value_hex": "bf5d360e"
+            },
+            {
+              "row": 14,
+              "column": 255,
+              "value_hex": "3fb11b07"
+            },
+            {
+              "row": 21,
+              "column": 255,
+              "value_hex": "bfea3351"
+            },
+            {
+              "row": 28,
+              "column": 0,
+              "value_hex": "bdbf772a"
+            },
+            {
+              "row": 31,
+              "column": 0,
+              "value_hex": "3fdab9ee"
+            },
+            {
+              "row": 31,
+              "column": 255,
+              "value_hex": "3fd0ddc1"
+            },
+            {
+              "row": 35,
+              "column": 0,
+              "value_hex": "3f797c10"
+            },
+            {
+              "row": 36,
+              "column": 0,
+              "value_hex": "3fed9974"
+            },
+            {
+              "row": 36,
+              "column": 255,
+              "value_hex": "bd2c5c38"
+            },
+            {
+              "row": 43,
+              "column": 0,
+              "value_hex": "c036213b"
+            },
+            {
+              "row": 44,
+              "column": 255,
+              "value_hex": "bfb28c34"
+            },
+            {
+              "row": 49,
+              "column": 255,
+              "value_hex": "3d0bf66d"
+            },
+            {
+              "row": 53,
+              "column": 0,
+              "value_hex": "40151438"
+            },
+            {
+              "row": 53,
+              "column": 255,
+              "value_hex": "bedac9ea"
+            },
+            {
+              "row": 56,
+              "column": 0,
+              "value_hex": "bfc17102"
+            },
+            {
+              "row": 56,
+              "column": 255,
+              "value_hex": "bff842f9"
+            },
+            {
+              "row": 58,
+              "column": 0,
+              "value_hex": "3fe21271"
+            },
+            {
+              "row": 64,
+              "column": 255,
+              "value_hex": "bfbedf01"
+            },
+            {
+              "row": 66,
+              "column": 255,
+              "value_hex": "3f582b41"
+            },
+            {
+              "row": 68,
+              "column": 0,
+              "value_hex": "be8802a1"
+            },
+            {
+              "row": 70,
+              "column": 0,
+              "value_hex": "3fbb1537"
+            },
+            {
+              "row": 70,
+              "column": 255,
+              "value_hex": "3f67f973"
+            },
+            {
+              "row": 74,
+              "column": 255,
+              "value_hex": "c07488d2"
+            },
+            {
+              "row": 77,
+              "column": 255,
+              "value_hex": "bd92d3b2"
+            },
+            {
+              "row": 79,
+              "column": 255,
+              "value_hex": "3f22c8cf"
+            },
+            {
+              "row": 81,
+              "column": 255,
+              "value_hex": "bf046088"
+            },
+            {
+              "row": 83,
+              "column": 255,
+              "value_hex": "bfabedf6"
+            },
+            {
+              "row": 88,
+              "column": 0,
+              "value_hex": "bfa650ed"
+            },
+            {
+              "row": 88,
+              "column": 255,
+              "value_hex": "bc829f65"
+            },
+            {
+              "row": 92,
+              "column": 0,
+              "value_hex": "3c47aec0"
+            },
+            {
+              "row": 93,
+              "column": 0,
+              "value_hex": "3d5cd019"
+            },
+            {
+              "row": 96,
+              "column": 0,
+              "value_hex": "bf98a447"
+            },
+            {
+              "row": 96,
+              "column": 255,
+              "value_hex": "405363df"
+            },
+            {
+              "row": 97,
+              "column": 171,
+              "value_hex": "40079601"
+            },
+            {
+              "row": 100,
+              "column": 255,
+              "value_hex": "bcd650bf"
+            },
+            {
+              "row": 108,
+              "column": 255,
+              "value_hex": "3d649d69"
+            },
+            {
+              "row": 111,
+              "column": 0,
+              "value_hex": "bff70312"
+            },
+            {
+              "row": 111,
+              "column": 255,
+              "value_hex": "c034e3d3"
+            },
+            {
+              "row": 115,
+              "column": 255,
+              "value_hex": "3f192e34"
+            },
+            {
+              "row": 125,
+              "column": 255,
+              "value_hex": "bf6c7ef5"
+            },
+            {
+              "row": 129,
+              "column": 0,
+              "value_hex": "bc97f24d"
+            },
+            {
+              "row": 133,
+              "column": 255,
+              "value_hex": "bfedbda2"
+            },
+            {
+              "row": 134,
+              "column": 255,
+              "value_hex": "3f94ab9f"
+            },
+            {
+              "row": 138,
+              "column": 255,
+              "value_hex": "bef46376"
+            },
+            {
+              "row": 146,
+              "column": 255,
+              "value_hex": "c0396580"
+            },
+            {
+              "row": 150,
+              "column": 255,
+              "value_hex": "bdd03b89"
+            },
+            {
+              "row": 152,
+              "column": 255,
+              "value_hex": "3e2a8ec7"
+            },
+            {
+              "row": 153,
+              "column": 255,
+              "value_hex": "be8d95ce"
+            },
+            {
+              "row": 154,
+              "column": 0,
+              "value_hex": "3f4415fe"
+            },
+            {
+              "row": 163,
+              "column": 255,
+              "value_hex": "bf69a71f"
+            },
+            {
+              "row": 181,
+              "column": 0,
+              "value_hex": "be9b1d5b"
+            },
+            {
+              "row": 183,
+              "column": 0,
+              "value_hex": "3e19e923"
+            },
+            {
+              "row": 184,
+              "column": 255,
+              "value_hex": "bbef12ee"
+            },
+            {
+              "row": 187,
+              "column": 255,
+              "value_hex": "be667a1c"
+            },
+            {
+              "row": 188,
+              "column": 0,
+              "value_hex": "3e3a7ba0"
+            },
+            {
+              "row": 189,
+              "column": 0,
+              "value_hex": "bfd2eaf1"
+            },
+            {
+              "row": 191,
+              "column": 0,
+              "value_hex": "bfe3cfd8"
+            },
+            {
+              "row": 192,
+              "column": 255,
+              "value_hex": "3fe59cc2"
+            },
+            {
+              "row": 193,
+              "column": 0,
+              "value_hex": "3e629e8a"
+            },
+            {
+              "row": 194,
+              "column": 255,
+              "value_hex": "bfd805a8"
+            },
+            {
+              "row": 195,
+              "column": 0,
+              "value_hex": "3fe5bfbf"
+            },
+            {
+              "row": 210,
+              "column": 255,
+              "value_hex": "3e264ab0"
+            },
+            {
+              "row": 212,
+              "column": 0,
+              "value_hex": "3f6a56d4"
+            },
+            {
+              "row": 213,
+              "column": 255,
+              "value_hex": "be282198"
+            },
+            {
+              "row": 215,
+              "column": 255,
+              "value_hex": "bf48da1a"
+            },
+            {
+              "row": 217,
+              "column": 0,
+              "value_hex": "404f2bda"
+            },
+            {
+              "row": 220,
+              "column": 0,
+              "value_hex": "bf4dea5f"
+            },
+            {
+              "row": 228,
+              "column": 255,
+              "value_hex": "be235fe7"
+            },
+            {
+              "row": 230,
+              "column": 0,
+              "value_hex": "3c5c6e71"
+            },
+            {
+              "row": 232,
+              "column": 0,
+              "value_hex": "408c9b5b"
+            },
+            {
+              "row": 235,
+              "column": 255,
+              "value_hex": "bfb970bb"
+            },
+            {
+              "row": 238,
+              "column": 0,
+              "value_hex": "be529996"
+            },
+            {
+              "row": 238,
+              "column": 255,
+              "value_hex": "3fbe495d"
+            },
+            {
+              "row": 240,
+              "column": 255,
+              "value_hex": "3fcf1eea"
+            },
+            {
+              "row": 241,
+              "column": 0,
+              "value_hex": "c075ca3b"
+            },
+            {
+              "row": 242,
+              "column": 0,
+              "value_hex": "bd947dd7"
+            },
+            {
+              "row": 244,
+              "column": 0,
+              "value_hex": "4057c2e3"
+            },
+            {
+              "row": 247,
+              "column": 0,
+              "value_hex": "40a5ea1b"
+            },
+            {
+              "row": 249,
+              "column": 0,
+              "value_hex": "befacd65"
+            },
+            {
+              "row": 250,
+              "column": 0,
+              "value_hex": "c059dde9"
+            }
+          ],
+          [],
+          []
+        ],
+        "batch_inverse_blocks": [
+          null,
+          null,
+          {
+            "sizes": [
+              17
+            ],
+            "regulars": [
+              94.0
+            ],
+            "inverse_eigenvalues": [
+              28.0
+            ],
+            "coupling": 0.002,
+            "dense_tail": {
+              "size": 239,
+              "minimum": 0.5,
+              "maximum": 1.5,
+              "seed": 11
+            },
+            "entry_floor": 0.0005
+          },
+          null
+        ]
+      }
+    },
+    {
+      "number": 4,
+      "shape": [
+        15,
+        15
+      ],
+      "dtype": "float32",
+      "atol": 0,
+      "rtol": -1,
+      "name": "mock_04",
+      "seed": 79,
+      "fixture": {
+        "first_word_hex": "4092bde9",
+        "first_batch_positive_diagonal": true,
+        "batch_conditions": [
+          16
+        ],
+        "inverse_near_zero_counts": [
+          0
+        ],
+        "batch_similarity_diagonals": [
+          [
+            1.0,
+            1.0,
+            6.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        ]
+      }
+    },
+    {
+      "number": 5,
+      "shape": [
+        3,
+        50,
+        50
+      ],
+      "dtype": "float32",
+      "atol": 0,
+      "rtol": -1,
+      "name": "mock_05",
+      "seed": 47,
+      "fixture": {
+        "first_word_hex": "3f019200",
+        "first_batch_positive_diagonal": true,
+        "batch_conditions": [
+          1536,
+          200,
+          200
+        ],
+        "inverse_near_zero_counts": [
+          3,
+          3,
+          4
+        ]
+      },
+      "output_init": "nan-once"
+    },
+    {
+      "number": 6,
+      "shape": [
+        3,
+        200,
+        200
+      ],
+      "dtype": "float32",
+      "atol": 0,
+      "rtol": -1,
+      "name": "mock_06",
+      "seed": 48,
+      "fixture": {
+        "first_word_hex": "c09b1911",
+        "first_batch_positive_diagonal": false,
+        "batch_conditions": [
+          192,
+          200,
+          200
+        ],
+        "inverse_near_zero_counts": [
+          120,
+          120,
+          120
+        ]
+      }
+    },
+    {
+      "number": 7,
+      "shape": [
+        16,
+        16
+      ],
+      "dtype": "float32",
+      "atol": 0,
+      "rtol": -1,
+      "name": "mock_07",
+      "seed": 62,
+      "fixture": {
+        "first_word_hex": "40b14d9b",
+        "first_batch_positive_diagonal": true,
+        "batch_conditions": [
+          128
+        ],
+        "inverse_near_zero_counts": [
+          1
+        ],
+        "batch_similarity_diagonals": [
+          [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            8.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        ]
+      }
+    },
+    {
+      "number": 8,
+      "shape": [
+        4,
+        64,
+        64
+      ],
+      "dtype": "float32",
+      "atol": 0,
+      "rtol": -1,
+      "name": "mock_08",
+      "seed": 50,
+      "fixture": {
+        "first_word_hex": "3d4de63c",
+        "first_batch_positive_diagonal": true,
+        "batch_conditions": [
+          1536,
+          200,
+          200,
+          200
+        ],
+        "inverse_near_zero_counts": [
+          5,
+          5,
+          5,
+          5
+        ]
+      },
+      "output_init": "nan-once"
+    },
+    {
+      "number": 9,
+      "shape": [
+        4,
+        256,
+        256
+      ],
+      "dtype": "float32",
+      "atol": 0,
+      "rtol": -1,
+      "name": "mock_09",
+      "seed": 51,
+      "fixture": {
+        "first_word_hex": "3f5850b2",
+        "first_batch_positive_diagonal": false,
+        "batch_conditions": [
+          1536,
+          10000,
+          6000,
+          200
+        ],
+        "inverse_near_zero_counts": [
+          0,
+          105,
+          0,
+          262
+        ],
+        "batch_seeds": [
+          null,
+          144,
+          143,
+          null
+        ],
+        "batch_scales": [
+          1,
+          2,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "number": 10,
+      "shape": [
+        15,
+        15
+      ],
+      "dtype": "float32",
+      "atol": 0,
+      "rtol": -1,
+      "name": "mock_10",
+      "seed": 67,
+      "fixture": {
+        "first_word_hex": "4040a83d",
+        "first_batch_positive_diagonal": true,
+        "batch_conditions": [
+          24
+        ],
+        "inverse_near_zero_counts": [
+          0
+        ],
+        "batch_similarity_diagonals": [
+          [
+            1.0,
+            4.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        ]
+      }
+    },
+    {
+      "number": 11,
+      "shape": [
+        3,
+        50,
+        50
+      ],
+      "dtype": "float32",
+      "atol": 0,
+      "rtol": -1,
+      "name": "mock_11",
+      "seed": 53,
+      "fixture": {
+        "first_word_hex": "40a46843",
+        "first_batch_positive_diagonal": true,
+        "batch_conditions": [
+          768,
+          200,
+          200
+        ],
+        "inverse_near_zero_counts": [
+          1,
+          2,
+          2
+        ]
+      },
+      "output_init": "nan-once"
+    },
+    {
+      "number": 12,
+      "shape": [
+        3,
+        200,
+        200
+      ],
+      "dtype": "float32",
+      "atol": 0,
+      "rtol": -1,
+      "name": "mock_12",
+      "seed": 54,
+      "fixture": {
+        "first_word_hex": "3fa54b53",
+        "first_batch_positive_diagonal": false,
+        "batch_conditions": [
+          768,
+          200,
+          200
+        ],
+        "inverse_near_zero_counts": [
+          104,
+          104,
+          105
+        ]
+      }
+    }
+  ],
+  "category": "mock"
+}
