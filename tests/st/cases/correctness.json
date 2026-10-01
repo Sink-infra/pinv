@@ -1,0 +1,1027 @@
+{
+  "category": "correctness",
+  "cases": [
+    {
+      "name": "correctness_documented_rank_deficient",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        2,
+        2
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "diagonal",
+      "seed": 140,
+      "spectrum": [
+        2.0,
+        0.0
+      ],
+      "rank": null,
+      "scale": 1.0,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 0.0,
+      "rtol": null,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "documented_example"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_documented_full_rank",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        2,
+        2
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "diagonal",
+      "seed": 140,
+      "spectrum": [
+        2.0,
+        0.5
+      ],
+      "rank": null,
+      "scale": 1.0,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 0.0,
+      "rtol": null,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "documented_example"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_zero_scalar",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        1,
+        1
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "zeros",
+      "seed": 140,
+      "spectrum": null,
+      "rank": null,
+      "scale": 1.0,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 0.0,
+      "rtol": null,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "strict_zero_cutoff",
+        "zero_matrix"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_zero_batched",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        2,
+        3,
+        5,
+        7
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "zeros",
+      "seed": 140,
+      "spectrum": null,
+      "rank": null,
+      "scale": 1.0,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 0.0,
+      "rtol": null,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "zero_matrix",
+        "batch"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_negative_scalar",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        1,
+        1
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "signed_diagonal",
+      "seed": 140,
+      "spectrum": null,
+      "rank": null,
+      "scale": -2.0,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 0.0,
+      "rtol": null,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "sign",
+        "scalar"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_constant_rank_one",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        7,
+        11
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "constant",
+      "seed": 140,
+      "spectrum": null,
+      "rank": null,
+      "scale": -0.5,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 0.0,
+      "rtol": null,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "dependent_rows",
+        "rank_one"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_dense_square",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        17,
+        17
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "dense",
+      "seed": 140,
+      "spectrum": null,
+      "rank": null,
+      "scale": 1.0,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 0.0,
+      "rtol": null,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "dense",
+        "full_rank",
+        "square"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_dense_tall",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        29,
+        13
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "dense",
+      "seed": 140,
+      "spectrum": null,
+      "rank": null,
+      "scale": 1.0,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 0.0,
+      "rtol": null,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "dense",
+        "tall",
+        "orientation"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_dense_wide",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        13,
+        29
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "dense",
+      "seed": 140,
+      "spectrum": null,
+      "rank": null,
+      "scale": 1.0,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 0.0,
+      "rtol": null,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "dense",
+        "wide",
+        "orientation"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_dense_rank_deficient",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        23,
+        19
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "dense",
+      "seed": 140,
+      "spectrum": null,
+      "rank": 7,
+      "scale": 1.0,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 0.0,
+      "rtol": null,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "dense",
+        "rank_deficient"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_large_dense_square",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        128,
+        128
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "dense",
+      "seed": 140,
+      "spectrum": null,
+      "rank": null,
+      "scale": 1.0,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 0.0,
+      "rtol": null,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "large_dense",
+        "full_rank",
+        "square"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_large_dense_tall",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        129,
+        65
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "dense",
+      "seed": 140,
+      "spectrum": null,
+      "rank": null,
+      "scale": 1.0,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 0.0,
+      "rtol": null,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "large_dense",
+        "full_rank",
+        "tall",
+        "fringe"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_large_dense_wide",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        65,
+        129
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "dense",
+      "seed": 140,
+      "spectrum": null,
+      "rank": null,
+      "scale": 1.0,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 0.0,
+      "rtol": null,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "large_dense",
+        "full_rank",
+        "wide",
+        "fringe"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_large_dense_rank_deficient",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        129,
+        97
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "dense",
+      "seed": 140,
+      "spectrum": null,
+      "rank": 33,
+      "scale": 1.0,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 0.0,
+      "rtol": null,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "large_dense",
+        "rank_deficient",
+        "fringe"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_default_discards_nonzero",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        11,
+        7
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "permuted_diagonal",
+      "seed": 140,
+      "spectrum": [
+        1.0,
+        0.125,
+        5.960464477539063e-08
+      ],
+      "rank": null,
+      "scale": 1.0,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 0.0,
+      "rtol": null,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "default_rtol",
+        "nonzero_discard"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_default_rtol_max_dimension_tall",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        512,
+        3
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "permuted_diagonal",
+      "seed": 140,
+      "spectrum": [
+        1.0,
+        0.125,
+        1.9073486328125e-06
+      ],
+      "rank": null,
+      "scale": 1.0,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 0.0,
+      "rtol": null,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "default_rtol_max_dimension",
+        "nonzero_discard",
+        "tall"
+      ],
+      "note": "The discarded value is 16*float32_eps: above eps and min(m,n)*eps, below 0.1*max(m,n)*eps."
+    },
+    {
+      "name": "correctness_default_rtol_max_dimension_wide",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        3,
+        512
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "permuted_diagonal",
+      "seed": 140,
+      "spectrum": [
+        1.0,
+        0.125,
+        1.9073486328125e-06
+      ],
+      "rank": null,
+      "scale": 1.0,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 0.0,
+      "rtol": null,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "default_rtol_max_dimension",
+        "nonzero_discard",
+        "wide"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_atol_only_small_scale",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        3,
+        3
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "diagonal",
+      "seed": 140,
+      "spectrum": [
+        1.0,
+        0.25,
+        0.05
+      ],
+      "rank": null,
+      "scale": 9.5367431640625e-07,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 1.4901161193847656e-08,
+      "rtol": null,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "atol_default_rtol_zero",
+        "small_absolute_scale"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_explicit_zero_rtol",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        4,
+        3
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "permuted_diagonal",
+      "seed": 140,
+      "spectrum": null,
+      "rank": null,
+      "scale": 1.0,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 0.0,
+      "rtol": 0.0,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "explicit_zero_rtol",
+        "exact_zero_discard"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_rtol_truncation",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        9,
+        7
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "dense",
+      "seed": 140,
+      "spectrum": [
+        1.0,
+        0.25,
+        0.0101,
+        0.0001
+      ],
+      "rank": null,
+      "scale": 1.0,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 0.0,
+      "rtol": 0.005,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "nonzero_discard",
+        "condition_100"
+      ],
+      "note": "The smallest retained value is slightly above 1e-2*smax to preserve the promised gap after float32 quantization."
+    },
+    {
+      "name": "correctness_atol_dominates",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        5,
+        5
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "diagonal",
+      "seed": 140,
+      "spectrum": [
+        4.0,
+        1.0,
+        0.0625,
+        0.001
+      ],
+      "rank": null,
+      "scale": 1.0,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 0.05,
+      "rtol": 0.005,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "threshold_max",
+        "absolute_dominates",
+        "max_not_sum"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_rtol_dominates",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        5,
+        5
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "diagonal",
+      "seed": 140,
+      "spectrum": [
+        4.0,
+        1.0,
+        0.0625,
+        0.001
+      ],
+      "rank": null,
+      "scale": 1.0,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 0.03125,
+      "rtol": 0.01,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "threshold_max",
+        "relative_dominates",
+        "max_not_sum"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_max_not_min",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        5,
+        5
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "diagonal",
+      "seed": 140,
+      "spectrum": [
+        4.0,
+        1.0,
+        0.03125,
+        0.001
+      ],
+      "rank": null,
+      "scale": 1.0,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 0.5,
+      "rtol": 0.005,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "threshold_max",
+        "max_not_min",
+        "nonzero_discard"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_all_discarded_absolute",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        3,
+        5
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "dense",
+      "seed": 140,
+      "spectrum": null,
+      "rank": null,
+      "scale": 1.0,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 16.0,
+      "rtol": null,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "all_discarded",
+        "nonzero_input_zero_output"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_all_discarded_relative",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        5,
+        3
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "dense",
+      "seed": 140,
+      "spectrum": null,
+      "rank": null,
+      "scale": 1.0,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 0.0,
+      "rtol": 16.0,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "all_discarded",
+        "relative_threshold_above_smax"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_batch_local_relative_threshold",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        3,
+        4,
+        4
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "diagonal",
+      "seed": 140,
+      "spectrum": [
+        1.0,
+        0.25,
+        0.02,
+        0.0001
+      ],
+      "rank": null,
+      "scale": 1.0,
+      "batch_ranks": [],
+      "batch_scales": [
+        1.0,
+        128.0,
+        0.0078125
+      ],
+      "atol": 0.0,
+      "rtol": 0.01,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "per_matrix_smax",
+        "batch_scale"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_batch_mixed_atol_threshold",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        3,
+        3,
+        3
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "diagonal",
+      "seed": 140,
+      "spectrum": [
+        1.0,
+        0.25,
+        0.015625
+      ],
+      "rank": null,
+      "scale": 1.0,
+      "batch_ranks": [],
+      "batch_scales": [
+        1.0,
+        128.0,
+        0.0078125
+      ],
+      "atol": 0.2,
+      "rtol": null,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "per_matrix_rank",
+        "absolute_threshold",
+        "all_discarded"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_batch_mixed_ranks",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        2,
+        3,
+        13,
+        9
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "dense",
+      "seed": 140,
+      "spectrum": null,
+      "rank": null,
+      "scale": 1.0,
+      "batch_ranks": [
+        9,
+        5,
+        1,
+        0
+      ],
+      "batch_scales": [],
+      "atol": 0.0,
+      "rtol": null,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "batch_isolation",
+        "mixed_ranks"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_repeated_singular_values",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        8,
+        8
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "dense",
+      "seed": 140,
+      "spectrum": [
+        2.0,
+        2.0,
+        2.0,
+        0.25,
+        0.25,
+        0.25
+      ],
+      "rank": null,
+      "scale": 1.0,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 0.0,
+      "rtol": null,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "repeated_singular_values",
+        "nonunique_svd_basis"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_condition_100",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        13,
+        17
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "permuted_diagonal",
+      "seed": 140,
+      "spectrum": [
+        1.0,
+        0.5,
+        0.125,
+        0.0101
+      ],
+      "rank": null,
+      "scale": 1.0,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 0.0,
+      "rtol": null,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "condition_near_limit",
+        "sign",
+        "orientation"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_small_scale",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        11,
+        7
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "dense",
+      "seed": 140,
+      "spectrum": null,
+      "rank": null,
+      "scale": 1.52587890625e-05,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 0.0,
+      "rtol": null,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "scale",
+        "large_pinv_values"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_large_scale",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        7,
+        11
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "dense",
+      "seed": 140,
+      "spectrum": null,
+      "rank": null,
+      "scale": 65536.0,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 0.0,
+      "rtol": null,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "scale",
+        "small_pinv_values"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_max_dimension_sparse_rank",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        512,
+        257
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "permuted_diagonal",
+      "seed": 140,
+      "spectrum": null,
+      "rank": 17,
+      "scale": 1.0,
+      "batch_ranks": [],
+      "batch_scales": [],
+      "atol": 0.0,
+      "rtol": null,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "m_max",
+        "nonaligned_n",
+        "rank_deficient",
+        "fringe"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_batch_64_nonzero",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        64,
+        5,
+        7
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "permuted_diagonal",
+      "seed": 140,
+      "spectrum": null,
+      "rank": null,
+      "scale": 1.0,
+      "batch_ranks": [],
+      "batch_scales": [
+        0.5,
+        1.0,
+        4.0
+      ],
+      "atol": 0.0,
+      "rtol": null,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "batch_max",
+        "nonzero_input",
+        "independent_matrices"
+      ],
+      "note": ""
+    },
+    {
+      "name": "correctness_batch_64_dense_mixed_ranks",
+      "category": "correctness",
+      "expectation": "success",
+      "a_shape": [
+        64,
+        9,
+        7
+      ],
+      "a_dtype": "float32",
+      "input_pattern": "dense",
+      "seed": 140,
+      "spectrum": null,
+      "rank": null,
+      "scale": 1.0,
+      "batch_ranks": [
+        7,
+        4,
+        1,
+        0
+      ],
+      "batch_scales": [],
+      "atol": 0.0,
+      "rtol": null,
+      "hermitian": false,
+      "expected_error": null,
+      "covers": [
+        "batch_max",
+        "dense",
+        "mixed_ranks",
+        "batch_isolation"
+      ],
+      "note": ""
+    }
+  ]
+}

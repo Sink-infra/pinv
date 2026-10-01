@@ -1,0 +1,368 @@
+{
+  "cases": [
+    {
+      "number": 1,
+      "shape": [
+        16,
+        16
+      ],
+      "dtype": "float32",
+      "atol": 0,
+      "rtol": -1,
+      "name": "mock_01",
+      "seed": 43,
+      "fixture": {
+        "first_word_hex": "40d09e4a",
+        "first_batch_positive_diagonal": true,
+        "batch_conditions": [
+          96
+        ],
+        "inverse_near_zero_counts": [
+          0
+        ]
+      }
+    },
+    {
+      "number": 2,
+      "shape": [
+        4,
+        64,
+        64
+      ],
+      "dtype": "float32",
+      "atol": 0,
+      "rtol": -1,
+      "name": "mock_02",
+      "seed": 44,
+      "fixture": {
+        "first_word_hex": "3dd35ff9",
+        "first_batch_positive_diagonal": true,
+        "batch_conditions": [
+          3072,
+          200,
+          200,
+          200
+        ],
+        "inverse_near_zero_counts": [
+          5,
+          5,
+          5,
+          6
+        ]
+      }
+    },
+    {
+      "number": 3,
+      "shape": [
+        4,
+        256,
+        256
+      ],
+      "dtype": "float32",
+      "atol": 0,
+      "rtol": -1,
+      "name": "mock_03",
+      "seed": 45,
+      "fixture": {
+        "first_word_hex": "c00d3719",
+        "first_batch_positive_diagonal": false,
+        "batch_conditions": [
+          768,
+          14000,
+          24000,
+          200
+        ],
+        "inverse_near_zero_counts": [
+          0,
+          0,
+          0,
+          707
+        ],
+        "batch_seeds": [
+          null,
+          144,
+          143,
+          null
+        ],
+        "batch_scales": [
+          1,
+          2.8783609867095947,
+          70.66185760498047,
+          1
+        ],
+        "batch_adjustments": [
+          [],
+          [
+            {
+              "row": 218,
+              "column": 183,
+              "value_hex": "c06cedbb"
+            },
+            {
+              "row": 4,
+              "column": 36,
+              "value_hex": "40e9603e"
+            },
+            {
+              "row": 106,
+              "column": 49,
+              "value_hex": "40dfdc54"
+            },
+            {
+              "row": 218,
+              "column": 59,
+              "value_hex": "c0fd8109"
+            }
+          ],
+          [],
+          []
+        ]
+      }
+    },
+    {
+      "number": 4,
+      "shape": [
+        15,
+        15
+      ],
+      "dtype": "float32",
+      "atol": 0,
+      "rtol": -1,
+      "name": "mock_04",
+      "seed": 46,
+      "fixture": {
+        "first_word_hex": "4092bde9",
+        "first_batch_positive_diagonal": true,
+        "batch_conditions": [
+          96
+        ],
+        "inverse_near_zero_counts": [
+          0
+        ]
+      }
+    },
+    {
+      "number": 5,
+      "shape": [
+        3,
+        50,
+        50
+      ],
+      "dtype": "float32",
+      "atol": 0,
+      "rtol": -1,
+      "name": "mock_05",
+      "seed": 47,
+      "fixture": {
+        "first_word_hex": "3f019200",
+        "first_batch_positive_diagonal": true,
+        "batch_conditions": [
+          1536,
+          200,
+          200
+        ],
+        "inverse_near_zero_counts": [
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "number": 6,
+      "shape": [
+        3,
+        200,
+        200
+      ],
+      "dtype": "float32",
+      "atol": 0,
+      "rtol": -1,
+      "name": "mock_06",
+      "seed": 48,
+      "fixture": {
+        "first_word_hex": "c09b1911",
+        "first_batch_positive_diagonal": false,
+        "batch_conditions": [
+          192,
+          200,
+          200
+        ],
+        "inverse_near_zero_counts": [
+          120,
+          120,
+          120
+        ]
+      }
+    },
+    {
+      "number": 7,
+      "shape": [
+        16,
+        16
+      ],
+      "dtype": "float32",
+      "atol": 0,
+      "rtol": -1,
+      "name": "mock_07",
+      "seed": 49,
+      "fixture": {
+        "first_word_hex": "40b14d9b",
+        "first_batch_positive_diagonal": true,
+        "batch_conditions": [
+          768
+        ],
+        "inverse_near_zero_counts": [
+          1
+        ]
+      }
+    },
+    {
+      "number": 8,
+      "shape": [
+        4,
+        64,
+        64
+      ],
+      "dtype": "float32",
+      "atol": 0,
+      "rtol": -1,
+      "name": "mock_08",
+      "seed": 50,
+      "fixture": {
+        "first_word_hex": "3d4de63c",
+        "first_batch_positive_diagonal": true,
+        "batch_conditions": [
+          1536,
+          200,
+          200,
+          200
+        ],
+        "inverse_near_zero_counts": [
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "number": 9,
+      "shape": [
+        4,
+        256,
+        256
+      ],
+      "dtype": "float32",
+      "atol": 0,
+      "rtol": -1,
+      "name": "mock_09",
+      "seed": 51,
+      "fixture": {
+        "first_word_hex": "3f5850b2",
+        "first_batch_positive_diagonal": false,
+        "batch_conditions": [
+          1536,
+          10000,
+          6000,
+          200
+        ],
+        "inverse_near_zero_counts": [
+          0,
+          0,
+          0,
+          367
+        ],
+        "batch_seeds": [
+          null,
+          144,
+          143,
+          null
+        ],
+        "batch_scales": [
+          1,
+          2,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "number": 10,
+      "shape": [
+        15,
+        15
+      ],
+      "dtype": "float32",
+      "atol": 0,
+      "rtol": -1,
+      "name": "mock_10",
+      "seed": 52,
+      "fixture": {
+        "first_word_hex": "4040a83d",
+        "first_batch_positive_diagonal": true,
+        "batch_conditions": [
+          48
+        ],
+        "inverse_near_zero_counts": [
+          0
+        ]
+      }
+    },
+    {
+      "number": 11,
+      "shape": [
+        3,
+        50,
+        50
+      ],
+      "dtype": "float32",
+      "atol": 0,
+      "rtol": -1,
+      "name": "mock_11",
+      "seed": 53,
+      "fixture": {
+        "first_word_hex": "40a46843",
+        "first_batch_positive_diagonal": true,
+        "batch_conditions": [
+          768,
+          200,
+          200
+        ],
+        "inverse_near_zero_counts": [
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "number": 12,
+      "shape": [
+        3,
+        200,
+        200
+      ],
+      "dtype": "float32",
+      "atol": 0,
+      "rtol": -1,
+      "name": "mock_12",
+      "seed": 54,
+      "fixture": {
+        "first_word_hex": "3fa54b53",
+        "first_batch_positive_diagonal": false,
+        "batch_conditions": [
+          768,
+          200,
+          200
+        ],
+        "inverse_near_zero_counts": [
+          104,
+          104,
+          105
+        ]
+      }
+    }
+  ],
+  "category": "mock"
+}
