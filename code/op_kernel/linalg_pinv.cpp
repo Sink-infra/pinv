@@ -34,11 +34,18 @@ class Pinv {
         if (t.local) { DataCopy(Row(i), src, s); PipeBarrier<PIPE_V>(); }
         else Store(work[i * s], src, s);
     }
-    __aicore__ inline float Dot(LocalTensor<float> a, LocalTensor<float> b) {
+    __aicore__ inline void DotInto(LocalTensor<float> dst, LocalTensor<float> a, LocalTensor<float> b) {
         Mul(prod, a, b, r8); PipeBarrier<PIPE_V>();
-        if (r8 <= 64) WholeReduceSum(red, prod, r8, 1, 1, 1, 8);
-        else ReduceSum(red, prod, tmp, r8);
-        VS(); return red.GetValue(0);
+        if (r8 <= 64) WholeReduceSum(dst, prod, r8, 1, 1, 1, 8);
+        else ReduceSum(dst, prod, tmp, r8);
+        PipeBarrier<PIPE_V>();
+    }
+    __aicore__ inline float Dot(LocalTensor<float> a, LocalTensor<float> b) {
+        DotInto(red, a, b); VS(); return red.GetValue(0);
+    }
+    __aicore__ inline void PairDots(float &a, float &d, float &h) {
+        DotInto(red, x, x); DotInto(red[8], y, y); DotInto(red[16], x, y);
+        VS(); a = red.GetValue(0); d = red.GetValue(8); h = red.GetValue(16);
     }
     __aicore__ inline float Root(float value) {
         red.SetValue(0, value); SV(); Sqrt(red, red, 1); VS(); return red.GetValue(0);
@@ -273,7 +280,7 @@ class Pinv {
                         uint32_t q = slot == 0 ? round : (round + roundCols - 1 - slot) % (roundCols - 1);
                         if (p >= t.cols || q >= t.cols) continue;
                         ReadRow(x, p); ReadRow(y, q);
-                        float a = Dot(x, x), d = Dot(y, y), h = Dot(x, y);
+                        float a, d, h; PairDots(a, d, h);
                         if (a <= discard || d <= discard || h == 0 || h * h <= 1.0e-12f * (a * d)) continue;
                         float tau = (d - a) / (2 * h), at = AbsScalar(tau);
                         float z = (tau < 0 ? -1.0f : 1.0f) / (at + Root(1 + at * at));
@@ -389,7 +396,7 @@ public:
                     ReadRow(x, p);
                     for (uint32_t q = p + 1; q < t.cols; ++q) {
                         ReadRow(y, q);
-                        float a = Dot(x, x), d = Dot(y, y), h = Dot(x, y);
+                        float a, d, h; PairDots(a, d, h);
                         if (a <= discard || d <= discard || h == 0 || h * h <= 1.0e-12f * (a * d)) continue;
                         float tau = (d - a) / (2 * h);
                         float at = AbsScalar(tau);
