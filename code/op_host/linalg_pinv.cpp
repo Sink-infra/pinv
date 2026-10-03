@@ -31,9 +31,14 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     t->atol = at ? *at : 0.0f;
     t->rtol = rt && *rt >= 0 ? *rt : (t->atol > 0 ? 0.0f : std::max(m, n) * 1.1920928955078125e-7f);
     auto platform = platform_ascendc::PlatformAscendC(context->GetPlatformInfo());
-    context->SetBlockDim(std::min<uint64_t>(batch, platform.GetCoreNumAiv()));
+    t->parallel = batch <= 4 && t->cols >= 16;
+    if (t->parallel) {
+        t->local = 0;
+        context->SetBlockDim(std::min<uint32_t>(platform.GetCoreNumAic(), (t->cols + 1) / 2));
+        context->SetScheduleMode(1);
+    } else context->SetBlockDim(std::min<uint64_t>(batch, platform.GetCoreNumAiv()));
     auto ws = context->GetWorkspaceSizes(1);
-    ws[0] = t->local ? 0 : platform.GetLibApiWorkSpaceSize() + batch * t->cols * t->stride * sizeof(float);
+    ws[0] = t->local ? 0 : platform.GetLibApiWorkSpaceSize() + batch * (t->cols * t->stride + (t->parallel ? 8192 : 0)) * sizeof(float);
     uint32_t DT_A = static_cast<uint32_t>(ge::DT_FLOAT);
     ASCENDC_TPL_SEL_PARAM(context, DT_A);
     return ge::GRAPH_SUCCESS;
