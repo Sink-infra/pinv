@@ -257,7 +257,8 @@ class Pinv {
             }
             float total = 0;
             for (uint32_t i = core; i < t.cols; i += cores) {
-                ReadRow(x, i); Muls(x, x, 1.0f / scale, r8); PipeBarrier<PIPE_V>(); total += Dot(x, x); SaveRow(x, i);
+                ReadRow(x, i); Muls(x, x, 1.0f / scale, r8); PipeBarrier<PIPE_V>();
+                total += Dot(x, x); SaveRow(x, i);
             }
             red.SetValue(0, total); Store(meta[core * 8], red, 1); SyncAll();
             Load(gather, meta, cores * 8); total = 0;
@@ -330,7 +331,7 @@ class Pinv {
     }
 public:
     __aicore__ inline void Init(GM_ADDR a, GM_ADDR out, GM_ADDR ws, const LinalgPinvTilingData &data, TPipe *pipe) {
-        t = data; r8 = (t.rows + 7) / 8 * 8; k8 = (t.cols + 7) / 8 * 8; s = r8 + k8;
+        t = data; r8 = (t.rows + 7) / 8 * 8; k8 = (t.cols + 7) / 8 * 8; s = t.stride;
         uint32_t size = (t.local ? t.cols * s : 0) + 4 * s + 4 * r8 + 8 * t.rows + k8 + 32;
         pipe->InitBuffer(mem, size * 4);
         auto all = mem.Get<float>(); uint32_t off = 0;
@@ -377,7 +378,7 @@ public:
             float total = 0;
             for (uint32_t i = 0; i < t.cols; ++i) {
                 ReadRow(x, i); Muls(x, x, 1.0f / scale, r8); PipeBarrier<PIPE_V>();
-                total += Dot(x, x); SaveRow(x, i);
+                float norm = Dot(x, x); total += norm; x.SetValue(s - 8, norm); if (t.local) SV(); SaveRow(x, i);
             }
             float absTol = t.atol / scale;
             float discard = absTol * absTol;
@@ -389,14 +390,16 @@ public:
                     ReadRow(x, p);
                     for (uint32_t q = p + 1; q < t.cols; ++q) {
                         ReadRow(y, q);
-                        float a = Dot(x, x), d = Dot(y, y), h = Dot(x, y);
+                        float h = Dot(x, y), a = x.GetValue(s - 8), d = y.GetValue(s - 8);
                         if (a <= discard || d <= discard || h == 0 || h * h <= 1.0e-12f * (a * d)) continue;
                         float tau = (d - a) / (2 * h);
                         float at = AbsScalar(tau);
                         float z = (tau < 0 ? -1.0f : 1.0f) / (at + Root(1 + at * at));
                         float c = 1.0f / Root(1 + z * z), sn = c * z;
-                        Muls(u, x, c, s); Muls(v, y, -sn, s); PipeBarrier<PIPE_V>(); Add(u, u, v, s); PipeBarrier<PIPE_V>();
-                        Muls(v, x, sn, s); Muls(y, y, c, s); PipeBarrier<PIPE_V>(); Add(y, y, v, s); PipeBarrier<PIPE_V>();
+                        Muls(u, x, c, r8 + k8); Muls(v, y, -sn, r8 + k8); PipeBarrier<PIPE_V>(); Add(u, u, v, r8 + k8); PipeBarrier<PIPE_V>();
+                        Muls(v, x, sn, r8 + k8); Muls(y, y, c, r8 + k8); PipeBarrier<PIPE_V>(); Add(y, y, v, r8 + k8); PipeBarrier<PIPE_V>();
+                        float na = Dot(u, u), nd = Dot(y, y);
+                        u.SetValue(s - 8, na); y.SetValue(s - 8, nd); SV();
                         DataCopy(x, u, s); PipeBarrier<PIPE_V>(); SaveRow(y, q); ++changed;
                     }
                     SaveRow(x, p);
