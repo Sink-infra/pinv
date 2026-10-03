@@ -266,7 +266,7 @@ class Pinv {
                         if (p >= t.cols || q >= t.cols) continue;
                         ReadRow(x, p); ReadRow(y, q);
                         float a = Dot(x, x), d = Dot(y, y), h = Dot(x, y);
-                        if (a <= discard || d <= discard || h == 0 || AbsScalar(h) <= 1.0e-7f * Root(a * d)) continue;
+                        if (a <= discard || d <= discard || h == 0 || AbsScalar(h) <= 1.0e-6f * Root(a * d)) continue;
                         float tau = (d - a) / (2 * h), at = AbsScalar(tau);
                         float z = (tau < 0 ? -1.0f : 1.0f) / (at + Root(1 + at * at));
                         float c = 1.0f / Root(1 + z * z), sn = c * z;
@@ -382,7 +382,7 @@ public:
                     for (uint32_t q = p + 1; q < t.cols; ++q) {
                         ReadRow(y, q);
                         float a = Dot(x, x), d = Dot(y, y), h = Dot(x, y);
-                        if (a <= discard || d <= discard || h == 0 || AbsScalar(h) <= 1.0e-7f * Root(a * d)) continue;
+                        if (a <= discard || d <= discard || h == 0 || AbsScalar(h) <= 1.0e-6f * Root(a * d)) continue;
                         float tau = (d - a) / (2 * h);
                         float at = AbsScalar(tau);
                         float z = (tau < 0 ? -1.0f : 1.0f) / (at + Root(1 + at * at));
