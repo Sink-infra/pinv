@@ -26,12 +26,17 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     auto t = context->GetTilingData<LinalgPinvTilingData>();
     t->m = m; t->n = n; t->batch = batch;
     t->rows = std::max(m, n); t->cols = std::min(m, n);
-    t->stride = ((t->rows + 7) / 8 + (t->cols + 7) / 8) * 8;
-    t->local = uint64_t(t->cols) * t->stride * 4 <= 160 * 1024;
+    t->parallel = batch <= 4 && t->cols >= 16;
+    uint32_t r8 = (t->rows + 7) / 8 * 8, k8 = (t->cols + 7) / 8 * 8;
+    t->stride = r8 + k8 + (t->parallel ? 0 : 8);
+    auto platform = platform_ascendc::PlatformAscendC(context->GetPlatformInfo());
+    uint64_t ubSize = 0;
+    platform.GetCoreMemSize(platform_ascendc::CoreMemType::UB, ubSize);
+    uint64_t localBytes = (uint64_t(t->cols) * t->stride + 4 * t->stride + 4 * r8 + 8 * t->rows + k8 + 32) * 4;
+    if (t->rows <= 32) localBytes += 4 * k8 * k8 * sizeof(float);
+    t->local = uint64_t(t->cols) * t->stride * 4 <= 160 * 1024 && localBytes <= ubSize;
     t->atol = at ? *at : 0.0f;
     t->rtol = rt && *rt >= 0 ? *rt : (t->atol > 0 ? 0.0f : std::max(m, n) * 1.1920928955078125e-7f);
-    auto platform = platform_ascendc::PlatformAscendC(context->GetPlatformInfo());
-    t->parallel = batch <= 4 && t->cols >= 16;
     if (t->parallel) {
         t->local = 0;
         context->SetBlockDim(std::min<uint32_t>(platform.GetCoreNumAic(), (t->cols + 1) / 2));
