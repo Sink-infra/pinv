@@ -38,7 +38,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
         context->SetScheduleMode(1);
     } else context->SetBlockDim(std::min<uint64_t>(batch, platform.GetCoreNumAiv()));
     auto ws = context->GetWorkspaceSizes(1);
-    ws[0] = t->local ? 0 : platform.GetLibApiWorkSpaceSize() + batch * (t->cols * t->stride + (t->parallel ? 8192 : 0)) * sizeof(float);
+    ws[0] = t->local ? 0 : platform.GetLibApiWorkSpaceSize() + batch * (t->cols * t->stride * (t->parallel ? 2 : 1) + (t->parallel ? 8192 : 0)) * sizeof(float);
     uint32_t DT_A = static_cast<uint32_t>(ge::DT_FLOAT);
     ASCENDC_TPL_SEL_PARAM(context, DT_A);
     return ge::GRAPH_SUCCESS;
