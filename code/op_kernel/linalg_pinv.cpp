@@ -36,7 +36,9 @@ class Pinv {
     }
     __aicore__ inline float Dot(LocalTensor<float> a, LocalTensor<float> b) {
         Mul(prod, a, b, r8); PipeBarrier<PIPE_V>();
-        ReduceSum(red, prod, tmp, r8); VS(); return red.GetValue(0);
+        if (r8 <= 64) WholeReduceSum(red, prod, r8, 1, 1, 1, 8);
+        else ReduceSum(red, prod, tmp, r8);
+        VS(); return red.GetValue(0);
     }
     __aicore__ inline float Root(float value) {
         red.SetValue(0, value); SV(); Sqrt(red, red, 1); VS(); return red.GetValue(0);
