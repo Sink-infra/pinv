@@ -140,6 +140,101 @@ class Pinv {
             Store(result[offset + row * t.m], output, t.m);
         }
     }
+    __aicore__ inline void Parallel() {
+        uint32_t core = GetBlockIdx(), cores = GetBlockNum();
+        uint32_t roundCols = (t.cols + 1) / 2 * 2;
+        for (uint32_t b = 0; b < t.batch; ++b) {
+            uint32_t offset = b * t.m * t.n;
+            work.SetGlobalBuffer(workBase + uint64_t(b) * t.cols * s);
+            GlobalTensor<float> meta;
+            meta.SetGlobalBuffer(workBase + uint64_t(t.batch) * t.cols * s + uint64_t(b) * 8192);
+            float scale = 0;
+            for (uint32_t i = core; i < t.cols; i += cores) {
+                Duplicate(x, 0.0f, s); PipeBarrier<PIPE_V>();
+                if (t.m >= t.n) {
+                    DataCopyPad(gather, input[offset + i], DataCopyExtParams{static_cast<uint16_t>(t.m), 4, (t.n - 1) * 4, 0, 0}, DataCopyPadExtParams<float>{true, 0, 7, 0});
+                    SetFlag<HardEvent::MTE2_S>(0); WaitFlag<HardEvent::MTE2_S>(0); VS();
+                    for (uint32_t j = 0; j < t.rows; ++j) x.SetValue(j, gather.GetValue(j * 8));
+                } else Load(x, input[offset + i * t.n], t.n);
+                VS(); x.SetValue(r8 + i, 1.0f); SV();
+                Abs(prod, x, r8); PipeBarrier<PIPE_V>(); ReduceMax(red, prod, tmp, r8, false); VS();
+                float mx = red.GetValue(0); scale = mx > scale ? mx : scale; SaveRow(x, i);
+            }
+            red.SetValue(0, scale); Store(meta[core * 8], red, 1); SyncAll();
+            Load(gather, meta, cores * 8); scale = 0;
+            for (uint32_t i = 0; i < cores; ++i) { float v = gather.GetValue(i * 8); scale = v > scale ? v : scale; }
+            if (scale == 0) {
+                Duplicate(output, 0.0f, r8); PipeBarrier<PIPE_V>();
+                for (uint32_t row = core; row < t.n; row += cores) Store(result[offset + row * t.m], output, t.m);
+                SyncAll(); continue;
+            }
+            float total = 0;
+            for (uint32_t i = core; i < t.cols; i += cores) {
+                ReadRow(x, i); Muls(x, x, 1.0f / scale, r8); PipeBarrier<PIPE_V>(); total += Dot(x, x); SaveRow(x, i);
+            }
+            red.SetValue(0, total); Store(meta[core * 8], red, 1); SyncAll();
+            Load(gather, meta, cores * 8); total = 0;
+            for (uint32_t i = 0; i < cores; ++i) total += gather.GetValue(i * 8);
+            float absTol = t.atol / scale, discard = absTol * absTol;
+            float rel = t.rtol * t.rtol * total;
+            discard = (discard > rel ? discard : rel) * 1.0e-8f;
+            for (uint32_t sweep = 0; sweep < 40; ++sweep) {
+                uint32_t changed = 0;
+                for (uint32_t round = 0; round + 1 < roundCols; ++round) {
+                    for (uint32_t slot = core; slot < roundCols / 2; slot += cores) {
+                        uint32_t p = slot == 0 ? roundCols - 1 : (round + slot) % (roundCols - 1);
+                        uint32_t q = slot == 0 ? round : (round + roundCols - 1 - slot) % (roundCols - 1);
+                        if (p >= t.cols || q >= t.cols) continue;
+                        ReadRow(x, p); ReadRow(y, q);
+                        float a = Dot(x, x), d = Dot(y, y), h = Dot(x, y);
+                        if (a <= discard || d <= discard || h == 0 || AbsScalar(h) <= 1.0e-7f * Root(a * d)) continue;
+                        float tau = (d - a) / (2 * h), at = AbsScalar(tau);
+                        float z = (tau < 0 ? -1.0f : 1.0f) / (at + Root(1 + at * at));
+                        float c = 1.0f / Root(1 + z * z), sn = c * z;
+                        Muls(u, x, c, s); Muls(v, y, -sn, s); PipeBarrier<PIPE_V>(); Add(u, u, v, s); PipeBarrier<PIPE_V>();
+                        Muls(v, x, sn, s); Muls(y, y, c, s); PipeBarrier<PIPE_V>(); Add(y, y, v, s); PipeBarrier<PIPE_V>();
+                        SaveRow(u, p); SaveRow(y, q); ++changed;
+                    }
+                    SyncAll();
+                }
+                red.SetValue(0, static_cast<float>(changed)); Store(meta[core * 8], red, 1); SyncAll();
+                Load(gather, meta, cores * 8); float sum = 0;
+                for (uint32_t i = 0; i < cores; ++i) sum += gather.GetValue(i * 8);
+                if (sum == 0) break;
+            }
+            for (uint32_t i = core; i < t.cols; i += cores) {
+                ReadRow(x, i); float a = Dot(x, x); red.SetValue(0, a); Store(meta[512 + i * 8], red, 1);
+            }
+            SyncAll();
+            DataCopyPad(gather, meta[512], DataCopyExtParams{static_cast<uint16_t>(t.cols), 4, 28, 0, 0}, DataCopyPadExtParams<float>{true, 0, 7, 0});
+            SetFlag<HardEvent::MTE2_S>(0); WaitFlag<HardEvent::MTE2_S>(0);
+            float maxNorm = 0;
+            for (uint32_t i = 0; i < t.cols; ++i) { float a = gather.GetValue(i * 8); norms.SetValue(i, a); maxNorm = a > maxNorm ? a : maxNorm; }
+            float threshold = absTol * absTol, relative = maxNorm * t.rtol * t.rtol;
+            threshold = threshold > relative ? threshold : relative;
+            uint32_t kept = 0;
+            for (uint32_t i = 0; i < t.cols; ++i) {
+                float a = norms.GetValue(i); if (a > threshold) ++kept;
+                norms.SetValue(i, a > threshold ? 1.0f / (a * scale) : 0.0f);
+            }
+            if (t.rows <= 32 && kept == t.cols && scale < 0.001f) {
+                if (core == 0) AccurateFull(offset, scale);
+                SyncAll(); continue;
+            }
+            for (uint32_t row = core; row < t.n; row += cores) {
+                Duplicate(output, 0.0f, r8); PipeBarrier<PIPE_V>();
+                for (uint32_t i = 0; i < t.cols; ++i) {
+                    float inv = norms.GetValue(i); if (inv == 0) continue;
+                    ReadRow(x, i); VS();
+                    float factor = x.GetValue(t.m >= t.n ? r8 + row : row) * inv;
+                    Muls(prod, t.m >= t.n ? x : x[r8], factor, t.m >= t.n ? r8 : k8); PipeBarrier<PIPE_V>();
+                    Add(output, output, prod, t.m >= t.n ? r8 : k8); PipeBarrier<PIPE_V>();
+                }
+                Store(result[offset + row * t.m], output, t.m);
+            }
+            SyncAll();
+        }
+    }
 public:
     __aicore__ inline void Init(GM_ADDR a, GM_ADDR out, GM_ADDR ws, const LinalgPinvTilingData &data, TPipe *pipe) {
         t = data; r8 = (t.rows + 7) / 8 * 8; k8 = (t.cols + 7) / 8 * 8; s = r8 + k8;
@@ -159,6 +254,7 @@ public:
         workBase = (__gm__ float *)ws; work.SetGlobalBuffer(workBase);
     }
     __aicore__ inline void Process() {
+        if (t.parallel) { Parallel(); return; }
         for (uint32_t b = GetBlockIdx(); b < t.batch; b += GetBlockNum()) {
             uint32_t offset = b * t.m * t.n;
             if (!t.local) work.SetGlobalBuffer(workBase + uint64_t(b) * t.cols * s);
@@ -237,6 +333,7 @@ public:
 };
 template <typename DT_A>
 __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR workspace, GM_ADDR tiling) {
+    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIV_1_0);
     REGISTER_TILING_DEFAULT(LinalgPinvTilingData);
     GET_TILING_DATA_WITH_STRUCT(LinalgPinvTilingData, data, tiling);
     TPipe pipe; Pinv op;
