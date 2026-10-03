@@ -258,7 +258,7 @@ class Pinv {
             float total = 0;
             for (uint32_t i = core; i < t.cols; i += cores) {
                 ReadRow(x, i); Muls(x, x, 1.0f / scale, r8); PipeBarrier<PIPE_V>();
-                float norm = Dot(x, x); total += norm; x.SetValue(s - 8, norm); if (t.local) SV(); SaveRow(x, i);
+                total += Dot(x, x); SaveRow(x, i);
             }
             red.SetValue(0, total); Store(meta[core * 8], red, 1); SyncAll();
             Load(gather, meta, cores * 8); total = 0;
@@ -274,15 +274,13 @@ class Pinv {
                         uint32_t q = slot == 0 ? round : (round + roundCols - 1 - slot) % (roundCols - 1);
                         if (p >= t.cols || q >= t.cols) continue;
                         ReadRow(x, p); ReadRow(y, q);
-                        float h = Dot(x, y), a = x.GetValue(s - 8), d = y.GetValue(s - 8);
+                        float a = Dot(x, x), d = Dot(y, y), h = Dot(x, y);
                         if (a <= discard || d <= discard || h == 0 || h * h <= 1.0e-12f * (a * d)) continue;
                         float tau = (d - a) / (2 * h), at = AbsScalar(tau);
                         float z = (tau < 0 ? -1.0f : 1.0f) / (at + Root(1 + at * at));
                         float c = 1.0f / Root(1 + z * z), sn = c * z;
                         Muls(u, x, c, r8 + k8); Muls(v, y, -sn, r8 + k8); PipeBarrier<PIPE_V>(); Add(u, u, v, r8 + k8); PipeBarrier<PIPE_V>();
                         Muls(v, x, sn, r8 + k8); Muls(y, y, c, r8 + k8); PipeBarrier<PIPE_V>(); Add(y, y, v, r8 + k8); PipeBarrier<PIPE_V>();
-                        float na = Dot(u, u), nd = Dot(y, y);
-                        u.SetValue(s - 8, na); y.SetValue(s - 8, nd); if (t.local) SV();
                         SaveRow(u, p); SaveRow(y, q); ++changed;
                     }
                     SyncAll();
@@ -401,7 +399,7 @@ public:
                         Muls(u, x, c, r8 + k8); Muls(v, y, -sn, r8 + k8); PipeBarrier<PIPE_V>(); Add(u, u, v, r8 + k8); PipeBarrier<PIPE_V>();
                         Muls(v, x, sn, r8 + k8); Muls(y, y, c, r8 + k8); PipeBarrier<PIPE_V>(); Add(y, y, v, r8 + k8); PipeBarrier<PIPE_V>();
                         float na = Dot(u, u), nd = Dot(y, y);
-                        u.SetValue(s - 8, na); y.SetValue(s - 8, nd); if (t.local) SV();
+                        u.SetValue(s - 8, na); y.SetValue(s - 8, nd); SV();
                         DataCopy(x, u, s); PipeBarrier<PIPE_V>(); SaveRow(y, q); ++changed;
                     }
                     SaveRow(x, p);
