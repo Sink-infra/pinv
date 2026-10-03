@@ -197,7 +197,7 @@ class Pinv {
                     }
                     SyncAll();
                 }
-                red.SetValue(0, static_cast<float>(changed)); Store(meta[core * 8], red, 1); SyncAll();
+                red.SetValue(0, static_cast<float>(static_cast<int32_t>(changed))); Store(meta[core * 8], red, 1); SyncAll();
                 Load(gather, meta, cores * 8); float sum = 0;
                 for (uint32_t i = 0; i < cores; ++i) sum += gather.GetValue(i * 8);
                 if (sum == 0) break;
