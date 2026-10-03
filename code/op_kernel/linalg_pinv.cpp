@@ -84,7 +84,7 @@ public:
             float absTol = t.atol / scale;
             float discard = absTol * absTol;
             float rel = t.rtol * t.rtol * total;
-            discard = (discard > rel ? discard : rel) * 1.0e-4f;
+            discard = (discard > rel ? discard : rel) * 1.0e-8f;
             for (uint32_t sweep = 0; sweep < 40; ++sweep) {
                 uint32_t changed = 0;
                 for (uint32_t p = 0; p < t.cols; ++p) {
