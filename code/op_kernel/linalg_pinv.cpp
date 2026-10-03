@@ -6,7 +6,7 @@ class Pinv {
     TBuf<TPosition::VECCALC> mem, precision, vectorPrecision;
     LocalTensor<float> calc[8];
     LocalTensor<float> gh, gl, ih, il;
-    LocalTensor<float> matrix, x, y, u, v, prod, tmp, red, gather, norms, output;
+    LocalTensor<float> matrix, x, y, u, v, prod, tmp, red, gather, norms, output, pairTmp;
     GlobalTensor<float> input, result, work;
     __gm__ float *workBase;
     LinalgPinvTilingData t;
@@ -34,17 +34,23 @@ class Pinv {
         if (t.local) { DataCopy(Row(i), src, s); PipeBarrier<PIPE_V>(); }
         else Store(work[i * s], src, s);
     }
-    __aicore__ inline void DotInto(LocalTensor<float> dst, LocalTensor<float> a, LocalTensor<float> b) {
-        Mul(prod, a, b, r8); PipeBarrier<PIPE_V>();
-        if (r8 <= 64) WholeReduceSum(dst, prod, r8, 1, 1, 1, 8);
-        else ReduceSum(dst, prod, tmp, r8);
-        PipeBarrier<PIPE_V>();
-    }
     __aicore__ inline float Dot(LocalTensor<float> a, LocalTensor<float> b) {
-        DotInto(red, a, b); VS(); return red.GetValue(0);
+        Mul(prod, a, b, r8); PipeBarrier<PIPE_V>();
+        if (r8 <= 64) WholeReduceSum(red, prod, r8, 1, 1, 1, 8);
+        else ReduceSum(red, prod, tmp, r8);
+        VS(); return red.GetValue(0);
     }
     __aicore__ inline void PairDots(float &a, float &d, float &h) {
-        DotInto(red, x, x); DotInto(red[8], y, y); DotInto(red[16], x, y);
+        Mul(prod, x, x, r8); Mul(tmp, y, y, r8); Mul(output, x, y, r8); PipeBarrier<PIPE_V>();
+        if (r8 <= 64) {
+            WholeReduceSum(red, prod, r8, 1, 1, 1, 8);
+            WholeReduceSum(red[8], tmp, r8, 1, 1, 1, 8);
+            WholeReduceSum(red[16], output, r8, 1, 1, 1, 8);
+        } else {
+            ReduceSum(red, prod, pairTmp, r8); PipeBarrier<PIPE_V>();
+            ReduceSum(red[8], tmp, pairTmp, r8); PipeBarrier<PIPE_V>();
+            ReduceSum(red[16], output, pairTmp, r8);
+        }
         VS(); a = red.GetValue(0); d = red.GetValue(8); h = red.GetValue(16);
     }
     __aicore__ inline float Root(float value) {
@@ -345,7 +351,7 @@ public:
         x = all[off]; off += s; y = all[off]; off += s; u = all[off]; off += s; v = all[off]; off += s;
         prod = all[off]; off += r8; tmp = all[off]; off += r8; output = all[off]; off += r8;
         red = all[off]; off += 32; gather = all[off]; off += 8 * t.rows;
-        norms = all[off];
+        norms = all[off]; pairTmp = all[off + k8];
         if (t.parallel) {
             pipe->InitBuffer(vectorPrecision, 8 * s * sizeof(float));
             auto area = vectorPrecision.Get<float>();
