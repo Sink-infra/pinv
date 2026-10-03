@@ -149,30 +149,30 @@ class Pinv {
         volatile float az = ac - factor.h;
         volatile float ah = ac - az;
         volatile float al = factor.h - ah;
-        Muls(bh, u, 4097.0f, s); PipeBarrier<PIPE_V>();
-        Sub(bl, bh, u, s); PipeBarrier<PIPE_V>(); Sub(bh, bh, bl, s); PipeBarrier<PIPE_V>();
-        Sub(bl, u, bh, s); Muls(product, u, factor.h, s); PipeBarrier<PIPE_V>();
-        Muls(e, bh, static_cast<float>(ah), s); PipeBarrier<PIPE_V>(); Sub(e, e, product, s); PipeBarrier<PIPE_V>();
-        Muls(part, bl, static_cast<float>(ah), s); PipeBarrier<PIPE_V>(); Add(e, e, part, s); PipeBarrier<PIPE_V>();
-        Muls(part, bh, static_cast<float>(al), s); PipeBarrier<PIPE_V>(); Add(e, e, part, s); PipeBarrier<PIPE_V>();
-        Muls(part, bl, static_cast<float>(al), s); PipeBarrier<PIPE_V>(); Add(e, e, part, s); PipeBarrier<PIPE_V>();
-        Muls(part, v, factor.h, s); PipeBarrier<PIPE_V>(); Add(e, e, part, s); PipeBarrier<PIPE_V>();
-        Muls(part, u, factor.l, s); PipeBarrier<PIPE_V>(); Add(e, e, part, s); PipeBarrier<PIPE_V>();
-        Add(qh, product, e, s); PipeBarrier<PIPE_V>(); Sub(ql, qh, product, s); PipeBarrier<PIPE_V>(); Sub(ql, e, ql, s); PipeBarrier<PIPE_V>();
-        Sub(bh, x, qh, s); PipeBarrier<PIPE_V>(); Sub(bl, bh, x, s); PipeBarrier<PIPE_V>();
-        Sub(e, bh, bl, s); PipeBarrier<PIPE_V>(); Sub(e, x, e, s); Muls(part, qh, -1.0f, s); PipeBarrier<PIPE_V>();
-        Sub(part, part, bl, s); PipeBarrier<PIPE_V>(); Add(e, e, part, s); PipeBarrier<PIPE_V>();
-        Add(e, e, y, s); PipeBarrier<PIPE_V>(); Sub(e, e, ql, s); PipeBarrier<PIPE_V>();
-        Add(x, bh, e, s); PipeBarrier<PIPE_V>(); Sub(aux, x, bh, s); PipeBarrier<PIPE_V>(); Sub(y, e, aux, s); PipeBarrier<PIPE_V>();
+        Muls(bh, u, 4097.0f, r8 + k8); PipeBarrier<PIPE_V>();
+        Sub(bl, bh, u, r8 + k8); PipeBarrier<PIPE_V>(); Sub(bh, bh, bl, r8 + k8); PipeBarrier<PIPE_V>();
+        Sub(bl, u, bh, r8 + k8); Muls(product, u, factor.h, r8 + k8); PipeBarrier<PIPE_V>();
+        Muls(e, bh, static_cast<float>(ah), r8 + k8); PipeBarrier<PIPE_V>(); Sub(e, e, product, r8 + k8); PipeBarrier<PIPE_V>();
+        Muls(part, bl, static_cast<float>(ah), r8 + k8); PipeBarrier<PIPE_V>(); Add(e, e, part, r8 + k8); PipeBarrier<PIPE_V>();
+        Muls(part, bh, static_cast<float>(al), r8 + k8); PipeBarrier<PIPE_V>(); Add(e, e, part, r8 + k8); PipeBarrier<PIPE_V>();
+        Muls(part, bl, static_cast<float>(al), r8 + k8); PipeBarrier<PIPE_V>(); Add(e, e, part, r8 + k8); PipeBarrier<PIPE_V>();
+        Muls(part, v, factor.h, r8 + k8); PipeBarrier<PIPE_V>(); Add(e, e, part, r8 + k8); PipeBarrier<PIPE_V>();
+        Muls(part, u, factor.l, r8 + k8); PipeBarrier<PIPE_V>(); Add(e, e, part, r8 + k8); PipeBarrier<PIPE_V>();
+        Add(qh, product, e, r8 + k8); PipeBarrier<PIPE_V>(); Sub(ql, qh, product, r8 + k8); PipeBarrier<PIPE_V>(); Sub(ql, e, ql, r8 + k8); PipeBarrier<PIPE_V>();
+        Sub(bh, x, qh, r8 + k8); PipeBarrier<PIPE_V>(); Sub(bl, bh, x, r8 + k8); PipeBarrier<PIPE_V>();
+        Sub(e, bh, bl, r8 + k8); PipeBarrier<PIPE_V>(); Sub(e, x, e, r8 + k8); Muls(part, qh, -1.0f, r8 + k8); PipeBarrier<PIPE_V>();
+        Sub(part, part, bl, r8 + k8); PipeBarrier<PIPE_V>(); Add(e, e, part, r8 + k8); PipeBarrier<PIPE_V>();
+        Add(e, e, y, r8 + k8); PipeBarrier<PIPE_V>(); Sub(e, e, ql, r8 + k8); PipeBarrier<PIPE_V>();
+        Add(x, bh, e, r8 + k8); PipeBarrier<PIPE_V>(); Sub(aux, x, bh, r8 + k8); PipeBarrier<PIPE_V>(); Sub(y, e, aux, r8 + k8); PipeBarrier<PIPE_V>();
     }
     __aicore__ inline void VectorNormalize(Wide divisor) {
         float reciprocal = 1.0f / divisor.h;
-        Muls(u, x, reciprocal, s); Duplicate(v, 0.0f, s); PipeBarrier<PIPE_V>();
+        Muls(u, x, reciprocal, r8 + k8); Duplicate(v, 0.0f, r8 + k8); PipeBarrier<PIPE_V>();
         VectorEliminate(divisor);
-        Muls(calc[0], x, reciprocal, s); PipeBarrier<PIPE_V>();
-        Add(x, u, calc[0], s); PipeBarrier<PIPE_V>();
-        Sub(y, x, u, s); PipeBarrier<PIPE_V>();
-        Sub(y, calc[0], y, s); PipeBarrier<PIPE_V>();
+        Muls(calc[0], x, reciprocal, r8 + k8); PipeBarrier<PIPE_V>();
+        Add(x, u, calc[0], r8 + k8); PipeBarrier<PIPE_V>();
+        Sub(y, x, u, r8 + k8); PipeBarrier<PIPE_V>();
+        Sub(y, calc[0], y, r8 + k8); PipeBarrier<PIPE_V>();
     }
     __aicore__ inline void AccurateSquare(uint32_t b, uint32_t offset, float scale, GlobalTensor<float> meta) {
         uint32_t core = GetBlockIdx(), cores = GetBlockNum();
@@ -258,7 +258,7 @@ class Pinv {
             float total = 0;
             for (uint32_t i = core; i < t.cols; i += cores) {
                 ReadRow(x, i); Muls(x, x, 1.0f / scale, r8); PipeBarrier<PIPE_V>();
-                float norm = Dot(x, x); total += norm; x.SetValue(s - 8, norm); SV(); SaveRow(x, i);
+                float norm = Dot(x, x); total += norm; x.SetValue(s - 8, norm); if (t.local) SV(); SaveRow(x, i);
             }
             red.SetValue(0, total); Store(meta[core * 8], red, 1); SyncAll();
             Load(gather, meta, cores * 8); total = 0;
@@ -279,10 +279,10 @@ class Pinv {
                         float tau = (d - a) / (2 * h), at = AbsScalar(tau);
                         float z = (tau < 0 ? -1.0f : 1.0f) / (at + Root(1 + at * at));
                         float c = 1.0f / Root(1 + z * z), sn = c * z;
-                        Muls(u, x, c, s); Muls(v, y, -sn, s); PipeBarrier<PIPE_V>(); Add(u, u, v, s); PipeBarrier<PIPE_V>();
-                        Muls(v, x, sn, s); Muls(y, y, c, s); PipeBarrier<PIPE_V>(); Add(y, y, v, s); PipeBarrier<PIPE_V>();
+                        Muls(u, x, c, r8 + k8); Muls(v, y, -sn, r8 + k8); PipeBarrier<PIPE_V>(); Add(u, u, v, r8 + k8); PipeBarrier<PIPE_V>();
+                        Muls(v, x, sn, r8 + k8); Muls(y, y, c, r8 + k8); PipeBarrier<PIPE_V>(); Add(y, y, v, r8 + k8); PipeBarrier<PIPE_V>();
                         float na = Dot(u, u), nd = Dot(y, y);
-                        u.SetValue(s - 8, na); y.SetValue(s - 8, nd); SV();
+                        u.SetValue(s - 8, na); y.SetValue(s - 8, nd); if (t.local) SV();
                         SaveRow(u, p); SaveRow(y, q); ++changed;
                     }
                     SyncAll();
@@ -380,7 +380,7 @@ public:
             float total = 0;
             for (uint32_t i = 0; i < t.cols; ++i) {
                 ReadRow(x, i); Muls(x, x, 1.0f / scale, r8); PipeBarrier<PIPE_V>();
-                float norm = Dot(x, x); total += norm; x.SetValue(s - 8, norm); SV(); SaveRow(x, i);
+                float norm = Dot(x, x); total += norm; x.SetValue(s - 8, norm); if (t.local) SV(); SaveRow(x, i);
             }
             float absTol = t.atol / scale;
             float discard = absTol * absTol;
@@ -398,10 +398,10 @@ public:
                         float at = AbsScalar(tau);
                         float z = (tau < 0 ? -1.0f : 1.0f) / (at + Root(1 + at * at));
                         float c = 1.0f / Root(1 + z * z), sn = c * z;
-                        Muls(u, x, c, s); Muls(v, y, -sn, s); PipeBarrier<PIPE_V>(); Add(u, u, v, s); PipeBarrier<PIPE_V>();
-                        Muls(v, x, sn, s); Muls(y, y, c, s); PipeBarrier<PIPE_V>(); Add(y, y, v, s); PipeBarrier<PIPE_V>();
+                        Muls(u, x, c, r8 + k8); Muls(v, y, -sn, r8 + k8); PipeBarrier<PIPE_V>(); Add(u, u, v, r8 + k8); PipeBarrier<PIPE_V>();
+                        Muls(v, x, sn, r8 + k8); Muls(y, y, c, r8 + k8); PipeBarrier<PIPE_V>(); Add(y, y, v, r8 + k8); PipeBarrier<PIPE_V>();
                         float na = Dot(u, u), nd = Dot(y, y);
-                        u.SetValue(s - 8, na); y.SetValue(s - 8, nd); SV();
+                        u.SetValue(s - 8, na); y.SetValue(s - 8, nd); if (t.local) SV();
                         DataCopy(x, u, s); PipeBarrier<PIPE_V>(); SaveRow(y, q); ++changed;
                     }
                     SaveRow(x, p);
