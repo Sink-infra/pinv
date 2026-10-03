@@ -296,7 +296,12 @@ class Pinv {
                 float a = norms.GetValue(i); if (a > threshold) ++kept;
                 norms.SetValue(i, a > threshold ? 1.0f / (a * scale) : 0.0f);
             }
-            if (t.m == t.n && t.cols >= 256 && kept == t.cols) { AccurateSquare(b, offset, scale, meta); continue; }
+            float smallest = maxNorm;
+            for (uint32_t i = 0; i < t.cols; ++i) {
+                float a = gather.GetValue(i * 8);
+                if (a > threshold && a < smallest) smallest = a;
+            }
+            if (t.m == t.n && t.cols >= 256 && kept == t.cols && scale * Root(smallest) < 0.02f) { AccurateSquare(b, offset, scale, meta); continue; }
             if (t.rows <= 32 && kept == t.cols && scale < 0.001f) {
                 if (core == 0) AccurateFull(offset, scale);
                 SyncAll(); continue;
