@@ -27,7 +27,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     t->m = m; t->n = n; t->batch = batch;
     t->rows = std::max(m, n); t->cols = std::min(m, n);
     uint32_t r8 = (t->rows + 7) / 8 * 8, k8 = (t->cols + 7) / 8 * 8;
-    t->stride = r8 + k8;
+    t->stride = r8 + k8 + 8;
     auto platform = platform_ascendc::PlatformAscendC(context->GetPlatformInfo());
     uint64_t ubSize = 0;
     platform.GetCoreMemSize(platform_ascendc::CoreMemType::UB, ubSize);

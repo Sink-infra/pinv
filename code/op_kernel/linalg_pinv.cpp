@@ -6,7 +6,7 @@ class Pinv {
     TBuf<TPosition::VECCALC> mem, precision, vectorPrecision;
     LocalTensor<float> calc[8];
     LocalTensor<float> gh, gl, ih, il;
-    LocalTensor<float> matrix, x, y, u, v, prod, tmp, red, gather, norms, output, pairTmp;
+    LocalTensor<float> matrix, x, y, u, v, prod, tmp, red, gather, norms, output;
     GlobalTensor<float> input, result, work;
     __gm__ float *workBase;
     LinalgPinvTilingData t;
@@ -39,19 +39,6 @@ class Pinv {
         if (r8 <= 64) WholeReduceSum(red, prod, r8, 1, 1, 1, 8);
         else ReduceSum(red, prod, tmp, r8);
         VS(); return red.GetValue(0);
-    }
-    __aicore__ inline void PairDots(float &a, float &d, float &h) {
-        Mul(prod, x, x, r8); Mul(tmp, y, y, r8); Mul(output, x, y, r8); PipeBarrier<PIPE_V>();
-        if (r8 <= 64) {
-            WholeReduceSum(red, prod, r8, 1, 1, 1, 8);
-            WholeReduceSum(red[8], tmp, r8, 1, 1, 1, 8);
-            WholeReduceSum(red[16], output, r8, 1, 1, 1, 8);
-        } else {
-            ReduceSum(red, prod, pairTmp, r8); PipeBarrier<PIPE_V>();
-            ReduceSum(red[8], tmp, pairTmp, r8); PipeBarrier<PIPE_V>();
-            ReduceSum(red[16], output, pairTmp, r8);
-        }
-        VS(); a = red.GetValue(0); d = red.GetValue(8); h = red.GetValue(16);
     }
     __aicore__ inline float Root(float value) {
         red.SetValue(0, value); SV(); Sqrt(red, red, 1); VS(); return red.GetValue(0);
@@ -270,7 +257,8 @@ class Pinv {
             }
             float total = 0;
             for (uint32_t i = core; i < t.cols; i += cores) {
-                ReadRow(x, i); Muls(x, x, 1.0f / scale, r8); PipeBarrier<PIPE_V>(); total += Dot(x, x); SaveRow(x, i);
+                ReadRow(x, i); Muls(x, x, 1.0f / scale, r8); PipeBarrier<PIPE_V>();
+                float norm = Dot(x, x); total += norm; x.SetValue(s - 8, norm); SV(); SaveRow(x, i);
             }
             red.SetValue(0, total); Store(meta[core * 8], red, 1); SyncAll();
             Load(gather, meta, cores * 8); total = 0;
@@ -286,13 +274,15 @@ class Pinv {
                         uint32_t q = slot == 0 ? round : (round + roundCols - 1 - slot) % (roundCols - 1);
                         if (p >= t.cols || q >= t.cols) continue;
                         ReadRow(x, p); ReadRow(y, q);
-                        float a, d, h; PairDots(a, d, h);
+                        float h = Dot(x, y), a = x.GetValue(s - 8), d = y.GetValue(s - 8);
                         if (a <= discard || d <= discard || h == 0 || h * h <= 1.0e-12f * (a * d)) continue;
                         float tau = (d - a) / (2 * h), at = AbsScalar(tau);
                         float z = (tau < 0 ? -1.0f : 1.0f) / (at + Root(1 + at * at));
                         float c = 1.0f / Root(1 + z * z), sn = c * z;
                         Muls(u, x, c, s); Muls(v, y, -sn, s); PipeBarrier<PIPE_V>(); Add(u, u, v, s); PipeBarrier<PIPE_V>();
                         Muls(v, x, sn, s); Muls(y, y, c, s); PipeBarrier<PIPE_V>(); Add(y, y, v, s); PipeBarrier<PIPE_V>();
+                        float na = Dot(u, u), nd = Dot(y, y);
+                        u.SetValue(s - 8, na); y.SetValue(s - 8, nd); SV();
                         SaveRow(u, p); SaveRow(y, q); ++changed;
                     }
                     SyncAll();
@@ -343,7 +333,7 @@ class Pinv {
     }
 public:
     __aicore__ inline void Init(GM_ADDR a, GM_ADDR out, GM_ADDR ws, const LinalgPinvTilingData &data, TPipe *pipe) {
-        t = data; r8 = (t.rows + 7) / 8 * 8; k8 = (t.cols + 7) / 8 * 8; s = r8 + k8;
+        t = data; r8 = (t.rows + 7) / 8 * 8; k8 = (t.cols + 7) / 8 * 8; s = t.stride;
         uint32_t size = (t.local ? t.cols * s : 0) + 4 * s + 4 * r8 + 8 * t.rows + k8 + 32;
         pipe->InitBuffer(mem, size * 4);
         auto all = mem.Get<float>(); uint32_t off = 0;
@@ -351,7 +341,7 @@ public:
         x = all[off]; off += s; y = all[off]; off += s; u = all[off]; off += s; v = all[off]; off += s;
         prod = all[off]; off += r8; tmp = all[off]; off += r8; output = all[off]; off += r8;
         red = all[off]; off += 32; gather = all[off]; off += 8 * t.rows;
-        norms = all[off]; pairTmp = all[off + k8];
+        norms = all[off];
         if (t.parallel) {
             pipe->InitBuffer(vectorPrecision, 8 * s * sizeof(float));
             auto area = vectorPrecision.Get<float>();
@@ -390,7 +380,7 @@ public:
             float total = 0;
             for (uint32_t i = 0; i < t.cols; ++i) {
                 ReadRow(x, i); Muls(x, x, 1.0f / scale, r8); PipeBarrier<PIPE_V>();
-                total += Dot(x, x); SaveRow(x, i);
+                float norm = Dot(x, x); total += norm; x.SetValue(s - 8, norm); SV(); SaveRow(x, i);
             }
             float absTol = t.atol / scale;
             float discard = absTol * absTol;
@@ -402,7 +392,7 @@ public:
                     ReadRow(x, p);
                     for (uint32_t q = p + 1; q < t.cols; ++q) {
                         ReadRow(y, q);
-                        float a, d, h; PairDots(a, d, h);
+                        float h = Dot(x, y), a = x.GetValue(s - 8), d = y.GetValue(s - 8);
                         if (a <= discard || d <= discard || h == 0 || h * h <= 1.0e-12f * (a * d)) continue;
                         float tau = (d - a) / (2 * h);
                         float at = AbsScalar(tau);
@@ -410,6 +400,8 @@ public:
                         float c = 1.0f / Root(1 + z * z), sn = c * z;
                         Muls(u, x, c, s); Muls(v, y, -sn, s); PipeBarrier<PIPE_V>(); Add(u, u, v, s); PipeBarrier<PIPE_V>();
                         Muls(v, x, sn, s); Muls(y, y, c, s); PipeBarrier<PIPE_V>(); Add(y, y, v, s); PipeBarrier<PIPE_V>();
+                        float na = Dot(u, u), nd = Dot(y, y);
+                        u.SetValue(s - 8, na); y.SetValue(s - 8, nd); SV();
                         DataCopy(x, u, s); PipeBarrier<PIPE_V>(); SaveRow(y, q); ++changed;
                     }
                     SaveRow(x, p);
