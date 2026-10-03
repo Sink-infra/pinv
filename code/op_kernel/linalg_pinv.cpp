@@ -352,11 +352,12 @@ class Pinv {
 public:
     __aicore__ inline void Init(GM_ADDR a, GM_ADDR out, GM_ADDR ws, const LinalgPinvTilingData &data, TPipe *pipe) {
         t = data; r8 = (t.rows + 7) / 8 * 8; k8 = (t.cols + 7) / 8 * 8; s = r8 + k8; stride = t.stride;
-        uint32_t size = (t.local ? t.cols * stride : 0) + 4 * stride + 4 * r8 + 8 * t.rows + k8 + 32;
+        uint32_t bufferStride = t.parallel ? (stride + 63) / 64 * 64 : stride;
+        uint32_t size = (t.local ? t.cols * stride : 0) + 4 * bufferStride + 4 * r8 + 8 * t.rows + k8 + 32;
         pipe->InitBuffer(mem, size * 4);
         auto all = mem.Get<float>(); uint32_t off = 0;
         matrix = all; off += t.local ? t.cols * stride : 0;
-        x = all[off]; off += stride; y = all[off]; off += stride; u = all[off]; off += stride; v = all[off]; off += stride;
+        x = all[off]; off += bufferStride; y = all[off]; off += bufferStride; u = all[off]; off += bufferStride; v = all[off]; off += bufferStride;
         prod = all[off]; off += r8; tmp = all[off]; off += r8; output = all[off]; off += r8;
         red = all[off]; off += 32; gather = all[off]; off += 8 * t.rows;
         norms = all[off];
