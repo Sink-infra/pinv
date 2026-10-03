@@ -163,6 +163,15 @@ class Pinv {
         Add(e, e, y, s); PipeBarrier<PIPE_V>(); Sub(e, e, ql, s); PipeBarrier<PIPE_V>();
         Add(x, bh, e, s); PipeBarrier<PIPE_V>(); Sub(aux, x, bh, s); PipeBarrier<PIPE_V>(); Sub(y, e, aux, s); PipeBarrier<PIPE_V>();
     }
+    __aicore__ inline void VectorNormalize(Wide divisor) {
+        float reciprocal = 1.0f / divisor.h;
+        Muls(u, x, reciprocal, s); Duplicate(v, 0.0f, s); PipeBarrier<PIPE_V>();
+        VectorEliminate(divisor);
+        Muls(calc[0], x, reciprocal, s); PipeBarrier<PIPE_V>();
+        Add(x, u, calc[0], s); PipeBarrier<PIPE_V>();
+        Sub(y, x, u, s); PipeBarrier<PIPE_V>();
+        Sub(y, calc[0], y, s); PipeBarrier<PIPE_V>();
+    }
     __aicore__ inline void AccurateSquare(uint32_t b, uint32_t offset, float scale, GlobalTensor<float> meta) {
         uint32_t core = GetBlockIdx(), cores = GetBlockNum();
         GlobalTensor<float> low;
@@ -196,10 +205,7 @@ class Pinv {
                 }
                 ReadRow(x, p); Load(y, low[p * s], s); VS();
                 Wide divisor = {x.GetValue(p), y.GetValue(p)};
-                for (uint32_t j = 0; j < s; ++j) {
-                    Wide value = Divide({x.GetValue(j), y.GetValue(j)}, divisor);
-                    x.SetValue(j, value.h); y.SetValue(j, value.l);
-                }
+                SV(); VectorNormalize(divisor);
                 SaveRow(x, p); Store(low[p * s], y, s);
             }
             SyncAll(); ReadRow(u, p); Load(v, low[p * s], s); VS();
