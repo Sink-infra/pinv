@@ -266,6 +266,8 @@ class Pinv {
             float absTol = t.atol / scale, discard = absTol * absTol;
             float rel = t.rtol * t.rtol * total;
             discard = (discard > rel ? discard : rel) * 1.0e-8f;
+            float roundoffFloor = total * 1.0e-14f;
+            discard = discard < roundoffFloor ? discard : roundoffFloor;
             for (uint32_t sweep = 0; sweep < 40; ++sweep) {
                 uint32_t changed = 0;
                 for (uint32_t round = 0; round + 1 < roundCols; ++round) {
@@ -384,6 +386,8 @@ public:
             float discard = absTol * absTol;
             float rel = t.rtol * t.rtol * total;
             discard = (discard > rel ? discard : rel) * 1.0e-8f;
+            float roundoffFloor = total * 1.0e-14f;
+            discard = discard < roundoffFloor ? discard : roundoffFloor;
             for (uint32_t sweep = 0; sweep < 40; ++sweep) {
                 uint32_t changed = 0;
                 for (uint32_t p = 0; p < t.cols; ++p) {
