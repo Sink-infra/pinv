@@ -10,7 +10,7 @@ class Pinv {
     GlobalTensor<float> input, result, work;
     __gm__ float *workBase;
     LinalgPinvTilingData t;
-    uint32_t r8, k8, s, stride;
+    uint32_t r8, k8, s, stride, rowLength;
     __aicore__ inline void VS() { SetFlag<HardEvent::V_S>(0); WaitFlag<HardEvent::V_S>(0); }
     __aicore__ inline void SV() { SetFlag<HardEvent::S_V>(0); WaitFlag<HardEvent::S_V>(0); }
     __aicore__ inline void Load(LocalTensor<float> dst, GlobalTensor<float> src, uint32_t count) {
@@ -27,12 +27,12 @@ class Pinv {
     }
     __aicore__ inline LocalTensor<float> Row(uint32_t i) { return matrix[i * stride]; }
     __aicore__ inline void ReadRow(LocalTensor<float> dst, uint32_t i) {
-        if (t.local) { DataCopy(dst, Row(i), stride); PipeBarrier<PIPE_V>(); }
-        else Load(dst, work[i * stride], stride);
+        if (t.local) { DataCopy(dst, Row(i), rowLength); PipeBarrier<PIPE_V>(); }
+        else Load(dst, work[i * stride], rowLength);
     }
     __aicore__ inline void SaveRow(LocalTensor<float> src, uint32_t i) {
-        if (t.local) { DataCopy(Row(i), src, stride); PipeBarrier<PIPE_V>(); }
-        else Store(work[i * stride], src, stride);
+        if (t.local) { DataCopy(Row(i), src, rowLength); PipeBarrier<PIPE_V>(); }
+        else Store(work[i * stride], src, rowLength);
     }
     __aicore__ inline float Dot(LocalTensor<float> a, LocalTensor<float> b) {
         Mul(prod, a, b, r8); PipeBarrier<PIPE_V>();
@@ -97,7 +97,7 @@ class Pinv {
         float power = 1.0f;
         while (power * 0.5f >= scale) power *= 0.5f;
         for (uint32_t i = 0; i < t.cols; ++i) {
-            Duplicate(x, 0.0f, stride); PipeBarrier<PIPE_V>();
+            Duplicate(x, 0.0f, rowLength); PipeBarrier<PIPE_V>();
             if (t.m >= t.n) {
                 DataCopyPad(gather, input[offset + i], DataCopyExtParams{static_cast<uint16_t>(t.m), 4, (t.n - 1) * 4, 0, 0}, DataCopyPadExtParams<float>{true, 0, 7, 0});
                 SetFlag<HardEvent::MTE2_S>(0); WaitFlag<HardEvent::MTE2_S>(0); VS();
@@ -192,10 +192,10 @@ class Pinv {
         while (power < scale) power *= 2.0f;
         while (power * 0.5f >= scale) power *= 0.5f;
         for (uint32_t i = core; i < t.cols; i += cores) {
-            Duplicate(x, 0.0f, stride); Duplicate(y, 0.0f, stride); PipeBarrier<PIPE_V>();
+            Duplicate(x, 0.0f, rowLength); Duplicate(y, 0.0f, rowLength); PipeBarrier<PIPE_V>();
             Load(x, input[offset + i * t.n], t.n);
             Muls(x, x, 1.0f / power, r8); PipeBarrier<PIPE_V>(); VS();
-            x.SetValue(r8 + i, 1.0f); SV(); SaveRow(x, i); Store(low[i * stride], y, stride);
+            x.SetValue(r8 + i, 1.0f); SV(); SaveRow(x, i); Store(low[i * stride], y, rowLength);
         }
         SyncAll();
         for (uint32_t p = 0; p < t.cols; ++p) {
@@ -212,26 +212,26 @@ class Pinv {
             uint32_t pivot = static_cast<uint32_t>(static_cast<int32_t>(gather.GetValue(bestCore * 8)));
             if (core == 0) {
                 if (pivot != p) {
-                    ReadRow(x, pivot); ReadRow(y, p); Load(u, low[pivot * stride], stride); Load(v, low[p * stride], stride);
-                    SaveRow(x, p); SaveRow(y, pivot); Store(low[p * stride], u, stride); Store(low[pivot * stride], v, stride);
+                    ReadRow(x, pivot); ReadRow(y, p); Load(u, low[pivot * stride], rowLength); Load(v, low[p * stride], rowLength);
+                    SaveRow(x, p); SaveRow(y, pivot); Store(low[p * stride], u, rowLength); Store(low[pivot * stride], v, rowLength);
                 }
-                ReadRow(x, p); Load(y, low[p * stride], stride); VS();
+                ReadRow(x, p); Load(y, low[p * stride], rowLength); VS();
                 Wide divisor = {x.GetValue(p), y.GetValue(p)};
                 SV(); VectorNormalize(divisor);
-                SaveRow(x, p); Store(low[p * stride], y, stride);
+                SaveRow(x, p); Store(low[p * stride], y, rowLength);
             }
-            SyncAll(); ReadRow(u, p); Load(v, low[p * stride], stride); VS();
+            SyncAll(); ReadRow(u, p); Load(v, low[p * stride], rowLength); VS();
             for (uint32_t i = core; i < t.cols; i += cores) if (i != p) {
-                ReadRow(x, i); Load(y, low[i * stride], stride); VS();
+                ReadRow(x, i); Load(y, low[i * stride], rowLength); VS();
                 Wide factor = {x.GetValue(p), y.GetValue(p)};
                 if (factor.h == 0 && factor.l == 0) continue;
                 SV(); VectorEliminate(factor);
-                SaveRow(x, i); Store(low[i * stride], y, stride);
+                SaveRow(x, i); Store(low[i * stride], y, rowLength);
             }
             SyncAll();
         }
         for (uint32_t row = core; row < t.n; row += cores) {
-            ReadRow(x, row); Load(y, low[row * stride], stride); VS();
+            ReadRow(x, row); Load(y, low[row * stride], rowLength); VS();
             for (uint32_t j = 0; j < t.m; ++j) output.SetValue(j, (x.GetValue(r8 + j) + y.GetValue(r8 + j)) / power);
             Store(result[offset + row * t.m], output, t.m);
         }
@@ -247,7 +247,7 @@ class Pinv {
             meta.SetGlobalBuffer(workBase + uint64_t(2) * t.batch * t.cols * stride + uint64_t(b) * 8192);
             float scale = 0;
             for (uint32_t i = core; i < t.cols; i += cores) {
-                Duplicate(x, 0.0f, stride); PipeBarrier<PIPE_V>();
+                Duplicate(x, 0.0f, rowLength); PipeBarrier<PIPE_V>();
                 if (t.m >= t.n) {
                     DataCopyPad(gather, input[offset + i], DataCopyExtParams{static_cast<uint16_t>(t.m), 4, (t.n - 1) * 4, 0, 0}, DataCopyPadExtParams<float>{true, 0, 7, 0});
                     SetFlag<HardEvent::MTE2_S>(0); WaitFlag<HardEvent::MTE2_S>(0); VS();
@@ -351,8 +351,8 @@ class Pinv {
     }
 public:
     __aicore__ inline void Init(GM_ADDR a, GM_ADDR out, GM_ADDR ws, const LinalgPinvTilingData &data, TPipe *pipe) {
-        t = data; r8 = (t.rows + 7) / 8 * 8; k8 = (t.cols + 7) / 8 * 8; s = r8 + k8; stride = t.stride;
-        uint32_t bufferStride = t.parallel ? (stride + 63) / 64 * 64 : stride;
+        t = data; r8 = (t.rows + 7) / 8 * 8; k8 = (t.cols + 7) / 8 * 8; s = r8 + k8; stride = t.stride; rowLength = s + 8;
+        uint32_t bufferStride = t.parallel ? (rowLength + 63) / 64 * 64 : stride;
         uint32_t size = (t.local ? t.cols * stride : 0) + 4 * bufferStride + 4 * r8 + 8 * t.rows + k8 + 32;
         pipe->InitBuffer(mem, size * 4);
         auto all = mem.Get<float>(); uint32_t off = 0;
@@ -380,7 +380,7 @@ public:
             if (!t.local) work.SetGlobalBuffer(workBase + uint64_t(b) * t.cols * stride);
             float scale = 0;
             for (uint32_t i = 0; i < t.cols; ++i) {
-                Duplicate(x, 0.0f, stride); PipeBarrier<PIPE_V>();
+                Duplicate(x, 0.0f, rowLength); PipeBarrier<PIPE_V>();
                 if (t.m >= t.n) {
                     DataCopyPad(gather, input[offset + i], DataCopyExtParams{static_cast<uint16_t>(t.m), 4, (t.n - 1) * 4, 0, 0}, DataCopyPadExtParams<float>{true, 0, 7, 0});
                     SetFlag<HardEvent::MTE2_S>(0); WaitFlag<HardEvent::MTE2_S>(0); VS();
