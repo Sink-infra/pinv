@@ -62,7 +62,7 @@ public:
         this->Attr("rtol").AttrType(OPTIONAL).Float(-1.0);
         this->Attr("hermitian").AttrType(OPTIONAL).Bool(false);
         this->SetInferShape(ge::InferShape).SetInferDataType(ge::InferDataType);
-        this->AICore().SetTiling(optiling::TilingFunc).AddConfig("ascend910b");
+        this->AICore().SetTiling(optiling::TilingFunc).LaunchWithZeroEleOutputTensors(true).AddConfig("ascend910b");
     }
 };
 OP_ADD(LinalgPinv);
