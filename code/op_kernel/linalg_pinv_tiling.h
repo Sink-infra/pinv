@@ -1,8 +1,6 @@
-// Tiling结构体定义的头文件
 #pragma once
-
 #include <cstdint>
-
 struct LinalgPinvTilingData {
-    uint32_t length;
+    uint32_t m, n, batch, rows, cols, stride, local;
+    float atol, rtol;
 };
