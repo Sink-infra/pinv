@@ -3,7 +3,8 @@
 #include "tiling_key_linalg_pinv.h"
 using namespace AscendC;
 class Pinv {
-    TBuf<TPosition::VECCALC> mem, precision;
+    TBuf<TPosition::VECCALC> mem, precision, vectorPrecision;
+    LocalTensor<float> calc[8];
     LocalTensor<float> gh, gl, ih, il;
     LocalTensor<float> matrix, x, y, u, v, prod, tmp, red, gather, norms, output;
     GlobalTensor<float> input, result, work;
@@ -140,6 +141,28 @@ class Pinv {
             Store(result[offset + row * t.m], output, t.m);
         }
     }
+    __aicore__ inline void VectorEliminate(Wide factor) {
+        auto qh = calc[0], ql = calc[1], bh = calc[2], bl = calc[3], e = calc[4], part = calc[5], product = calc[6], aux = calc[7];
+        volatile float ac = factor.h * 4097.0f;
+        volatile float az = ac - factor.h;
+        volatile float ah = ac - az;
+        volatile float al = factor.h - ah;
+        Muls(bh, u, 4097.0f, s); PipeBarrier<PIPE_V>();
+        Sub(bl, bh, u, s); PipeBarrier<PIPE_V>(); Sub(bh, bh, bl, s); PipeBarrier<PIPE_V>();
+        Sub(bl, u, bh, s); Muls(product, u, factor.h, s); PipeBarrier<PIPE_V>();
+        Muls(e, bh, static_cast<float>(ah), s); PipeBarrier<PIPE_V>(); Sub(e, e, product, s); PipeBarrier<PIPE_V>();
+        Muls(part, bl, static_cast<float>(ah), s); PipeBarrier<PIPE_V>(); Add(e, e, part, s); PipeBarrier<PIPE_V>();
+        Muls(part, bh, static_cast<float>(al), s); PipeBarrier<PIPE_V>(); Add(e, e, part, s); PipeBarrier<PIPE_V>();
+        Muls(part, bl, static_cast<float>(al), s); PipeBarrier<PIPE_V>(); Add(e, e, part, s); PipeBarrier<PIPE_V>();
+        Muls(part, v, factor.h, s); PipeBarrier<PIPE_V>(); Add(e, e, part, s); PipeBarrier<PIPE_V>();
+        Muls(part, u, factor.l, s); PipeBarrier<PIPE_V>(); Add(e, e, part, s); PipeBarrier<PIPE_V>();
+        Add(qh, product, e, s); PipeBarrier<PIPE_V>(); Sub(ql, qh, product, s); PipeBarrier<PIPE_V>(); Sub(ql, e, ql, s); PipeBarrier<PIPE_V>();
+        Sub(bh, x, qh, s); PipeBarrier<PIPE_V>(); Sub(bl, bh, x, s); PipeBarrier<PIPE_V>();
+        Sub(e, bh, bl, s); PipeBarrier<PIPE_V>(); Sub(e, x, e, s); Muls(part, qh, -1.0f, s); PipeBarrier<PIPE_V>();
+        Sub(part, part, bl, s); PipeBarrier<PIPE_V>(); Add(e, e, part, s); PipeBarrier<PIPE_V>();
+        Add(e, e, y, s); PipeBarrier<PIPE_V>(); Sub(e, e, ql, s); PipeBarrier<PIPE_V>();
+        Add(x, bh, e, s); PipeBarrier<PIPE_V>(); Sub(aux, x, bh, s); PipeBarrier<PIPE_V>(); Sub(y, e, aux, s); PipeBarrier<PIPE_V>();
+    }
     __aicore__ inline void AccurateSquare(uint32_t b, uint32_t offset, float scale, GlobalTensor<float> meta) {
         uint32_t core = GetBlockIdx(), cores = GetBlockNum();
         GlobalTensor<float> low;
@@ -184,10 +207,7 @@ class Pinv {
                 ReadRow(x, i); Load(y, low[i * s], s); VS();
                 Wide factor = {x.GetValue(p), y.GetValue(p)};
                 if (factor.h == 0 && factor.l == 0) continue;
-                for (uint32_t j = 0; j < s; ++j) {
-                    Wide value = Minus({x.GetValue(j), y.GetValue(j)}, Times(factor, {u.GetValue(j), v.GetValue(j)}));
-                    x.SetValue(j, value.h); y.SetValue(j, value.l);
-                }
+                SV(); VectorEliminate(factor);
                 SaveRow(x, i); Store(low[i * s], y, s);
             }
             SyncAll();
@@ -306,6 +326,11 @@ public:
         prod = all[off]; off += r8; tmp = all[off]; off += r8; output = all[off]; off += r8;
         red = all[off]; off += 32; gather = all[off]; off += 8 * t.rows;
         norms = all[off];
+        if (t.parallel) {
+            pipe->InitBuffer(vectorPrecision, 8 * s * sizeof(float));
+            auto area = vectorPrecision.Get<float>();
+            for (uint32_t i = 0; i < 8; ++i) calc[i] = area[i * s];
+        }
         if (t.rows <= 32) {
             pipe->InitBuffer(precision, 4 * k8 * k8 * sizeof(float));
             gh = precision.Get<float>(); gl = gh[k8 * k8]; ih = gl[k8 * k8]; il = ih[k8 * k8];
