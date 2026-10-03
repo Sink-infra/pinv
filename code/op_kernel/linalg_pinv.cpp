@@ -140,6 +140,65 @@ class Pinv {
             Store(result[offset + row * t.m], output, t.m);
         }
     }
+    __aicore__ inline void AccurateSquare(uint32_t b, uint32_t offset, float scale, GlobalTensor<float> meta) {
+        uint32_t core = GetBlockIdx(), cores = GetBlockNum();
+        GlobalTensor<float> low;
+        low.SetGlobalBuffer(workBase + uint64_t(t.batch + b) * t.cols * s);
+        float power = 1.0f;
+        while (power < scale) power *= 2.0f;
+        while (power * 0.5f >= scale) power *= 0.5f;
+        for (uint32_t i = core; i < t.cols; i += cores) {
+            Duplicate(x, 0.0f, s); Duplicate(y, 0.0f, s); PipeBarrier<PIPE_V>();
+            Load(x, input[offset + i * t.n], t.n);
+            Muls(x, x, 1.0f / power, r8); PipeBarrier<PIPE_V>(); VS();
+            x.SetValue(r8 + i, 1.0f); SV(); SaveRow(x, i); Store(low[i * s], y, s);
+        }
+        SyncAll();
+        for (uint32_t p = 0; p < t.cols; ++p) {
+            float best = 0; uint32_t bestRow = p;
+            for (uint32_t i = core; i < t.cols; i += cores) if (i >= p) {
+                ReadRow(x, i); VS(); float value = AbsScalar(x.GetValue(p));
+                if (value > best) { best = value; bestRow = i; }
+            }
+            red.SetValue(0, best); Store(meta[core * 8], red, 1);
+            red.SetValue(0, static_cast<float>(static_cast<int32_t>(bestRow))); Store(meta[256 + core * 8], red, 1);
+            SyncAll(); Load(gather, meta, cores * 8); best = 0; uint32_t bestCore = 0;
+            for (uint32_t i = 0; i < cores; ++i) { float value = gather.GetValue(i * 8); if (value > best) { best = value; bestCore = i; } }
+            Load(gather, meta[256], cores * 8);
+            uint32_t pivot = static_cast<uint32_t>(static_cast<int32_t>(gather.GetValue(bestCore * 8)));
+            if (core == 0) {
+                if (pivot != p) {
+                    ReadRow(x, pivot); ReadRow(y, p); Load(u, low[pivot * s], s); Load(v, low[p * s], s);
+                    SaveRow(x, p); SaveRow(y, pivot); Store(low[p * s], u, s); Store(low[pivot * s], v, s);
+                }
+                ReadRow(x, p); Load(y, low[p * s], s); VS();
+                Wide divisor = {x.GetValue(p), y.GetValue(p)};
+                for (uint32_t j = 0; j < s; ++j) {
+                    Wide value = Divide({x.GetValue(j), y.GetValue(j)}, divisor);
+                    x.SetValue(j, value.h); y.SetValue(j, value.l);
+                }
+                SaveRow(x, p); Store(low[p * s], y, s);
+            }
+            SyncAll(); ReadRow(u, p); Load(v, low[p * s], s); VS();
+            for (uint32_t i = core; i < t.cols; i += cores) if (i != p) {
+                ReadRow(x, i); Load(y, low[i * s], s); VS();
+                Wide factor = {x.GetValue(p), y.GetValue(p)};
+                if (factor.h == 0 && factor.l == 0) continue;
+                for (uint32_t j = 0; j < s; ++j) {
+                    Wide value = Minus({x.GetValue(j), y.GetValue(j)}, Times(factor, {u.GetValue(j), v.GetValue(j)}));
+                    x.SetValue(j, value.h); y.SetValue(j, value.l);
+                }
+                SaveRow(x, i); Store(low[i * s], y, s);
+            }
+            SyncAll();
+        }
+        for (uint32_t row = core; row < t.n; row += cores) {
+            ReadRow(x, row); Load(y, low[row * s], s); VS();
+            for (uint32_t j = 0; j < t.m; ++j) output.SetValue(j, (x.GetValue(r8 + j) + y.GetValue(r8 + j)) / power);
+            Store(result[offset + row * t.m], output, t.m);
+        }
+        SyncAll();
+    }
     __aicore__ inline void Parallel() {
         uint32_t core = GetBlockIdx(), cores = GetBlockNum();
         uint32_t roundCols = (t.cols + 1) / 2 * 2;
@@ -147,7 +206,7 @@ class Pinv {
             uint32_t offset = b * t.m * t.n;
             work.SetGlobalBuffer(workBase + uint64_t(b) * t.cols * s);
             GlobalTensor<float> meta;
-            meta.SetGlobalBuffer(workBase + uint64_t(t.batch) * t.cols * s + uint64_t(b) * 8192);
+            meta.SetGlobalBuffer(workBase + uint64_t(2) * t.batch * t.cols * s + uint64_t(b) * 8192);
             float scale = 0;
             for (uint32_t i = core; i < t.cols; i += cores) {
                 Duplicate(x, 0.0f, s); PipeBarrier<PIPE_V>();
@@ -217,6 +276,7 @@ class Pinv {
                 float a = norms.GetValue(i); if (a > threshold) ++kept;
                 norms.SetValue(i, a > threshold ? 1.0f / (a * scale) : 0.0f);
             }
+            if (t.m == t.n && t.cols >= 256 && kept == t.cols) { AccurateSquare(b, offset, scale, meta); continue; }
             if (t.rows <= 32 && kept == t.cols && scale < 0.001f) {
                 if (core == 0) AccurateFull(offset, scale);
                 SyncAll(); continue;
