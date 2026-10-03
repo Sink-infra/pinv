@@ -10,7 +10,7 @@ class Pinv {
     GlobalTensor<float> input, result, work;
     __gm__ float *workBase;
     LinalgPinvTilingData t;
-    uint32_t r8, k8, s;
+    uint32_t r8, k8, s, stride;
     __aicore__ inline void VS() { SetFlag<HardEvent::V_S>(0); WaitFlag<HardEvent::V_S>(0); }
     __aicore__ inline void SV() { SetFlag<HardEvent::S_V>(0); WaitFlag<HardEvent::S_V>(0); }
     __aicore__ inline void Load(LocalTensor<float> dst, GlobalTensor<float> src, uint32_t count) {
@@ -25,20 +25,30 @@ class Pinv {
         SetFlag<HardEvent::MTE3_V>(0); WaitFlag<HardEvent::MTE3_V>(0);
         SetFlag<HardEvent::MTE3_MTE2>(0); WaitFlag<HardEvent::MTE3_MTE2>(0);
     }
-    __aicore__ inline LocalTensor<float> Row(uint32_t i) { return matrix[i * s]; }
+    __aicore__ inline LocalTensor<float> Row(uint32_t i) { return matrix[i * stride]; }
     __aicore__ inline void ReadRow(LocalTensor<float> dst, uint32_t i) {
-        if (t.local) { DataCopy(dst, Row(i), s); PipeBarrier<PIPE_V>(); }
-        else Load(dst, work[i * s], s);
+        if (t.local) { DataCopy(dst, Row(i), stride); PipeBarrier<PIPE_V>(); }
+        else Load(dst, work[i * stride], stride);
     }
     __aicore__ inline void SaveRow(LocalTensor<float> src, uint32_t i) {
-        if (t.local) { DataCopy(Row(i), src, s); PipeBarrier<PIPE_V>(); }
-        else Store(work[i * s], src, s);
+        if (t.local) { DataCopy(Row(i), src, stride); PipeBarrier<PIPE_V>(); }
+        else Store(work[i * stride], src, stride);
     }
     __aicore__ inline float Dot(LocalTensor<float> a, LocalTensor<float> b) {
         Mul(prod, a, b, r8); PipeBarrier<PIPE_V>();
         if (r8 <= 64) WholeReduceSum(red, prod, r8, 1, 1, 1, 8);
         else ReduceSum(red, prod, tmp, r8);
         VS(); return red.GetValue(0);
+    }
+    __aicore__ inline void CacheNorms() {
+        uint32_t first = t.parallel ? GetBlockIdx() : 0;
+        uint32_t step = t.parallel ? GetBlockNum() : 1;
+        for (uint32_t i = first; i < t.cols; i += step) {
+            ReadRow(x, i); float a = Dot(x, x); x.SetValue(s, a);
+            if (t.local) SV();
+            SaveRow(x, i);
+        }
+        if (t.parallel) SyncAll();
     }
     __aicore__ inline float Root(float value) {
         red.SetValue(0, value); SV(); Sqrt(red, red, 1); VS(); return red.GetValue(0);
@@ -87,7 +97,7 @@ class Pinv {
         float power = 1.0f;
         while (power * 0.5f >= scale) power *= 0.5f;
         for (uint32_t i = 0; i < t.cols; ++i) {
-            Duplicate(x, 0.0f, s); PipeBarrier<PIPE_V>();
+            Duplicate(x, 0.0f, stride); PipeBarrier<PIPE_V>();
             if (t.m >= t.n) {
                 DataCopyPad(gather, input[offset + i], DataCopyExtParams{static_cast<uint16_t>(t.m), 4, (t.n - 1) * 4, 0, 0}, DataCopyPadExtParams<float>{true, 0, 7, 0});
                 SetFlag<HardEvent::MTE2_S>(0); WaitFlag<HardEvent::MTE2_S>(0); VS();
@@ -177,15 +187,15 @@ class Pinv {
     __aicore__ inline void AccurateSquare(uint32_t b, uint32_t offset, float scale, GlobalTensor<float> meta) {
         uint32_t core = GetBlockIdx(), cores = GetBlockNum();
         GlobalTensor<float> low;
-        low.SetGlobalBuffer(workBase + uint64_t(t.batch + b) * t.cols * s);
+        low.SetGlobalBuffer(workBase + uint64_t(t.batch + b) * t.cols * stride);
         float power = 1.0f;
         while (power < scale) power *= 2.0f;
         while (power * 0.5f >= scale) power *= 0.5f;
         for (uint32_t i = core; i < t.cols; i += cores) {
-            Duplicate(x, 0.0f, s); Duplicate(y, 0.0f, s); PipeBarrier<PIPE_V>();
+            Duplicate(x, 0.0f, stride); Duplicate(y, 0.0f, stride); PipeBarrier<PIPE_V>();
             Load(x, input[offset + i * t.n], t.n);
             Muls(x, x, 1.0f / power, r8); PipeBarrier<PIPE_V>(); VS();
-            x.SetValue(r8 + i, 1.0f); SV(); SaveRow(x, i); Store(low[i * s], y, s);
+            x.SetValue(r8 + i, 1.0f); SV(); SaveRow(x, i); Store(low[i * stride], y, stride);
         }
         SyncAll();
         for (uint32_t p = 0; p < t.cols; ++p) {
@@ -202,26 +212,26 @@ class Pinv {
             uint32_t pivot = static_cast<uint32_t>(static_cast<int32_t>(gather.GetValue(bestCore * 8)));
             if (core == 0) {
                 if (pivot != p) {
-                    ReadRow(x, pivot); ReadRow(y, p); Load(u, low[pivot * s], s); Load(v, low[p * s], s);
-                    SaveRow(x, p); SaveRow(y, pivot); Store(low[p * s], u, s); Store(low[pivot * s], v, s);
+                    ReadRow(x, pivot); ReadRow(y, p); Load(u, low[pivot * stride], stride); Load(v, low[p * stride], stride);
+                    SaveRow(x, p); SaveRow(y, pivot); Store(low[p * stride], u, stride); Store(low[pivot * stride], v, stride);
                 }
-                ReadRow(x, p); Load(y, low[p * s], s); VS();
+                ReadRow(x, p); Load(y, low[p * stride], stride); VS();
                 Wide divisor = {x.GetValue(p), y.GetValue(p)};
                 SV(); VectorNormalize(divisor);
-                SaveRow(x, p); Store(low[p * s], y, s);
+                SaveRow(x, p); Store(low[p * stride], y, stride);
             }
-            SyncAll(); ReadRow(u, p); Load(v, low[p * s], s); VS();
+            SyncAll(); ReadRow(u, p); Load(v, low[p * stride], stride); VS();
             for (uint32_t i = core; i < t.cols; i += cores) if (i != p) {
-                ReadRow(x, i); Load(y, low[i * s], s); VS();
+                ReadRow(x, i); Load(y, low[i * stride], stride); VS();
                 Wide factor = {x.GetValue(p), y.GetValue(p)};
                 if (factor.h == 0 && factor.l == 0) continue;
                 SV(); VectorEliminate(factor);
-                SaveRow(x, i); Store(low[i * s], y, s);
+                SaveRow(x, i); Store(low[i * stride], y, stride);
             }
             SyncAll();
         }
         for (uint32_t row = core; row < t.n; row += cores) {
-            ReadRow(x, row); Load(y, low[row * s], s); VS();
+            ReadRow(x, row); Load(y, low[row * stride], stride); VS();
             for (uint32_t j = 0; j < t.m; ++j) output.SetValue(j, (x.GetValue(r8 + j) + y.GetValue(r8 + j)) / power);
             Store(result[offset + row * t.m], output, t.m);
         }
@@ -232,12 +242,12 @@ class Pinv {
         uint32_t roundCols = (t.cols + 1) / 2 * 2;
         for (uint32_t b = 0; b < t.batch; ++b) {
             uint32_t offset = b * t.m * t.n;
-            work.SetGlobalBuffer(workBase + uint64_t(b) * t.cols * s);
+            work.SetGlobalBuffer(workBase + uint64_t(b) * t.cols * stride);
             GlobalTensor<float> meta;
-            meta.SetGlobalBuffer(workBase + uint64_t(2) * t.batch * t.cols * s + uint64_t(b) * 8192);
+            meta.SetGlobalBuffer(workBase + uint64_t(2) * t.batch * t.cols * stride + uint64_t(b) * 8192);
             float scale = 0;
             for (uint32_t i = core; i < t.cols; i += cores) {
-                Duplicate(x, 0.0f, s); PipeBarrier<PIPE_V>();
+                Duplicate(x, 0.0f, stride); PipeBarrier<PIPE_V>();
                 if (t.m >= t.n) {
                     DataCopyPad(gather, input[offset + i], DataCopyExtParams{static_cast<uint16_t>(t.m), 4, (t.n - 1) * 4, 0, 0}, DataCopyPadExtParams<float>{true, 0, 7, 0});
                     SetFlag<HardEvent::MTE2_S>(0); WaitFlag<HardEvent::MTE2_S>(0); VS();
@@ -268,6 +278,7 @@ class Pinv {
             discard = (discard > rel ? discard : rel) * 1.0e-8f;
             float roundoffFloor = total * 1.0e-14f;
             discard = discard < roundoffFloor ? discard : roundoffFloor;
+            bool cached = false;
             for (uint32_t sweep = 0; sweep < 40; ++sweep) {
                 uint32_t changed = 0;
                 for (uint32_t round = 0; round + 1 < roundCols; ++round) {
@@ -276,13 +287,19 @@ class Pinv {
                         uint32_t q = slot == 0 ? round : (round + roundCols - 1 - slot) % (roundCols - 1);
                         if (p >= t.cols || q >= t.cols) continue;
                         ReadRow(x, p); ReadRow(y, q);
-                        float a = Dot(x, x), d = Dot(y, y), h = Dot(x, y);
+                        float a, d, h;
+                        if (cached) { h = Dot(x, y); a = x.GetValue(s); d = y.GetValue(s); }
+                        else { a = Dot(x, x); d = Dot(y, y); h = Dot(x, y); }
                         if (a <= discard || d <= discard || h == 0 || h * h <= 1.0e-12f * (a * d)) continue;
                         float tau = (d - a) / (2 * h), at = AbsScalar(tau);
                         float z = (tau < 0 ? -1.0f : 1.0f) / (at + Root(1 + at * at));
                         float c = 1.0f / Root(1 + z * z), sn = c * z;
                         Muls(u, x, c, s); Muls(v, y, -sn, s); PipeBarrier<PIPE_V>(); Add(u, u, v, s); PipeBarrier<PIPE_V>();
                         Muls(v, x, sn, s); Muls(y, y, c, s); PipeBarrier<PIPE_V>(); Add(y, y, v, s); PipeBarrier<PIPE_V>();
+                        if (cached) {
+                            float na = Dot(u, u), nd = Dot(y, y);
+                            u.SetValue(s, na); y.SetValue(s, nd);
+                        }
                         SaveRow(u, p); SaveRow(y, q); ++changed;
                     }
                     SyncAll();
@@ -291,6 +308,7 @@ class Pinv {
                 Load(gather, meta, cores * 8); float sum = 0;
                 for (uint32_t i = 0; i < cores; ++i) sum += gather.GetValue(i * 8);
                 if (sum == 0) break;
+                if (!cached && sum < 0.35f * t.cols * (t.cols - 1)) { CacheNorms(); cached = true; }
             }
             for (uint32_t i = core; i < t.cols; i += cores) {
                 ReadRow(x, i); float a = Dot(x, x); red.SetValue(0, a); Store(meta[512 + i * 8], red, 1);
@@ -333,12 +351,12 @@ class Pinv {
     }
 public:
     __aicore__ inline void Init(GM_ADDR a, GM_ADDR out, GM_ADDR ws, const LinalgPinvTilingData &data, TPipe *pipe) {
-        t = data; r8 = (t.rows + 7) / 8 * 8; k8 = (t.cols + 7) / 8 * 8; s = t.stride;
-        uint32_t size = (t.local ? t.cols * s : 0) + 4 * s + 4 * r8 + 8 * t.rows + k8 + 32;
+        t = data; r8 = (t.rows + 7) / 8 * 8; k8 = (t.cols + 7) / 8 * 8; s = r8 + k8; stride = t.stride;
+        uint32_t size = (t.local ? t.cols * stride : 0) + 4 * stride + 4 * r8 + 8 * t.rows + k8 + 32;
         pipe->InitBuffer(mem, size * 4);
         auto all = mem.Get<float>(); uint32_t off = 0;
-        matrix = all; off += t.local ? t.cols * s : 0;
-        x = all[off]; off += s; y = all[off]; off += s; u = all[off]; off += s; v = all[off]; off += s;
+        matrix = all; off += t.local ? t.cols * stride : 0;
+        x = all[off]; off += stride; y = all[off]; off += stride; u = all[off]; off += stride; v = all[off]; off += stride;
         prod = all[off]; off += r8; tmp = all[off]; off += r8; output = all[off]; off += r8;
         red = all[off]; off += 32; gather = all[off]; off += 8 * t.rows;
         norms = all[off];
@@ -358,10 +376,10 @@ public:
         if (t.parallel) { Parallel(); return; }
         for (uint32_t b = GetBlockIdx(); b < t.batch; b += GetBlockNum()) {
             uint32_t offset = b * t.m * t.n;
-            if (!t.local) work.SetGlobalBuffer(workBase + uint64_t(b) * t.cols * s);
+            if (!t.local) work.SetGlobalBuffer(workBase + uint64_t(b) * t.cols * stride);
             float scale = 0;
             for (uint32_t i = 0; i < t.cols; ++i) {
-                Duplicate(x, 0.0f, s); PipeBarrier<PIPE_V>();
+                Duplicate(x, 0.0f, stride); PipeBarrier<PIPE_V>();
                 if (t.m >= t.n) {
                     DataCopyPad(gather, input[offset + i], DataCopyExtParams{static_cast<uint16_t>(t.m), 4, (t.n - 1) * 4, 0, 0}, DataCopyPadExtParams<float>{true, 0, 7, 0});
                     SetFlag<HardEvent::MTE2_S>(0); WaitFlag<HardEvent::MTE2_S>(0); VS();
@@ -380,7 +398,7 @@ public:
             float total = 0;
             for (uint32_t i = 0; i < t.cols; ++i) {
                 ReadRow(x, i); Muls(x, x, 1.0f / scale, r8); PipeBarrier<PIPE_V>();
-                float norm = Dot(x, x); total += norm; x.SetValue(s - 8, norm); if (t.local) SV(); SaveRow(x, i);
+                total += Dot(x, x); SaveRow(x, i);
             }
             float absTol = t.atol / scale;
             float discard = absTol * absTol;
@@ -388,27 +406,33 @@ public:
             discard = (discard > rel ? discard : rel) * 1.0e-8f;
             float roundoffFloor = total * 1.0e-14f;
             discard = discard < roundoffFloor ? discard : roundoffFloor;
+            bool cached = false;
             for (uint32_t sweep = 0; sweep < 40; ++sweep) {
                 uint32_t changed = 0;
                 for (uint32_t p = 0; p < t.cols; ++p) {
                     ReadRow(x, p);
                     for (uint32_t q = p + 1; q < t.cols; ++q) {
                         ReadRow(y, q);
-                        float h = Dot(x, y), a = x.GetValue(s - 8), d = y.GetValue(s - 8);
+                        float a, d, h;
+                        if (cached) { h = Dot(x, y); a = x.GetValue(s); d = y.GetValue(s); }
+                        else { a = Dot(x, x); d = Dot(y, y); h = Dot(x, y); }
                         if (a <= discard || d <= discard || h == 0 || h * h <= 1.0e-12f * (a * d)) continue;
                         float tau = (d - a) / (2 * h);
                         float at = AbsScalar(tau);
                         float z = (tau < 0 ? -1.0f : 1.0f) / (at + Root(1 + at * at));
                         float c = 1.0f / Root(1 + z * z), sn = c * z;
-                        Muls(u, x, c, r8 + k8); Muls(v, y, -sn, r8 + k8); PipeBarrier<PIPE_V>(); Add(u, u, v, r8 + k8); PipeBarrier<PIPE_V>();
-                        Muls(v, x, sn, r8 + k8); Muls(y, y, c, r8 + k8); PipeBarrier<PIPE_V>(); Add(y, y, v, r8 + k8); PipeBarrier<PIPE_V>();
-                        float na = Dot(u, u), nd = Dot(y, y);
-                        u.SetValue(s - 8, na); y.SetValue(s - 8, nd); SV();
-                        DataCopy(x, u, s); PipeBarrier<PIPE_V>(); SaveRow(y, q); ++changed;
+                        Muls(u, x, c, s); Muls(v, y, -sn, s); PipeBarrier<PIPE_V>(); Add(u, u, v, s); PipeBarrier<PIPE_V>();
+                        Muls(v, x, sn, s); Muls(y, y, c, s); PipeBarrier<PIPE_V>(); Add(y, y, v, s); PipeBarrier<PIPE_V>();
+                        if (cached) {
+                            float na = Dot(u, u), nd = Dot(y, y);
+                            u.SetValue(s, na); y.SetValue(s, nd); SV();
+                        }
+                        DataCopy(x, u, stride); PipeBarrier<PIPE_V>(); SaveRow(y, q); ++changed;
                     }
                     SaveRow(x, p);
                 }
                 if (changed == 0) break;
+                if (!cached && changed < 0.35f * t.cols * (t.cols - 1)) { CacheNorms(); cached = true; }
             }
             float maxNorm = 0;
             for (uint32_t i = 0; i < t.cols; ++i) {
