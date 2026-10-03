@@ -3,7 +3,8 @@
 #include "tiling_key_linalg_pinv.h"
 using namespace AscendC;
 class Pinv {
-    TBuf<TPosition::VECCALC> mem;
+    TBuf<TPosition::VECCALC> mem, precision;
+    LocalTensor<float> gh, gl, ih, il;
     LocalTensor<float> matrix, x, y, u, v, prod, tmp, red, gather, norms, output;
     GlobalTensor<float> input, result, work;
     __gm__ float *workBase;
@@ -40,6 +41,105 @@ class Pinv {
         red.SetValue(0, value); SV(); Sqrt(red, red, 1); VS(); return red.GetValue(0);
     }
     __aicore__ inline float AbsScalar(float value) { return value < 0 ? -value : value; }
+    struct Wide { float h, l; };
+    __aicore__ inline Wide Plus(Wide a, Wide b) {
+        volatile float sum = a.h + b.h;
+        volatile float bv = sum - a.h;
+        volatile float av = sum - bv;
+        volatile float br = b.h - bv;
+        volatile float ar = a.h - av;
+        volatile float e = ar + br;
+        e = e + a.l; e = e + b.l;
+        volatile float h = sum + e;
+        volatile float z = h - sum;
+        return {h, e - z};
+    }
+    __aicore__ inline Wide Minus(Wide a, Wide b) { return Plus(a, {-b.h, -b.l}); }
+    __aicore__ inline Wide Times(Wide a, Wide b) {
+        volatile float ahc = 4097.0f * a.h, bhc = 4097.0f * b.h;
+        volatile float ahv = ahc - a.h, bhv = bhc - b.h;
+        volatile float ah = ahc - ahv, bh = bhc - bhv;
+        volatile float al = a.h - ah, bl = b.h - bh;
+        volatile float p = a.h * b.h;
+        volatile float e = ah * bh; e = e - p;
+        volatile float x1 = ah * bl; e = e + x1;
+        volatile float x2 = al * bh; e = e + x2;
+        volatile float x3 = al * bl; e = e + x3;
+        volatile float x4 = a.h * b.l; e = e + x4;
+        volatile float x5 = a.l * b.h; e = e + x5;
+        return Plus({p, 0}, {e, 0});
+    }
+    __aicore__ inline Wide Divide(Wide a, Wide b) {
+        float q = a.h / b.h;
+        Wide residual = Minus(a, Times(b, {q, 0}));
+        return Plus({q, 0}, {residual.h / b.h, 0});
+    }
+    __aicore__ inline Wide Entry(LocalTensor<float> h, LocalTensor<float> l, uint32_t pos) {
+        return {h.GetValue(pos), l.GetValue(pos)};
+    }
+    __aicore__ inline void SaveEntry(LocalTensor<float> h, LocalTensor<float> l, uint32_t pos, Wide val) {
+        h.SetValue(pos, val.h); l.SetValue(pos, val.l);
+    }
+    __aicore__ inline void AccurateFull(uint32_t offset, float scale) {
+        float power = 1.0f;
+        while (power * 0.5f >= scale) power *= 0.5f;
+        for (uint32_t i = 0; i < t.cols; ++i) {
+            Duplicate(x, 0.0f, s); PipeBarrier<PIPE_V>();
+            if (t.m >= t.n) {
+                DataCopyPad(gather, input[offset + i], DataCopyExtParams{static_cast<uint16_t>(t.m), 4, (t.n - 1) * 4, 0, 0}, DataCopyPadExtParams<float>{true, 0, 7, 0});
+                SetFlag<HardEvent::MTE2_S>(0); WaitFlag<HardEvent::MTE2_S>(0); VS();
+                for (uint32_t j = 0; j < t.rows; ++j) x.SetValue(j, gather.GetValue(j * 8));
+                SV();
+            } else Load(x, input[offset + i * t.n], t.n);
+            Muls(x, x, 1.0f / power, r8); PipeBarrier<PIPE_V>(); SaveRow(x, i);
+        }
+        for (uint32_t i = 0; i < t.cols; ++i) {
+            ReadRow(x, i);
+            for (uint32_t j = 0; j < t.cols; ++j) {
+                ReadRow(y, j); VS(); Wide sum = {0, 0};
+                for (uint32_t k = 0; k < t.rows; ++k) sum = Plus(sum, Times({x.GetValue(k), 0}, {y.GetValue(k), 0}));
+                SaveEntry(gh, gl, i * k8 + j, sum);
+                SaveEntry(ih, il, i * k8 + j, {i == j ? 1.0f : 0.0f, 0});
+            }
+        }
+        for (uint32_t p = 0; p < t.cols; ++p) {
+            uint32_t pivot = p; float best = AbsScalar(gh.GetValue(p * k8 + p));
+            for (uint32_t i = p + 1; i < t.cols; ++i) {
+                float value = AbsScalar(gh.GetValue(i * k8 + p));
+                if (value > best) { best = value; pivot = i; }
+            }
+            if (pivot != p) for (uint32_t j = 0; j < t.cols; ++j) {
+                Wide a = Entry(gh, gl, p * k8 + j), b = Entry(gh, gl, pivot * k8 + j);
+                SaveEntry(gh, gl, p * k8 + j, b); SaveEntry(gh, gl, pivot * k8 + j, a);
+                a = Entry(ih, il, p * k8 + j); b = Entry(ih, il, pivot * k8 + j);
+                SaveEntry(ih, il, p * k8 + j, b); SaveEntry(ih, il, pivot * k8 + j, a);
+            }
+            Wide divisor = Entry(gh, gl, p * k8 + p);
+            for (uint32_t j = 0; j < t.cols; ++j) {
+                SaveEntry(gh, gl, p * k8 + j, Divide(Entry(gh, gl, p * k8 + j), divisor));
+                SaveEntry(ih, il, p * k8 + j, Divide(Entry(ih, il, p * k8 + j), divisor));
+            }
+            for (uint32_t i = 0; i < t.cols; ++i) if (i != p) {
+                Wide factor = Entry(gh, gl, i * k8 + p);
+                for (uint32_t j = 0; j < t.cols; ++j) {
+                    SaveEntry(gh, gl, i * k8 + j, Minus(Entry(gh, gl, i * k8 + j), Times(factor, Entry(gh, gl, p * k8 + j))));
+                    SaveEntry(ih, il, i * k8 + j, Minus(Entry(ih, il, i * k8 + j), Times(factor, Entry(ih, il, p * k8 + j))));
+                }
+            }
+        }
+        for (uint32_t row = 0; row < t.n; ++row) {
+            for (uint32_t col = 0; col < t.m; ++col) {
+                Wide sum = {0, 0};
+                for (uint32_t i = 0; i < t.cols; ++i) {
+                    ReadRow(x, i); VS();
+                    Wide inv = Entry(ih, il, (t.m >= t.n ? row : col) * k8 + i);
+                    sum = Plus(sum, Times(inv, {x.GetValue(t.m >= t.n ? col : row), 0}));
+                }
+                output.SetValue(col, (sum.h + sum.l) / power);
+            }
+            Store(result[offset + row * t.m], output, t.m);
+        }
+    }
 public:
     __aicore__ inline void Init(GM_ADDR a, GM_ADDR out, GM_ADDR ws, const LinalgPinvTilingData &data, TPipe *pipe) {
         t = data; r8 = (t.rows + 7) / 8 * 8; k8 = (t.cols + 7) / 8 * 8; s = r8 + k8;
@@ -51,6 +151,10 @@ public:
         prod = all[off]; off += r8; tmp = all[off]; off += r8; output = all[off]; off += r8;
         red = all[off]; off += 32; gather = all[off]; off += 8 * t.rows;
         norms = all[off];
+        if (t.rows <= 32) {
+            pipe->InitBuffer(precision, 4 * k8 * k8 * sizeof(float));
+            gh = precision.Get<float>(); gl = gh[k8 * k8]; ih = gl[k8 * k8]; il = ih[k8 * k8];
+        }
         input.SetGlobalBuffer((__gm__ float *)a); result.SetGlobalBuffer((__gm__ float *)out);
         workBase = (__gm__ float *)ws; work.SetGlobalBuffer(workBase);
     }
@@ -112,9 +216,11 @@ public:
             float threshold = absTol * absTol;
             float relative = maxNorm * t.rtol * t.rtol;
             threshold = threshold > relative ? threshold : relative;
+            uint32_t kept = 0;
             for (uint32_t i = 0; i < t.cols; ++i) {
-                float a = norms.GetValue(i); norms.SetValue(i, a > threshold ? 1.0f / (a * scale) : 0.0f);
+                float a = norms.GetValue(i); if (a > threshold) ++kept; norms.SetValue(i, a > threshold ? 1.0f / (a * scale) : 0.0f);
             }
+            if (t.rows <= 32 && kept == t.cols && scale < 0.001f) { AccurateFull(offset, scale); continue; }
             for (uint32_t row = 0; row < t.n; ++row) {
                 Duplicate(output, 0.0f, r8); PipeBarrier<PIPE_V>();
                 for (uint32_t i = 0; i < t.cols; ++i) {
