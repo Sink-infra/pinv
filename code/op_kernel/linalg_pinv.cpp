@@ -970,6 +970,8 @@ class Pinv {
     }
     __aicore__ inline bool CompactInverseBody(uint32_t offset, LocalTensor<float> bx, LocalTensor<float> by,
                                             LocalTensor<float> bu, LocalTensor<float> bv, bool tryQuick = false) {
+        auto highData = reinterpret_cast<__ubuf__ float *>(matrix.GetPhyAddr());
+        auto lowData = reinterpret_cast<__ubuf__ float *>(lowMatrix.GetPhyAddr());
         bool compact = true;
         uint32_t count = t.cols * stride;
         float scale = 0.0f;
@@ -1000,7 +1002,7 @@ class Pinv {
             Muls(matrix, matrix, 1.0f / power, count); PipeBarrier<PIPE_V>();
             Mul(lowMatrix, matrix, matrix, count); PipeBarrier<PIPE_V>(); ReduceSum(red, lowMatrix, tmp, count); VS(); total = red.GetValue(0);
             Duplicate(lowMatrix, 0.0f, count); PipeBarrier<PIPE_V>();
-            for (uint32_t i = 0; i < t.cols; ++i) matrix.SetValue(i * stride + r8 + i, 1.0f);
+            for (uint32_t i = 0; i < t.cols; ++i) highData[i * stride + r8 + i] = 1.0f;
             SV();
         } else {
             for (uint32_t i = 0; i < t.cols; ++i) {
@@ -1010,7 +1012,7 @@ class Pinv {
         for (uint32_t p = 0; p < t.cols; ++p) {
             VS(); uint32_t pivot = p; float best = 0.0f;
             for (uint32_t i = p; i < t.cols; ++i) {
-                float value = AbsScalar(Row(i).GetValue(p));
+                float value = AbsScalar(highData[i * stride + p]);
                 if (value > best) { best = value; pivot = i; }
             }
             if (!(best > 0.0f)) return false;
@@ -1020,7 +1022,7 @@ class Pinv {
                 DataCopy(Row(pivot), bx, rowLength); DataCopy(lowMatrix[pivot * stride], by, rowLength); PipeBarrier<PIPE_V>();
             }
             x = Row(p); y = lowMatrix[p * stride]; u = bu; v = bv; VS();
-            Wide divisor = {x.GetValue(p), y.GetValue(p)}; SV();
+            Wide divisor = {highData[p * stride + p], lowData[p * stride + p]}; SV();
             if (quick) { Muls(x, x, 1.0f / divisor.h, s); PipeBarrier<PIPE_V>(); }
             else VectorNormalize(divisor);
             VS();
@@ -1032,7 +1034,7 @@ class Pinv {
                 if (quick) {
                     for (uint32_t row = 0; row < 8; ++row) {
                         uint32_t i = first + row;
-                        float factor = row >= rows || i == p ? 0.0f : Row(i).GetValue(p);
+                        float factor = row >= rows || i == p ? 0.0f : highData[i * stride + p];
                         red.SetValue(row, -factor);
                     }
                     SV(); Brcb(batchH, red, 1, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)}); PipeBarrier<PIPE_V>();
@@ -1043,8 +1045,8 @@ class Pinv {
                 }
                 for (uint32_t row = 0; row < rows; ++row) {
                     uint32_t i = first + row;
-                    float fh = i == p ? 0.0f : Row(i).GetValue(p);
-                    float fl = i == p ? 0.0f : lowMatrix[i * stride].GetValue(p);
+                    float fh = i == p ? 0.0f : highData[i * stride + p];
+                    float fl = i == p ? 0.0f : lowData[i * stride + p];
                     Duplicate(batchH[row * stride], fh, stride);
                     DataCopy(batchU[row * stride], u, stride);
                     Duplicate(batchL[row * stride], fl, stride); DataCopy(batchV[row * stride], v, stride);
