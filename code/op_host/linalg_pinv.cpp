@@ -100,6 +100,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     ws[0] = t->local ? 0 : platform.GetLibApiWorkSpaceSize() + batch * (t->cols * t->stride * (t->parallel ? 2 : 1) + (t->parallel ? 8192 : 0)) * sizeof(float);
     uint32_t DT_A = static_cast<uint32_t>(ge::DT_FLOAT);
     uint32_t COMPACT = t->localInverse && t->stride <= 64;
+    if (COMPACT) context->SetBlockDim(std::min<uint64_t>((batch + 1) / 2 * 2, platform.GetCoreNumAiv()));
     if (!COMPACT && ws[0] == 0) ws[0] = 32;
     uint32_t TAIL = COMPACT && t->cols % 8 != 0;
     uint32_t WAVE = t->groupCount > 0 && t->groupCount < t->batch;
