@@ -267,25 +267,47 @@ class StablePinv {
                 Store(work, tileHigh[row * stride], rowLength);
             }
             SyncAll(); Load(u, work, rowLength); VS();
-            for (uint32_t row = 0; row < t.inverseTile; ++row) {
-                Duplicate(batchU[row * stride], 0.0f, stride); PipeBarrier<PIPE_V>();
-                DataCopy(batchU[row * stride], u, rowLength);
-            }
-            PipeBarrier<PIPE_V>();
             float nextBest = 0.0f; uint32_t nextRow = core;
-            for (uint32_t first = 0; first < owned; first += t.inverseTile) {
-                uint32_t rows = owned - first < t.inverseTile ? owned - first : t.inverseTile;
-                for (uint32_t row = 0; row < rows; ++row) {
-                    uint32_t i = core + (first + row) * cores;
-                    float factor = i == pivot ? 0.0f : -tileHigh.GetValue((first + row) * stride + p);
-                    Duplicate(batchH[row * stride], factor, stride);
+            if (owned <= 255) {
+                for (uint32_t row = 0; row < owned; ++row) {
+                    uint32_t i = core + row * cores;
+                    float factor = i == pivot ? 0.0f : -tileHigh.GetValue(row * stride + p);
+                    Duplicate(tileLow[row * stride], factor, 8);
                 }
                 PipeBarrier<PIPE_V>();
-                MulAddDst(tileHigh[first * stride], batchU, batchH, rows * stride); PipeBarrier<PIPE_V>(); VS();
-                if (!vectorPivot && p + 1 < t.cols) for (uint32_t row = 0; row < rows; ++row) {
-                    uint32_t i = core + (first + row) * cores;
-                    float value = norms.GetValue(i) == 0.0f ? AbsScalar(tileHigh.GetValue((first + row) * stride + p + 1)) : 0.0f;
-                    if (value > nextBest) { nextBest = value; nextRow = i; }
+                for (uint32_t col = 0; col < s; col += 64) {
+                    uint32_t mask = s - col < 64 ? s - col : 64;
+                    MulAddDst(tileHigh[col], u[col], tileLow, static_cast<uint64_t>(mask), static_cast<uint8_t>(owned), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, static_cast<uint8_t>(stride / 8)});
+                    PipeBarrier<PIPE_V>();
+                }
+                if (!vectorPivot) {
+                    VS();
+                    if (p + 1 < t.cols) for (uint32_t row = 0; row < owned; ++row) {
+                        uint32_t i = core + row * cores;
+                        float value = norms.GetValue(i) == 0.0f ? AbsScalar(tileHigh.GetValue(row * stride + p + 1)) : 0.0f;
+                        if (value > nextBest) { nextBest = value; nextRow = i; }
+                    }
+                }
+            } else {
+                for (uint32_t row = 0; row < t.inverseTile; ++row) {
+                    Duplicate(batchU[row * stride], 0.0f, stride); PipeBarrier<PIPE_V>();
+                    DataCopy(batchU[row * stride], u, rowLength);
+                }
+                PipeBarrier<PIPE_V>();
+                for (uint32_t first = 0; first < owned; first += t.inverseTile) {
+                    uint32_t rows = owned - first < t.inverseTile ? owned - first : t.inverseTile;
+                    for (uint32_t row = 0; row < rows; ++row) {
+                        uint32_t i = core + (first + row) * cores;
+                        float factor = i == pivot ? 0.0f : -tileHigh.GetValue((first + row) * stride + p);
+                        Duplicate(batchH[row * stride], factor, stride);
+                    }
+                    PipeBarrier<PIPE_V>();
+                    MulAddDst(tileHigh[first * stride], batchU, batchH, rows * stride); PipeBarrier<PIPE_V>(); VS();
+                    if (!vectorPivot && p + 1 < t.cols) for (uint32_t row = 0; row < rows; ++row) {
+                        uint32_t i = core + (first + row) * cores;
+                        float value = norms.GetValue(i) == 0.0f ? AbsScalar(tileHigh.GetValue((first + row) * stride + p + 1)) : 0.0f;
+                        if (value > nextBest) { nextBest = value; nextRow = i; }
+                    }
                 }
             }
             if (p + 1 < t.cols && vectorPivot && available) {
