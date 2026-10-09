@@ -3,7 +3,8 @@
 #include "tiling_key_linalg_pinv.h"
 using namespace AscendC;
 class Pinv {
-    TBuf<TPosition::VECCALC> mem, precision, vectorPrecision;
+    TBuf<TPosition::VECCALC> mem, precision, vectorPrecision, inverseLow;
+    LocalTensor<float> lowMatrix;
     LocalTensor<float> calc[8];
     LocalTensor<float> gh, gl, ih, il;
     LocalTensor<float> matrix, x, y, u, v, prod, tmp, red, gather, norms, output;
@@ -263,6 +264,65 @@ class Pinv {
         }
         SyncAll();
     }
+    __aicore__ inline bool LocalInverseBody(uint32_t offset, LocalTensor<float> bx, LocalTensor<float> by,
+                                            LocalTensor<float> bu, LocalTensor<float> bv) {
+        float scale = 0.0f;
+        for (uint32_t i = 0; i < t.cols; ++i) {
+            x = Row(i); y = lowMatrix[i * stride];
+            Duplicate(x, 0.0f, rowLength); Duplicate(y, 0.0f, rowLength); PipeBarrier<PIPE_V>();
+            Load(x, input[offset + i * t.n], t.n);
+            Abs(prod, x, r8); PipeBarrier<PIPE_V>(); ReduceMax(red, prod, tmp, r8, false); VS();
+            float mx = red.GetValue(0); scale = mx > scale ? mx : scale;
+            x.SetValue(r8 + i, 1.0f); SV();
+        }
+        if (!(scale > 0.0f)) return false;
+        float power = 1.0f;
+        while (power < scale) power *= 2.0f;
+        while (power * 0.5f >= scale) power *= 0.5f;
+        float total = 0.0f;
+        for (uint32_t i = 0; i < t.cols; ++i) {
+            x = Row(i); Muls(x, x, 1.0f / power, r8); PipeBarrier<PIPE_V>(); total += Dot(x, x);
+        }
+        for (uint32_t p = 0; p < t.cols; ++p) {
+            VS(); uint32_t pivot = p; float best = 0.0f;
+            for (uint32_t i = p; i < t.cols; ++i) {
+                float value = AbsScalar(Row(i).GetValue(p));
+                if (value > best) { best = value; pivot = i; }
+            }
+            if (!(best > 0.0f)) return false;
+            if (pivot != p) {
+                DataCopy(bx, Row(p), rowLength); DataCopy(by, lowMatrix[p * stride], rowLength); PipeBarrier<PIPE_V>();
+                DataCopy(Row(p), Row(pivot), rowLength); DataCopy(lowMatrix[p * stride], lowMatrix[pivot * stride], rowLength); PipeBarrier<PIPE_V>();
+                DataCopy(Row(pivot), bx, rowLength); DataCopy(lowMatrix[pivot * stride], by, rowLength); PipeBarrier<PIPE_V>();
+            }
+            x = Row(p); y = lowMatrix[p * stride]; u = bu; v = bv; VS();
+            Wide divisor = {x.GetValue(p), y.GetValue(p)}; SV(); VectorNormalize(divisor);
+            VS(); u = x; v = y;
+            for (uint32_t i = 0; i < t.cols; ++i) if (i != p) {
+                x = Row(i); y = lowMatrix[i * stride];
+                Wide factor = {x.GetValue(p), y.GetValue(p)};
+                if (factor.h == 0.0f && factor.l == 0.0f) continue;
+                SV(); VectorEliminate(factor); VS();
+            }
+        }
+        float inverseTotal = 0.0f;
+        for (uint32_t i = 0; i < t.cols; ++i) { x = Row(i); inverseTotal += Dot(x[r8], x[r8]); }
+        float cutoff = Root(total) * t.rtol;
+        float absolute = t.atol / power; cutoff = cutoff > absolute ? cutoff : absolute;
+        if (!(inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < 0.81f)) return false;
+        for (uint32_t i = 0; i < t.n; ++i) {
+            x = Row(i); y = lowMatrix[i * stride];
+            Add(output, x[r8], y[r8], r8); PipeBarrier<PIPE_V>(); Muls(output, output, 1.0f / power, r8); PipeBarrier<PIPE_V>();
+            Store(result[offset + i * t.m], output, t.m);
+        }
+        return true;
+    }
+    __aicore__ inline bool LocalInverse(uint32_t offset) {
+        auto bx = x, by = y, bu = u, bv = v;
+        bool accepted = LocalInverseBody(offset, bx, by, bu, bv);
+        x = bx; y = by; u = bu; v = bv;
+        return accepted;
+    }
     __aicore__ inline void Parallel() {
         uint32_t core = GetBlockIdx(), cores = GetBlockNum();
         uint32_t roundCols = (t.cols + 1) / 2 * 2;
@@ -393,10 +453,14 @@ public:
         prod = all[off]; off += r8; tmp = all[off]; off += r8; output = all[off]; off += r8;
         red = all[off]; off += 32; gather = all[off]; off += 8 * t.rows;
         norms = all[off];
-        if (t.parallel) {
+        if (t.parallel || t.localInverse) {
             pipe->InitBuffer(vectorPrecision, 8 * s * sizeof(float));
             auto area = vectorPrecision.Get<float>();
             for (uint32_t i = 0; i < 8; ++i) calc[i] = area[i * s];
+        }
+        if (t.localInverse) {
+            pipe->InitBuffer(inverseLow, t.cols * stride * sizeof(float));
+            lowMatrix = inverseLow.Get<float>();
         }
         if (t.rows <= 32) {
             pipe->InitBuffer(precision, 4 * k8 * k8 * sizeof(float));
@@ -409,6 +473,7 @@ public:
         if (t.parallel) { Parallel(); return; }
         for (uint32_t b = GetBlockIdx(); b < t.batch; b += GetBlockNum()) {
             uint32_t offset = b * t.m * t.n;
+            if (t.localInverse && LocalInverse(offset)) continue;
             if (!t.local) work.SetGlobalBuffer(workBase + uint64_t(b) * t.cols * stride);
             float scale = 0;
             for (uint32_t i = 0; i < t.cols; ++i) {
