@@ -208,12 +208,27 @@ class StablePinv {
         red.SetValue(0, total); Store(meta[core * 8], red, 1); SyncAll();
         Load(gather, meta, cores * 8); total = 0.0f;
         for (uint32_t i = 0; i < cores; ++i) total += gather.GetValue(i * 8);
+        bool vectorPivot = owned <= 64;
+        uint64_t available = owned < 64 ? (uint64_t(1) << owned) - 1 : ~uint64_t(0);
+        auto pivotIndices = tmp.ReinterpretCast<uint32_t>();
+        if (vectorPivot) {
+            for (uint32_t row = 0; row < (owned + 7) / 8 * 8; ++row) pivotIndices.SetValue(row, row < owned ? row * stride * sizeof(float) : 0);
+            SV();
+        }
         for (uint32_t p = 0; p < t.cols; ++p) {
             if (p == 0) {
                 VS(); float best = 0.0f; uint32_t bestRow = core;
-                for (uint32_t row = 0; row < owned; ++row) {
-                    float value = AbsScalar(tileHigh.GetValue(row * stride));
-                    if (value > best) { best = value; bestRow = core + row * cores; }
+                if (vectorPivot) {
+                    Gather(prod, tileHigh, pivotIndices, 0, owned); PipeBarrier<PIPE_V>();
+                    Abs(prod, prod, owned); PipeBarrier<PIPE_V>();
+                    uint64_t active[2] = {available, 0};
+                    WholeReduceMax(red, prod, active, 1, 1, 1, 8); VS();
+                    best = red.GetValue(0); bestRow = core + red.ReinterpretCast<uint32_t>().GetValue(1) * cores;
+                } else {
+                    for (uint32_t row = 0; row < owned; ++row) {
+                        float value = AbsScalar(tileHigh.GetValue(row * stride));
+                        if (value > best) { best = value; bestRow = core + row * cores; }
+                    }
                 }
                 red.SetValue(0, best); red.SetValue(1, static_cast<float>(static_cast<int32_t>(bestRow))); Store(meta[core * 8], red, 2); SyncAll();
             }
@@ -224,6 +239,7 @@ class StablePinv {
             }
             if (!(best > 0.0f)) return false;
             norms.SetValue(pivot, static_cast<float>(static_cast<int32_t>(p + 1))); SV();
+            if (vectorPivot && core == pivot % cores) available &= ~(uint64_t(1) << (pivot / cores));
             if (core == pivot % cores) {
                 uint32_t row = pivot / cores; VS();
                 float divisor = tileHigh.GetValue(row * stride + p);
@@ -246,11 +262,18 @@ class StablePinv {
                 }
                 PipeBarrier<PIPE_V>();
                 MulAddDst(tileHigh[first * stride], batchU, batchH, rows * stride); PipeBarrier<PIPE_V>(); VS();
-                if (p + 1 < t.cols) for (uint32_t row = 0; row < rows; ++row) {
+                if (!vectorPivot && p + 1 < t.cols) for (uint32_t row = 0; row < rows; ++row) {
                     uint32_t i = core + (first + row) * cores;
                     float value = norms.GetValue(i) == 0.0f ? AbsScalar(tileHigh.GetValue((first + row) * stride + p + 1)) : 0.0f;
                     if (value > nextBest) { nextBest = value; nextRow = i; }
                 }
+            }
+            if (p + 1 < t.cols && vectorPivot && available) {
+                Gather(prod, tileHigh, pivotIndices, (p + 1) * sizeof(float), owned); PipeBarrier<PIPE_V>();
+                Abs(prod, prod, owned); PipeBarrier<PIPE_V>();
+                uint64_t active[2] = {available, 0};
+                WholeReduceMax(red, prod, active, 1, 1, 1, 8); VS();
+                nextBest = red.GetValue(0); nextRow = core + red.ReinterpretCast<uint32_t>().GetValue(1) * cores;
             }
             if (p + 1 < t.cols) { red.SetValue(0, nextBest); red.SetValue(1, static_cast<float>(static_cast<int32_t>(nextRow))); Store(meta[core * 8], red, 2); }
             SyncAll();
@@ -318,7 +341,12 @@ class StablePinv {
                 Duplicate(batchU[row * stride], 0.0f, stride); Duplicate(batchV[row * stride], 0.0f, stride); PipeBarrier<PIPE_V>();
                 DataCopy(batchU[row * stride], u, rowLength); DataCopy(batchV[row * stride], v, rowLength);
             }
-            PipeBarrier<PIPE_V>(); VS();
+            PipeBarrier<PIPE_V>();
+            uint32_t cachedCount = t.inverseTile * stride;
+            Muls(batchCalc[0], batchU, 4097.0f, cachedCount); PipeBarrier<PIPE_V>();
+            Sub(batchCalc[1], batchCalc[0], batchU, cachedCount); PipeBarrier<PIPE_V>();
+            Sub(batchCalc[0], batchCalc[0], batchCalc[1], cachedCount); PipeBarrier<PIPE_V>();
+            Sub(batchCalc[1], batchU, batchCalc[0], cachedCount); PipeBarrier<PIPE_V>(); VS();
             float nextBest = 0.0f; uint32_t nextRow = core;
             for (uint32_t first = 0; first < owned; first += t.inverseTile) {
                 uint32_t rows = owned - first < t.inverseTile ? owned - first : t.inverseTile;
@@ -329,7 +357,7 @@ class StablePinv {
                     Duplicate(batchH[row * stride], fh, stride); Duplicate(batchL[row * stride], fl, stride);
                 }
                 PipeBarrier<PIPE_V>(); x = tileHigh[first * stride]; y = tileLow[first * stride];
-                BatchEliminate(rows * stride); VS();
+                BatchEliminate(rows * stride, true); VS();
                 if (p + 1 < t.cols) for (uint32_t row = 0; row < rows; ++row) {
                     uint32_t i = core + (first + row) * cores;
                     float value = norms.GetValue(i) == 0.0f ? AbsScalar(tileHigh.GetValue((first + row) * stride + p + 1)) : 0.0f;
@@ -480,24 +508,29 @@ class StablePinv {
         }
         SyncAll();
     }
-    __aicore__ inline void BatchEliminate(uint32_t count) {
+    __aicore__ inline void BatchEliminate(uint32_t count, bool cached = false) {
         auto qh = batchCalc[0], ql = batchCalc[1], bh = batchCalc[2], bl = batchCalc[3], e = batchCalc[4], part = batchCalc[5], product = batchCalc[6], aux = batchCalc[7];
         Muls(bh, batchH, 4097.0f, count); PipeBarrier<PIPE_V>();
         Sub(bl, bh, batchH, count); PipeBarrier<PIPE_V>(); Sub(bh, bh, bl, count); PipeBarrier<PIPE_V>();
-        Sub(bl, batchH, bh, count); Muls(qh, batchU, 4097.0f, count); PipeBarrier<PIPE_V>();
-        Sub(ql, qh, batchU, count); PipeBarrier<PIPE_V>(); Sub(qh, qh, ql, count); PipeBarrier<PIPE_V>();
-        Sub(ql, batchU, qh, count); Mul(product, batchU, batchH, count); PipeBarrier<PIPE_V>();
+        Sub(bl, batchH, bh, count);
+        if (!cached) {
+            Muls(qh, batchU, 4097.0f, count); PipeBarrier<PIPE_V>();
+            Sub(ql, qh, batchU, count); PipeBarrier<PIPE_V>(); Sub(qh, qh, ql, count); PipeBarrier<PIPE_V>();
+            Sub(ql, batchU, qh, count);
+        }
+        Mul(product, batchU, batchH, count); PipeBarrier<PIPE_V>();
         Mul(e, qh, bh, count); PipeBarrier<PIPE_V>(); Sub(e, e, product, count); PipeBarrier<PIPE_V>();
         Mul(part, ql, bh, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
         Mul(part, qh, bl, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
         Mul(part, ql, bl, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
         Mul(part, batchV, batchH, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
         Mul(part, batchU, batchL, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
-        Add(qh, product, e, count); PipeBarrier<PIPE_V>(); Sub(ql, qh, product, count); PipeBarrier<PIPE_V>(); Sub(ql, e, ql, count); PipeBarrier<PIPE_V>();
-        Sub(bh, x, qh, count); PipeBarrier<PIPE_V>(); Sub(bl, bh, x, count); PipeBarrier<PIPE_V>();
-        Sub(e, bh, bl, count); PipeBarrier<PIPE_V>(); Sub(e, x, e, count); Muls(part, qh, -1.0f, count); PipeBarrier<PIPE_V>();
+        auto ph = cached ? aux : qh, pl = cached ? product : ql;
+        Add(ph, product, e, count); PipeBarrier<PIPE_V>(); Sub(part, ph, product, count); PipeBarrier<PIPE_V>(); Sub(pl, e, part, count); PipeBarrier<PIPE_V>();
+        Sub(bh, x, ph, count); PipeBarrier<PIPE_V>(); Sub(bl, bh, x, count); PipeBarrier<PIPE_V>();
+        Sub(e, bh, bl, count); PipeBarrier<PIPE_V>(); Sub(e, x, e, count); Muls(part, ph, -1.0f, count); PipeBarrier<PIPE_V>();
         Sub(part, part, bl, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
-        Add(e, e, y, count); PipeBarrier<PIPE_V>(); Sub(e, e, ql, count); PipeBarrier<PIPE_V>();
+        Add(e, e, y, count); PipeBarrier<PIPE_V>(); Sub(e, e, pl, count); PipeBarrier<PIPE_V>();
         Add(x, bh, e, count); PipeBarrier<PIPE_V>(); Sub(aux, x, bh, count); PipeBarrier<PIPE_V>(); Sub(y, e, aux, count); PipeBarrier<PIPE_V>();
     }
     __aicore__ inline bool LocalInverseBody(uint32_t offset, LocalTensor<float> bx, LocalTensor<float> by,
@@ -584,8 +617,15 @@ class StablePinv {
         for (uint32_t p = 0; p < t.cols; ++p) {
             Gather(norms, matrix, indices, p * sizeof(float), t.cols); PipeBarrier<PIPE_V>();
             Abs(prod, norms, k8); PipeBarrier<PIPE_V>();
-            if (p) { Duplicate(prod, 0.0f, p); PipeBarrier<PIPE_V>(); }
-            ReduceMax(red, prod, tmp, t.cols, true); VS();
+            if (t.cols <= 64) {
+                uint64_t limit = t.cols < 64 ? (uint64_t(1) << t.cols) - 1 : ~uint64_t(0);
+                uint64_t active[2] = {limit & (~uint64_t(0) << p), 0};
+                WholeReduceMax(red, prod, active, 1, 1, 1, 8);
+            } else {
+                if (p) { Duplicate(prod, 0.0f, p); PipeBarrier<PIPE_V>(); }
+                ReduceMax(red, prod, tmp, t.cols, true);
+            }
+            VS();
             float best = red.GetValue(0);
             uint32_t pivot = red.ReinterpretCast<uint32_t>().GetValue(1);
             if (!(best > 0.0f)) return false;
@@ -879,6 +919,7 @@ public:
         }
     }
 };
+template <bool TAIL>
 class Pinv {
     TBuf<TPosition::VECCALC> mem, precision, vectorPrecision, inverseLow, batchPrecision, parallelElimination;
     LocalTensor<float> batchCalc[8], batchU, batchV, batchH, batchL;
@@ -1283,7 +1324,13 @@ class Pinv {
                 if (vectorQuick) {
                     if (pivot != p) norms.SetValue(pivot, norms.GetValue(p));
                     norms.SetValue(p, 0.0f); SV(); Muls(norms, norms, -1.0f, k8); PipeBarrier<PIPE_V>();
-                    Brcb(lowMatrix, norms, k8 / 8, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)});
+                    if constexpr (TAIL) {
+                        Brcb(lowMatrix, norms, k8 / 8, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)});
+                    } else {
+                        VS();
+                        Brcb(lowMatrix, norms, t.cols / 8, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)});
+                        for (uint32_t row = t.cols / 8 * 8; row < t.cols; ++row) Duplicate(lowMatrix[row * stride], norms.GetValue(row), 8);
+                    }
                     PipeBarrier<PIPE_V>();
                     MulAddDst(matrix, bu, lowMatrix, static_cast<uint64_t>(stride), static_cast<uint8_t>(t.cols), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, static_cast<uint8_t>(stride / 8)});
                     PipeBarrier<PIPE_V>();
@@ -1551,7 +1598,7 @@ public:
             for (uint32_t i = 0; i < 8; ++i) calc[i] = area[i * s];
         }
         if (t.localInverse) {
-            pipe->InitBuffer(inverseLow, k8 * stride * sizeof(float));
+            pipe->InitBuffer(inverseLow, (TAIL ? k8 : t.cols) * stride * sizeof(float));
             lowMatrix = inverseLow.Get<float>();
         }
         if (t.localInverse || (t.parallel && t.m == t.n)) {
@@ -1661,7 +1708,7 @@ public:
         }
     }
 };
-template <typename DT_A, bool COMPACT>
+template <typename DT_A, bool COMPACT, bool TAIL>
 __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR workspace, GM_ADDR tiling) {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIV_1_0);
     REGISTER_TILING_DEFAULT(LinalgPinvTilingData);
@@ -1669,7 +1716,7 @@ __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR worksp
     TPipe pipe;
     if constexpr (COMPACT) {
         data.parallel = 0; data.local = 1; data.localInverse = 1;
-        Pinv op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
+        Pinv<TAIL> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
     } else {
         StablePinv op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
     }
