@@ -203,13 +203,16 @@ class Pinv {
         SyncAll();
         for (uint32_t p = 0; p < t.cols; ++p) {
             float best = 0; uint32_t bestRow = p;
-            for (uint32_t i = core; i < t.cols; i += cores) if (i >= p) {
-                ReadRow(x, i); VS(); float value = AbsScalar(x.GetValue(p));
-                if (value > best) { best = value; bestRow = i; }
+            if (p == 0) {
+                for (uint32_t i = core; i < t.cols; i += cores) {
+                    ReadRow(x, i); VS(); float value = AbsScalar(x.GetValue(p));
+                    if (value > best) { best = value; bestRow = i; }
+                }
+                red.SetValue(0, best); Store(meta[core * 8], red, 1);
+                red.SetValue(0, static_cast<float>(static_cast<int32_t>(bestRow))); Store(meta[256 + core * 8], red, 1);
+                SyncAll();
             }
-            red.SetValue(0, best); Store(meta[core * 8], red, 1);
-            red.SetValue(0, static_cast<float>(static_cast<int32_t>(bestRow))); Store(meta[256 + core * 8], red, 1);
-            SyncAll(); Load(gather, meta, cores * 8); best = 0; uint32_t bestCore = 0;
+            Load(gather, meta, cores * 8); best = 0; uint32_t bestCore = 0;
             for (uint32_t i = 0; i < cores; ++i) { float value = gather.GetValue(i * 8); if (value > best) { best = value; bestCore = i; } }
             if (certify && !(best > 0.0f)) return false;
             Load(gather, meta[256], cores * 8);
@@ -225,12 +228,22 @@ class Pinv {
                 SaveRow(x, p); Store(low[p * stride], y, rowLength);
             }
             SyncAll(); ReadRow(u, p); Load(v, low[p * stride], rowLength); VS();
+            float nextBest = 0.0f; uint32_t nextRow = p + 1;
             for (uint32_t i = core; i < t.cols; i += cores) if (i != p) {
                 ReadRow(x, i); Load(y, low[i * stride], rowLength); VS();
                 Wide factor = {x.GetValue(p), y.GetValue(p)};
-                if (factor.h == 0 && factor.l == 0) continue;
-                SV(); VectorEliminate(factor);
-                SaveRow(x, i); Store(low[i * stride], y, rowLength);
+                if (factor.h != 0.0f || factor.l != 0.0f) {
+                    SV(); VectorEliminate(factor);
+                    SaveRow(x, i); Store(low[i * stride], y, rowLength);
+                }
+                if (i > p && p + 1 < t.cols) {
+                    VS(); float value = AbsScalar(x.GetValue(p + 1));
+                    if (value > nextBest) { nextBest = value; nextRow = i; }
+                }
+            }
+            if (p + 1 < t.cols) {
+                red.SetValue(0, nextBest); Store(meta[core * 8], red, 1);
+                red.SetValue(0, static_cast<float>(static_cast<int32_t>(nextRow))); Store(meta[256 + core * 8], red, 1);
             }
             SyncAll();
         }
