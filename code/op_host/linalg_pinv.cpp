@@ -34,7 +34,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     platform.GetCoreMemSize(platform_ascendc::CoreMemType::UB, ubSize);
     uint64_t inverseBytes = (2 * uint64_t(t->cols) * t->stride + 4 * t->stride + 4 * r8 + 8 * t->rows + k8 + 32 + 8 * (r8 + k8)) * 4;
     if (t->rows <= 32) inverseBytes += 4 * k8 * k8 * sizeof(float);
-    if (m == n && t->stride <= 64) inverseBytes += (k8 - t->cols) * t->stride * sizeof(float);
+    if (m == n && (t->stride <= 64 || (t->cols > 32 && t->cols <= 96))) inverseBytes += (k8 - t->cols) * t->stride * sizeof(float);
     t->inverseTile = 8;
     while (t->inverseTile > 1 && inverseBytes + 12 * t->inverseTile * t->stride * sizeof(float) > ubSize) t->inverseTile /= 2;
     inverseBytes += 12 * t->inverseTile * t->stride * sizeof(float);
@@ -102,7 +102,9 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     uint32_t COMPACT = t->localInverse && t->stride <= 64;
     if (!COMPACT && ws[0] == 0) ws[0] = 32;
     uint32_t TAIL = COMPACT && t->cols % 8 != 0;
-    ASCENDC_TPL_SEL_PARAM(context, DT_A, COMPACT, TAIL);
+    uint32_t WAVE = t->groupCount > 0 && t->groupCount < t->batch;
+    uint32_t LOCAL = !COMPACT && t->localInverse && !t->parallel;
+    ASCENDC_TPL_SEL_PARAM(context, DT_A, COMPACT, TAIL, WAVE, LOCAL);
     return ge::GRAPH_SUCCESS;
 }
 }
