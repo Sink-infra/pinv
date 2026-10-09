@@ -71,15 +71,18 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     }
     if (t->parallel && t->resident && batch > 1) {
         uint32_t cores = std::min<uint32_t>(platform.GetCoreNumAic(), (t->cols + 1) / 2);
-        uint32_t groupCores = cores / batch;
-        if (groupCores > 0) {
+        for (uint32_t groups = batch; groups > 1; --groups) {
+            if (batch % groups != 0) continue;
+            uint32_t groupCores = cores / groups;
+            if (groupCores == 0) continue;
             uint32_t owned = (t->cols + groupCores - 1) / groupCores;
             uint64_t baseBytes = (4 * uint64_t(t->stride) + 4 * r8 + 8 * t->rows + k8 + 32 + 8 * (r8 + k8)) * sizeof(float);
             uint64_t residentBytes = 2 * uint64_t(owned) * t->stride * sizeof(float);
             uint64_t capacity = ubSize > baseBytes + residentBytes ? (ubSize - baseBytes - residentBytes) / (12 * t->stride * sizeof(float)) : 0;
             if (owned <= 64 && capacity > 0) {
-                t->groupCount = batch; t->resident = owned;
+                t->groupCount = groups; t->resident = owned;
                 t->inverseTile = std::min<uint64_t>(t->inverseTile, capacity);
+                break;
             }
         }
     }
