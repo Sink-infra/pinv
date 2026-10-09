@@ -2,6 +2,7 @@
 #include "linalg_pinv_tiling.h"
 #include "tiling_key_linalg_pinv.h"
 using namespace AscendC;
+template <bool WAVE, bool LOCAL>
 class StablePinv {
     TBuf<TPosition::VECCALC> mem, precision, vectorPrecision, inverseLow, batchPrecision, parallelElimination;
     LocalTensor<float> batchCalc[8], batchU, batchV, batchH, batchL;
@@ -792,9 +793,8 @@ class StablePinv {
             DataCopy(u, Row(p), rowLength); PipeBarrier<PIPE_V>();
             if (pivot != p) norms.SetValue(pivot, norms.GetValue(p));
             norms.SetValue(p, 0.0f); SV();
-            Muls(norms, norms, -1.0f, k8); PipeBarrier<PIPE_V>(); VS();
-            Brcb(lowMatrix, norms, t.cols / 8, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)});
-            for (uint32_t i = t.cols / 8 * 8; i < t.cols; ++i) Duplicate(lowMatrix[i * stride], norms.GetValue(i), 8);
+            Muls(norms, norms, -1.0f, k8); PipeBarrier<PIPE_V>();
+            Brcb(lowMatrix, norms, k8 / 8, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)});
             PipeBarrier<PIPE_V>();
             for (uint32_t col = 0; col < s; col += 64) {
                 uint32_t mask = s - col < 64 ? s - col : 64;
@@ -861,7 +861,9 @@ class StablePinv {
         float absolute = t.atol / power; cutoff = cutoff > absolute ? cutoff : absolute;
         uint64_t available = owned < 64 ? (uint64_t(1) << owned) - 1 : ~uint64_t(0);
         auto pivotIndices = tmp.ReinterpretCast<uint32_t>();
-        for (uint32_t row = 0; row < (owned + 7) / 8 * 8; ++row) pivotIndices.SetValue(row, row < owned ? row * stride * sizeof(float) : 0);
+        uint32_t factorRows = (owned + 7) / 8 * 8;
+        bool packed = t.inverseTile * stride >= factorRows * 8;
+        for (uint32_t row = 0; row < factorRows; ++row) pivotIndices.SetValue(row, row < owned ? row * stride * sizeof(float) : 0);
         SV();
         for (uint32_t p = 0; p < t.cols; ++p) {
             if (p == 0) {
@@ -887,16 +889,26 @@ class StablePinv {
             SyncAll();
             float nextBest = 0.0f; uint32_t nextRow = core;
             if (valid) {
-                Load(u, work, rowLength); VS();
-                for (uint32_t row = 0; row < owned; ++row) {
-                    uint32_t i = core + row * cores;
-                    float factor = i == pivot ? 0.0f : -tileHigh.GetValue(row * stride + p);
-                    Duplicate(tileLow[row * stride], factor, 8);
+                Load(u, work, rowLength);
+                if (packed) {
+                    Gather(v, tileHigh, pivotIndices, p * sizeof(float), factorRows); PipeBarrier<PIPE_V>();
+                    if (core == pivot % cores) { VS(); v.SetValue(pivot / cores, 0.0f); SV(); }
+                    Muls(v, v, -1.0f, factorRows); PipeBarrier<PIPE_V>();
+                    Brcb(batchH, v, factorRows / 8, {1, 8});
+                } else {
+                    VS();
+                    for (uint32_t row = 0; row < owned; ++row) {
+                        uint32_t i = core + row * cores;
+                        float factor = i == pivot ? 0.0f : -tileHigh.GetValue(row * stride + p);
+                        Duplicate(tileLow[row * stride], factor, 8);
+                    }
                 }
                 PipeBarrier<PIPE_V>();
+                auto factors = packed ? batchH : tileLow;
+                uint8_t factorStride = packed ? 1 : static_cast<uint8_t>(stride / 8);
                 for (uint32_t col = 0; col < s; col += 64) {
                     uint32_t mask = s - col < 64 ? s - col : 64;
-                    MulAddDst(tileHigh[col], u[col], tileLow, static_cast<uint64_t>(mask), static_cast<uint8_t>(owned), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, static_cast<uint8_t>(stride / 8)});
+                    MulAddDst(tileHigh[col], u[col], factors, static_cast<uint64_t>(mask), static_cast<uint8_t>(owned), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, factorStride});
                     PipeBarrier<PIPE_V>();
                 }
                 if (p + 1 < t.cols && available) {
@@ -1063,8 +1075,10 @@ class StablePinv {
     }
     __aicore__ inline void Parallel() {
         uint32_t core = GetBlockIdx(), cores = GetBlockNum();
-        uint32_t grouped = t.groupCount ? (t.groupCount == t.batch ? GroupedResident() : WaveGroupedResident()) : 0;
-        uint32_t accepted = grouped & 15, prepared = grouped >> 4;
+        uint32_t accepted = 0, prepared = 0;
+        if constexpr (WAVE) {
+            uint32_t grouped = WaveGroupedResident(); accepted = grouped & 15; prepared = grouped >> 4;
+        } else if (t.groupCount) accepted = GroupedResident();
         uint32_t roundCols = (t.cols + 1) / 2 * 2;
         for (uint32_t b = 0; b < t.batch; ++b) {
             if (accepted & (uint32_t(1) << b)) continue;
@@ -1208,7 +1222,8 @@ public:
             for (uint32_t i = 0; i < 8; ++i) calc[i] = area[i * s];
         }
         if (t.localInverse) {
-            pipe->InitBuffer(inverseLow, t.cols * stride * sizeof(float));
+            uint32_t lowRows = t.cols > 32 && t.cols <= 96 ? k8 : t.cols;
+            pipe->InitBuffer(inverseLow, lowRows * stride * sizeof(float));
             lowMatrix = inverseLow.Get<float>();
         }
         if (t.localInverse || (t.parallel && t.m == t.n)) {
@@ -1231,7 +1246,7 @@ public:
         workBase = (__gm__ float *)ws; work.SetGlobalBuffer(workBase);
     }
     __aicore__ inline void Process() {
-        if (t.parallel) { Parallel(); return; }
+        if constexpr (!LOCAL) { if (t.parallel) { Parallel(); return; } }
         for (uint32_t b = GetBlockIdx(); b < t.batch; b += GetBlockNum()) {
             uint32_t offset = b * t.m * t.n;
             if (t.localInverse && LocalInverse(offset)) continue;
@@ -2108,7 +2123,7 @@ public:
         }
     }
 };
-template <typename DT_A, bool COMPACT, bool TAIL>
+template <typename DT_A, bool COMPACT, bool TAIL, bool WAVE, bool LOCAL>
 __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR workspace, GM_ADDR tiling) {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIV_1_0);
     REGISTER_TILING_DEFAULT(LinalgPinvTilingData);
@@ -2118,6 +2133,8 @@ __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR worksp
         data.parallel = 0; data.local = 1; data.localInverse = 1;
         Pinv<TAIL> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
     } else {
-        StablePinv op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
+        if constexpr (WAVE) { data.parallel = 1; data.local = 0; data.localInverse = 0; }
+        if constexpr (LOCAL) { data.parallel = 0; data.groupCount = 0; data.localInverse = 1; }
+        StablePinv<WAVE, LOCAL> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
     }
 }
