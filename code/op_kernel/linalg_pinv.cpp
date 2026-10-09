@@ -792,9 +792,8 @@ class StablePinv {
             DataCopy(u, Row(p), rowLength); PipeBarrier<PIPE_V>();
             if (pivot != p) norms.SetValue(pivot, norms.GetValue(p));
             norms.SetValue(p, 0.0f); SV();
-            Muls(norms, norms, -1.0f, k8); PipeBarrier<PIPE_V>(); VS();
-            Brcb(lowMatrix, norms, t.cols / 8, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)});
-            for (uint32_t i = t.cols / 8 * 8; i < t.cols; ++i) Duplicate(lowMatrix[i * stride], norms.GetValue(i), 8);
+            Muls(norms, norms, -1.0f, k8); PipeBarrier<PIPE_V>();
+            Brcb(lowMatrix, norms, k8 / 8, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)});
             PipeBarrier<PIPE_V>();
             for (uint32_t col = 0; col < s; col += 64) {
                 uint32_t mask = s - col < 64 ? s - col : 64;
@@ -1208,7 +1207,8 @@ public:
             for (uint32_t i = 0; i < 8; ++i) calc[i] = area[i * s];
         }
         if (t.localInverse) {
-            pipe->InitBuffer(inverseLow, t.cols * stride * sizeof(float));
+            uint32_t lowRows = t.cols > 32 && t.cols <= 96 ? k8 : t.cols;
+            pipe->InitBuffer(inverseLow, lowRows * stride * sizeof(float));
             lowMatrix = inverseLow.Get<float>();
         }
         if (t.localInverse || (t.parallel && t.m == t.n)) {
