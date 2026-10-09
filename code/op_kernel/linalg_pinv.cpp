@@ -187,6 +187,29 @@ class StablePinv {
         Sub(y, x, u, s); PipeBarrier<PIPE_V>();
         Sub(y, calc[0], y, s); PipeBarrier<PIPE_V>();
     }
+    __aicore__ inline void GlobalPivot(uint32_t cores, float &best, uint32_t &pivot) {
+        if (cores < 8 || cores > 128) {
+            for (uint32_t i = 0; i < cores; ++i) {
+                float value = gather.GetValue(i * 8);
+                if (value > best) { best = value; pivot = static_cast<uint32_t>(static_cast<int32_t>(gather.GetValue(i * 8 + 1))); }
+            }
+            return;
+        }
+        uint32_t groups = cores / 8, tail = cores % 8;
+        uint64_t active[2] = {0x0101010101010101ULL, 0};
+        WholeReduceMax(red, gather, active, groups, 1, 1, 8);
+        if (tail) {
+            PipeBarrier<PIPE_V>();
+            active[0] &= (uint64_t(1) << (tail * 8)) - 1;
+            WholeReduceMax(red[groups * 2], gather[groups * 64], active, 1, 1, 1, 8);
+        }
+        VS(); uint32_t selected = 0;
+        for (uint32_t i = 0; i < groups + (tail != 0); ++i) {
+            float value = red.GetValue(i * 2);
+            if (value > best) { best = value; selected = i * 64 + red.ReinterpretCast<uint32_t>().GetValue(i * 2 + 1); }
+        }
+        if (best > 0.0f) pivot = static_cast<uint32_t>(static_cast<int32_t>(gather.GetValue(selected + 1)));
+    }
     __aicore__ inline bool QuickResidentSquare(uint32_t b, uint32_t offset, float scale,
                                                GlobalTensor<float> meta, bool certify, float cutoff) {
         if (!(scale >= 0.1f)) return false;
@@ -233,10 +256,7 @@ class StablePinv {
                 red.SetValue(0, best); red.SetValue(1, static_cast<float>(static_cast<int32_t>(bestRow))); Store(meta[core * 8], red, 2); SyncAll();
             }
             Load(gather, meta, cores * 8); float best = 0.0f; uint32_t pivot = 0;
-            for (uint32_t i = 0; i < cores; ++i) {
-                float value = gather.GetValue(i * 8);
-                if (value > best) { best = value; pivot = static_cast<uint32_t>(static_cast<int32_t>(gather.GetValue(i * 8 + 1))); }
-            }
+            GlobalPivot(cores, best, pivot);
             if (!(best > 0.0f)) return false;
             norms.SetValue(pivot, static_cast<float>(static_cast<int32_t>(p + 1))); SV();
             if (vectorPivot && core == pivot % cores) available &= ~(uint64_t(1) << (pivot / cores));
@@ -247,25 +267,47 @@ class StablePinv {
                 Store(work, tileHigh[row * stride], rowLength);
             }
             SyncAll(); Load(u, work, rowLength); VS();
-            for (uint32_t row = 0; row < t.inverseTile; ++row) {
-                Duplicate(batchU[row * stride], 0.0f, stride); PipeBarrier<PIPE_V>();
-                DataCopy(batchU[row * stride], u, rowLength);
-            }
-            PipeBarrier<PIPE_V>();
             float nextBest = 0.0f; uint32_t nextRow = core;
-            for (uint32_t first = 0; first < owned; first += t.inverseTile) {
-                uint32_t rows = owned - first < t.inverseTile ? owned - first : t.inverseTile;
-                for (uint32_t row = 0; row < rows; ++row) {
-                    uint32_t i = core + (first + row) * cores;
-                    float factor = i == pivot ? 0.0f : -tileHigh.GetValue((first + row) * stride + p);
-                    Duplicate(batchH[row * stride], factor, stride);
+            if (owned <= 255) {
+                for (uint32_t row = 0; row < owned; ++row) {
+                    uint32_t i = core + row * cores;
+                    float factor = i == pivot ? 0.0f : -tileHigh.GetValue(row * stride + p);
+                    Duplicate(tileLow[row * stride], factor, 8);
                 }
                 PipeBarrier<PIPE_V>();
-                MulAddDst(tileHigh[first * stride], batchU, batchH, rows * stride); PipeBarrier<PIPE_V>(); VS();
-                if (!vectorPivot && p + 1 < t.cols) for (uint32_t row = 0; row < rows; ++row) {
-                    uint32_t i = core + (first + row) * cores;
-                    float value = norms.GetValue(i) == 0.0f ? AbsScalar(tileHigh.GetValue((first + row) * stride + p + 1)) : 0.0f;
-                    if (value > nextBest) { nextBest = value; nextRow = i; }
+                for (uint32_t col = 0; col < s; col += 64) {
+                    uint32_t mask = s - col < 64 ? s - col : 64;
+                    MulAddDst(tileHigh[col], u[col], tileLow, static_cast<uint64_t>(mask), static_cast<uint8_t>(owned), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, static_cast<uint8_t>(stride / 8)});
+                    PipeBarrier<PIPE_V>();
+                }
+                if (!vectorPivot) {
+                    VS();
+                    if (p + 1 < t.cols) for (uint32_t row = 0; row < owned; ++row) {
+                        uint32_t i = core + row * cores;
+                        float value = norms.GetValue(i) == 0.0f ? AbsScalar(tileHigh.GetValue(row * stride + p + 1)) : 0.0f;
+                        if (value > nextBest) { nextBest = value; nextRow = i; }
+                    }
+                }
+            } else {
+                for (uint32_t row = 0; row < t.inverseTile; ++row) {
+                    Duplicate(batchU[row * stride], 0.0f, stride); PipeBarrier<PIPE_V>();
+                    DataCopy(batchU[row * stride], u, rowLength);
+                }
+                PipeBarrier<PIPE_V>();
+                for (uint32_t first = 0; first < owned; first += t.inverseTile) {
+                    uint32_t rows = owned - first < t.inverseTile ? owned - first : t.inverseTile;
+                    for (uint32_t row = 0; row < rows; ++row) {
+                        uint32_t i = core + (first + row) * cores;
+                        float factor = i == pivot ? 0.0f : -tileHigh.GetValue((first + row) * stride + p);
+                        Duplicate(batchH[row * stride], factor, stride);
+                    }
+                    PipeBarrier<PIPE_V>();
+                    MulAddDst(tileHigh[first * stride], batchU, batchH, rows * stride); PipeBarrier<PIPE_V>(); VS();
+                    if (!vectorPivot && p + 1 < t.cols) for (uint32_t row = 0; row < rows; ++row) {
+                        uint32_t i = core + (first + row) * cores;
+                        float value = norms.GetValue(i) == 0.0f ? AbsScalar(tileHigh.GetValue((first + row) * stride + p + 1)) : 0.0f;
+                        if (value > nextBest) { nextBest = value; nextRow = i; }
+                    }
                 }
             }
             if (p + 1 < t.cols && vectorPivot && available) {
@@ -323,10 +365,7 @@ class StablePinv {
                 red.SetValue(0, best); red.SetValue(1, static_cast<float>(static_cast<int32_t>(bestRow))); Store(meta[core * 8], red, 2); SyncAll();
             }
             Load(gather, meta, cores * 8); float best = 0.0f; uint32_t pivot = 0;
-            for (uint32_t i = 0; i < cores; ++i) {
-                float value = gather.GetValue(i * 8);
-                if (value > best) { best = value; pivot = static_cast<uint32_t>(static_cast<int32_t>(gather.GetValue(i * 8 + 1))); }
-            }
+            GlobalPivot(cores, best, pivot);
             if (!(best > 0.0f)) { x = bx; y = by; u = bu; v = bv; return false; }
             norms.SetValue(pivot, static_cast<float>(static_cast<int32_t>(p + 1))); SV();
             if (core == pivot % cores) {
