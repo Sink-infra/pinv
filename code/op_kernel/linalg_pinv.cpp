@@ -330,7 +330,7 @@ class Pinv {
                 float a = gather.GetValue(i * 8);
                 if (a > threshold && a < smallest) smallest = a;
             }
-            if (t.m == t.n && t.cols >= 256 && kept == t.cols && scale * Root(smallest) < 0.02f) { AccurateSquare(b, offset, scale, meta); continue; }
+            if (t.m == t.n && t.cols >= 256 && kept == t.cols && (smallest < maxNorm * 1.0e-4f || scale * Root(smallest) < 0.02f)) { AccurateSquare(b, offset, scale, meta); continue; }
             if (t.rows <= 32 && kept == t.cols && scale < 0.001f) {
                 if (core == 0) AccurateFull(offset, scale);
                 SyncAll(); continue;
