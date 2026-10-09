@@ -1010,22 +1010,22 @@ class Pinv {
             }
         }
         for (uint32_t p = 0; p < t.cols; ++p) {
-            VS(); uint32_t pivot = p; float best = 0.0f;
+            if (p == 0 || !quick) VS(); uint32_t pivot = p; float best = 0.0f;
             for (uint32_t i = p; i < t.cols; ++i) {
                 float value = AbsScalar(highData[i * stride + p]);
                 if (value > best) { best = value; pivot = i; }
             }
             if (!(best > 0.0f)) return false;
             if (pivot != p) {
-                DataCopy(bx, Row(p), rowLength); DataCopy(by, lowMatrix[p * stride], rowLength); PipeBarrier<PIPE_V>();
-                DataCopy(Row(p), Row(pivot), rowLength); DataCopy(lowMatrix[p * stride], lowMatrix[pivot * stride], rowLength); PipeBarrier<PIPE_V>();
-                DataCopy(Row(pivot), bx, rowLength); DataCopy(lowMatrix[pivot * stride], by, rowLength); PipeBarrier<PIPE_V>();
+                DataCopy(bx, Row(p), rowLength); if (!quick) DataCopy(by, lowMatrix[p * stride], rowLength); PipeBarrier<PIPE_V>();
+                DataCopy(Row(p), Row(pivot), rowLength); if (!quick) DataCopy(lowMatrix[p * stride], lowMatrix[pivot * stride], rowLength); PipeBarrier<PIPE_V>();
+                DataCopy(Row(pivot), bx, rowLength); if (!quick) DataCopy(lowMatrix[pivot * stride], by, rowLength); PipeBarrier<PIPE_V>();
             }
-            x = Row(p); y = lowMatrix[p * stride]; u = bu; v = bv; VS();
-            Wide divisor = {highData[p * stride + p], lowData[p * stride + p]}; SV();
+            x = Row(p); y = lowMatrix[p * stride]; u = bu; v = bv; if (pivot != p || !quick) VS();
+            Wide divisor = {highData[p * stride + p], quick ? 0.0f : lowData[p * stride + p]}; if (!quick) SV();
             if (quick) { Muls(x, x, 1.0f / divisor.h, s); PipeBarrier<PIPE_V>(); }
             else VectorNormalize(divisor);
-            VS();
+            if (!quick) VS();
             if (quick) { DataCopy(bu, x, stride); PipeBarrier<PIPE_V>(); u = bu; }
             else u = x;
             v = y;
