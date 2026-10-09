@@ -1782,9 +1782,9 @@ class Pinv {
             }
         }
         float inverseTotal = 0.0f;
-        if (vectorQuick) { Duplicate(lowMatrix, 0.0f, count); PipeBarrier<PIPE_V>(); }
         if (compact) {
-            Add(matrix, matrix, lowMatrix, count); PipeBarrier<PIPE_V>(); Duplicate(lowMatrix, 0.0f, count); PipeBarrier<PIPE_V>();
+            if (!vectorQuick) { Add(matrix, matrix, lowMatrix, count); PipeBarrier<PIPE_V>(); }
+            Duplicate(lowMatrix, 0.0f, count); PipeBarrier<PIPE_V>();
             Mul(lowMatrix, matrix[r8], matrix[r8], static_cast<uint64_t>(r8), static_cast<uint8_t>(t.cols), {1, 1, 1, static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride / 8)});
             PipeBarrier<PIPE_V>(); ReduceSum(red, lowMatrix, tmp, count); VS(); inverseTotal = red.GetValue(0);
         } else {
