@@ -40,7 +40,21 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     inverseBytes += 12 * t->inverseTile * t->stride * sizeof(float);
     t->localInverse = m == n && inverseBytes <= ubSize;
     if (t->localInverse) t->parallel = 0;
-    if (t->parallel) t->stride = (t->stride + 127) / 128 * 128;
+    if (t->parallel) {
+        uint32_t narrowStride = (t->stride + 63) / 64 * 64;
+        t->stride = (t->stride + 127) / 128 * 128;
+        if (m == n && narrowStride != t->stride) {
+            uint32_t cores = std::min<uint32_t>(platform.GetCoreNumAic(), (t->cols + 1) / 2);
+            uint32_t owned = (t->cols + cores - 1) / cores;
+            auto capacity = [&](uint32_t candidate) {
+                uint64_t base = (4 * uint64_t(candidate) + 4 * r8 + 8 * t->rows + k8 + 32 + 8 * (r8 + k8)) * sizeof(float);
+                uint64_t resident = 2 * uint64_t(owned) * candidate * sizeof(float);
+                return ubSize > base + resident ? std::min<uint64_t>(owned, (ubSize - base - resident) / (12 * candidate * sizeof(float))) : uint64_t(0);
+            };
+            uint32_t oldTile = capacity(t->stride), newTile = capacity(narrowStride);
+            if (newTile && (!oldTile || (owned + newTile - 1) / newTile < (owned + oldTile - 1) / oldTile)) t->stride = narrowStride;
+        }
+    }
     t->resident = 0;
     if (t->parallel && m == n) {
         uint64_t baseBytes = (4 * uint64_t(t->stride) + 4 * r8 + 8 * t->rows + k8 + 32 + 8 * (r8 + k8)) * sizeof(float);
@@ -69,7 +83,8 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     ws[0] = t->local ? 0 : platform.GetLibApiWorkSpaceSize() + batch * (t->cols * t->stride * (t->parallel ? 2 : 1) + (t->parallel ? 8192 : 0)) * sizeof(float);
     uint32_t DT_A = static_cast<uint32_t>(ge::DT_FLOAT);
     uint32_t COMPACT = t->localInverse && t->stride <= 64;
-    ASCENDC_TPL_SEL_PARAM(context, DT_A, COMPACT);
+    uint32_t TAIL = COMPACT && t->cols % 8 != 0;
+    ASCENDC_TPL_SEL_PARAM(context, DT_A, COMPACT, TAIL);
     return ge::GRAPH_SUCCESS;
 }
 }
