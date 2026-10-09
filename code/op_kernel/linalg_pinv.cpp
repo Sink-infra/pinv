@@ -187,6 +187,29 @@ class StablePinv {
         Sub(y, x, u, s); PipeBarrier<PIPE_V>();
         Sub(y, calc[0], y, s); PipeBarrier<PIPE_V>();
     }
+    __aicore__ inline void GlobalPivot(uint32_t cores, float &best, uint32_t &pivot) {
+        if (cores < 8 || cores > 128) {
+            for (uint32_t i = 0; i < cores; ++i) {
+                float value = gather.GetValue(i * 8);
+                if (value > best) { best = value; pivot = static_cast<uint32_t>(static_cast<int32_t>(gather.GetValue(i * 8 + 1))); }
+            }
+            return;
+        }
+        uint32_t groups = cores / 8, tail = cores % 8;
+        uint64_t active[2] = {0x0101010101010101ULL, 0};
+        WholeReduceMax(red, gather, active, groups, 1, 1, 8);
+        if (tail) {
+            PipeBarrier<PIPE_V>();
+            active[0] &= (uint64_t(1) << (tail * 8)) - 1;
+            WholeReduceMax(red[groups * 2], gather[groups * 64], active, 1, 1, 1, 8);
+        }
+        VS(); uint32_t selected = 0;
+        for (uint32_t i = 0; i < groups + (tail != 0); ++i) {
+            float value = red.GetValue(i * 2);
+            if (value > best) { best = value; selected = i * 64 + red.ReinterpretCast<uint32_t>().GetValue(i * 2 + 1); }
+        }
+        if (best > 0.0f) pivot = static_cast<uint32_t>(static_cast<int32_t>(gather.GetValue(selected + 1)));
+    }
     __aicore__ inline bool QuickResidentSquare(uint32_t b, uint32_t offset, float scale,
                                                GlobalTensor<float> meta, bool certify, float cutoff) {
         if (!(scale >= 0.1f)) return false;
@@ -233,10 +256,7 @@ class StablePinv {
                 red.SetValue(0, best); red.SetValue(1, static_cast<float>(static_cast<int32_t>(bestRow))); Store(meta[core * 8], red, 2); SyncAll();
             }
             Load(gather, meta, cores * 8); float best = 0.0f; uint32_t pivot = 0;
-            for (uint32_t i = 0; i < cores; ++i) {
-                float value = gather.GetValue(i * 8);
-                if (value > best) { best = value; pivot = static_cast<uint32_t>(static_cast<int32_t>(gather.GetValue(i * 8 + 1))); }
-            }
+            GlobalPivot(cores, best, pivot);
             if (!(best > 0.0f)) return false;
             norms.SetValue(pivot, static_cast<float>(static_cast<int32_t>(p + 1))); SV();
             if (vectorPivot && core == pivot % cores) available &= ~(uint64_t(1) << (pivot / cores));
@@ -323,10 +343,7 @@ class StablePinv {
                 red.SetValue(0, best); red.SetValue(1, static_cast<float>(static_cast<int32_t>(bestRow))); Store(meta[core * 8], red, 2); SyncAll();
             }
             Load(gather, meta, cores * 8); float best = 0.0f; uint32_t pivot = 0;
-            for (uint32_t i = 0; i < cores; ++i) {
-                float value = gather.GetValue(i * 8);
-                if (value > best) { best = value; pivot = static_cast<uint32_t>(static_cast<int32_t>(gather.GetValue(i * 8 + 1))); }
-            }
+            GlobalPivot(cores, best, pivot);
             if (!(best > 0.0f)) { x = bx; y = by; u = bu; v = bv; return false; }
             norms.SetValue(pivot, static_cast<float>(static_cast<int32_t>(p + 1))); SV();
             if (core == pivot % cores) {
