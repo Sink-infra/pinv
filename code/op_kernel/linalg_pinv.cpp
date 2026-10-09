@@ -3,8 +3,9 @@
 #include "tiling_key_linalg_pinv.h"
 using namespace AscendC;
 class Pinv {
-    TBuf<TPosition::VECCALC> mem, precision, vectorPrecision, inverseLow, batchPrecision;
+    TBuf<TPosition::VECCALC> mem, precision, vectorPrecision, inverseLow, batchPrecision, parallelElimination;
     LocalTensor<float> batchCalc[8], batchU, batchV, batchH, batchL;
+    LocalTensor<float> tileHigh, tileLow;
     LocalTensor<float> lowMatrix;
     LocalTensor<float> calc[8];
     LocalTensor<float> gh, gl, ih, il;
@@ -229,18 +230,46 @@ class Pinv {
             }
             SyncAll(); ReadRow(u, p); Load(v, low[p * stride], rowLength); VS();
             float nextBest = 0.0f; uint32_t nextRow = p + 1;
-            for (uint32_t i = core; i < t.cols; i += cores) if (i != p) {
-                ReadRow(x, i); Load(y, low[i * stride], rowLength); VS();
-                Wide factor = {x.GetValue(p), y.GetValue(p)};
-                if (factor.h != 0.0f || factor.l != 0.0f) {
-                    SV(); VectorEliminate(factor);
-                    SaveRow(x, i); Store(low[i * stride], y, rowLength);
-                }
-                if (i > p && p + 1 < t.cols) {
-                    VS(); float value = AbsScalar(x.GetValue(p + 1));
-                    if (value > nextBest) { nextBest = value; nextRow = i; }
-                }
+            auto bx = x, by = y;
+            for (uint32_t row = 0; row < t.inverseTile; ++row) {
+                Duplicate(batchU[row * stride], 0.0f, stride); Duplicate(batchV[row * stride], 0.0f, stride); PipeBarrier<PIPE_V>();
+                DataCopy(batchU[row * stride], u, rowLength); DataCopy(batchV[row * stride], v, rowLength);
             }
+            PipeBarrier<PIPE_V>();
+            uint32_t owned = (t.cols + cores - 1 - core) / cores;
+            for (uint32_t first = 0; first < owned; first += t.inverseTile) {
+                uint32_t rows = owned - first < t.inverseTile ? owned - first : t.inverseTile;
+                uint32_t index = core + first * cores;
+                Duplicate(tileHigh, 0.0f, rows * stride); Duplicate(tileLow, 0.0f, rows * stride); PipeBarrier<PIPE_V>();
+                DataCopyExtParams inParams{static_cast<uint16_t>(rows), rowLength * 4, (cores * stride - rowLength) * 4, (stride - rowLength) / 8, 0};
+                SetFlag<HardEvent::V_MTE2>(0); WaitFlag<HardEvent::V_MTE2>(0);
+                DataCopyPad(tileHigh, work[index * stride], inParams, DataCopyPadExtParams<float>{false, 0, 0, 0});
+                DataCopyPad(tileLow, low[index * stride], inParams, DataCopyPadExtParams<float>{false, 0, 0, 0});
+                SetFlag<HardEvent::MTE2_V>(0); WaitFlag<HardEvent::MTE2_V>(0);
+                SetFlag<HardEvent::MTE2_S>(0); WaitFlag<HardEvent::MTE2_S>(0);
+                for (uint32_t row = 0; row < rows; ++row) {
+                    uint32_t i = index + row * cores;
+                    float fh = i == p ? 0.0f : tileHigh.GetValue(row * stride + p);
+                    float fl = i == p ? 0.0f : tileLow.GetValue(row * stride + p);
+                    Duplicate(batchH[row * stride], fh, stride); Duplicate(batchL[row * stride], fl, stride);
+                }
+                PipeBarrier<PIPE_V>(); x = tileHigh; y = tileLow;
+                BatchEliminate(rows * stride); VS();
+                for (uint32_t row = 0; row < rows; ++row) {
+                    uint32_t i = index + row * cores;
+                    if (i > p && p + 1 < t.cols) {
+                        float value = AbsScalar(tileHigh.GetValue(row * stride + p + 1));
+                        if (value > nextBest) { nextBest = value; nextRow = i; }
+                    }
+                }
+                DataCopyExtParams outParams{static_cast<uint16_t>(rows), rowLength * 4, (stride - rowLength) / 8, (cores * stride - rowLength) * 4, 0};
+                SetFlag<HardEvent::V_MTE3>(0); WaitFlag<HardEvent::V_MTE3>(0);
+                SetFlag<HardEvent::S_MTE3>(0); WaitFlag<HardEvent::S_MTE3>(0);
+                DataCopyPad(work[index * stride], tileHigh, outParams); DataCopyPad(low[index * stride], tileLow, outParams);
+                SetFlag<HardEvent::MTE3_V>(0); WaitFlag<HardEvent::MTE3_V>(0);
+                SetFlag<HardEvent::MTE3_MTE2>(0); WaitFlag<HardEvent::MTE3_MTE2>(0);
+            }
+            x = bx; y = by;
             if (p + 1 < t.cols) {
                 red.SetValue(0, nextBest); Store(meta[core * 8], red, 1);
                 red.SetValue(0, static_cast<float>(static_cast<int32_t>(nextRow))); Store(meta[256 + core * 8], red, 1);
@@ -504,11 +533,17 @@ public:
         if (t.localInverse) {
             pipe->InitBuffer(inverseLow, t.cols * stride * sizeof(float));
             lowMatrix = inverseLow.Get<float>();
+        }
+        if (t.localInverse || (t.parallel && t.m == t.n)) {
             uint32_t areaSize = t.inverseTile * stride;
             pipe->InitBuffer(batchPrecision, 12 * areaSize * sizeof(float));
             auto area = batchPrecision.Get<float>();
             for (uint32_t i = 0; i < 8; ++i) batchCalc[i] = area[i * areaSize];
             batchU = area[8 * areaSize]; batchV = area[9 * areaSize]; batchH = area[10 * areaSize]; batchL = area[11 * areaSize];
+            if (t.parallel) {
+                pipe->InitBuffer(parallelElimination, 2 * areaSize * sizeof(float));
+                tileHigh = parallelElimination.Get<float>(); tileLow = tileHigh[areaSize];
+            }
         }
         if (t.rows <= 32) {
             pipe->InitBuffer(precision, 4 * k8 * k8 * sizeof(float));
