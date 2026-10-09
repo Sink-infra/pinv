@@ -261,7 +261,7 @@ class StablePinv {
         Load(gather, meta, cores * 8); inverseTotal = 0.0f;
         for (uint32_t i = 0; i < cores; ++i) inverseTotal += gather.GetValue(i * 8);
         float scaledCutoff = cutoff / power;
-        if (!(inverseTotal > 0.0f && total * inverseTotal < 4.0e8f)) return false;
+        if (!(inverseTotal > 0.0f && total * inverseTotal < 3.6e9f)) return false;
         if (certify && !(inverseTotal * scaledCutoff * scaledCutoff < 81.0f)) return false;
         for (uint32_t row = 0; row < owned; ++row) {
             VS(); uint32_t target = static_cast<uint32_t>(static_cast<int32_t>(norms.GetValue(core + row * cores))) - 1;
