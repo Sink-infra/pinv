@@ -831,7 +831,7 @@ class StablePinv {
             uint32_t localRow = row / cores;
             float divisor = tileHigh.GetValue(localRow * stride + column);
             Muls(u, tileHigh[localRow * stride], 1.0f / divisor, s); PipeBarrier<PIPE_V>();
-            Store(work[core * stride], u, rowLength);
+            Store(work[((column & 1) * cores + core) * stride], u, rowLength);
         }
     }
     __aicore__ inline uint32_t GroupedResident() {
@@ -888,7 +888,7 @@ class StablePinv {
             GlobalPivot(cores, best, pivot); valid = valid && best > 0.0f;
             if (valid) {
                 norms.SetValue(pivot, static_cast<float>(static_cast<int32_t>(p + 1))); SV();
-                Load(u, work[(pivot % cores) * stride], rowLength);
+                Load(u, work[((p & 1) * cores + pivot % cores) * stride], rowLength);
                 if (core == pivot % cores) {
                     available &= ~(uint64_t(1) << (pivot / cores));
                     DataCopy(tileHigh[(pivot / cores) * stride], u, rowLength); PipeBarrier<PIPE_V>();
