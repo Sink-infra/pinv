@@ -83,7 +83,8 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     ws[0] = t->local ? 0 : platform.GetLibApiWorkSpaceSize() + batch * (t->cols * t->stride * (t->parallel ? 2 : 1) + (t->parallel ? 8192 : 0)) * sizeof(float);
     uint32_t DT_A = static_cast<uint32_t>(ge::DT_FLOAT);
     uint32_t COMPACT = t->localInverse && t->stride <= 64;
-    ASCENDC_TPL_SEL_PARAM(context, DT_A, COMPACT);
+    uint32_t TAIL = COMPACT && t->cols % 8 != 0;
+    ASCENDC_TPL_SEL_PARAM(context, DT_A, COMPACT, TAIL);
     return ge::GRAPH_SUCCESS;
 }
 }

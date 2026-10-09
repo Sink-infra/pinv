@@ -889,6 +889,7 @@ public:
         }
     }
 };
+template <bool TAIL>
 class Pinv {
     TBuf<TPosition::VECCALC> mem, precision, vectorPrecision, inverseLow, batchPrecision, parallelElimination;
     LocalTensor<float> batchCalc[8], batchU, batchV, batchH, batchL;
@@ -1293,7 +1294,13 @@ class Pinv {
                 if (vectorQuick) {
                     if (pivot != p) norms.SetValue(pivot, norms.GetValue(p));
                     norms.SetValue(p, 0.0f); SV(); Muls(norms, norms, -1.0f, k8); PipeBarrier<PIPE_V>();
-                    Brcb(lowMatrix, norms, k8 / 8, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)});
+                    if constexpr (TAIL) {
+                        Brcb(lowMatrix, norms, k8 / 8, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)});
+                    } else {
+                        VS();
+                        Brcb(lowMatrix, norms, t.cols / 8, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)});
+                        for (uint32_t row = t.cols / 8 * 8; row < t.cols; ++row) Duplicate(lowMatrix[row * stride], norms.GetValue(row), 8);
+                    }
                     PipeBarrier<PIPE_V>();
                     MulAddDst(matrix, bu, lowMatrix, static_cast<uint64_t>(stride), static_cast<uint8_t>(t.cols), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, static_cast<uint8_t>(stride / 8)});
                     PipeBarrier<PIPE_V>();
@@ -1561,7 +1568,7 @@ public:
             for (uint32_t i = 0; i < 8; ++i) calc[i] = area[i * s];
         }
         if (t.localInverse) {
-            pipe->InitBuffer(inverseLow, k8 * stride * sizeof(float));
+            pipe->InitBuffer(inverseLow, (TAIL ? k8 : t.cols) * stride * sizeof(float));
             lowMatrix = inverseLow.Get<float>();
         }
         if (t.localInverse || (t.parallel && t.m == t.n)) {
@@ -1671,7 +1678,7 @@ public:
         }
     }
 };
-template <typename DT_A, bool COMPACT>
+template <typename DT_A, bool COMPACT, bool TAIL>
 __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR workspace, GM_ADDR tiling) {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIV_1_0);
     REGISTER_TILING_DEFAULT(LinalgPinvTilingData);
@@ -1679,7 +1686,7 @@ __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR worksp
     TPipe pipe;
     if constexpr (COMPACT) {
         data.parallel = 0; data.local = 1; data.localInverse = 1;
-        Pinv op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
+        Pinv<TAIL> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
     } else {
         StablePinv op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
     }
