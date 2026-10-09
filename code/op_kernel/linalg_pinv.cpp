@@ -1,6 +1,7 @@
 #include "kernel_operator.h"
 #include "linalg_pinv_tiling.h"
 #include "tiling_key_linalg_pinv.h"
+#include "linalg_pinv_stable.h"
 using namespace AscendC;
 class Pinv {
     TBuf<TPosition::VECCALC> mem, precision, vectorPrecision, inverseLow, batchPrecision, parallelElimination;
@@ -754,11 +755,16 @@ public:
         }
     }
 };
-template <typename DT_A>
+template <typename DT_A, bool COMPACT>
 __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR workspace, GM_ADDR tiling) {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIV_1_0);
     REGISTER_TILING_DEFAULT(LinalgPinvTilingData);
     GET_TILING_DATA_WITH_STRUCT(LinalgPinvTilingData, data, tiling);
-    TPipe pipe; Pinv op;
-    op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
+    TPipe pipe;
+    if constexpr (COMPACT) {
+        data.parallel = 0; data.local = 1; data.localInverse = 1;
+        Pinv op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
+    } else {
+        StablePinv op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
+    }
 }
