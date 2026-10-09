@@ -210,6 +210,115 @@ class StablePinv {
         }
         if (best > 0.0f) pivot = static_cast<uint32_t>(static_cast<int32_t>(gather.GetValue(selected + 1)));
     }
+    __aicore__ inline bool RefineResident(uint32_t b, uint32_t offset, float power,
+                                          float total, float inverseTotal, GlobalTensor<float> meta,
+                                          bool certify, float cutoff) {
+        uint32_t core = GetBlockIdx(), cores = GetBlockNum();
+        uint32_t owned = (t.cols + cores - 1 - core) / cores;
+        auto bx = x, by = y, bu = u, bv = v, cache = calc[0];
+        GlobalTensor<float> residual, normWork;
+        residual.SetGlobalBuffer(workBase + uint64_t(t.batch + b) * t.cols * stride);
+        normWork.SetGlobalBuffer(workBase + uint64_t(b) * t.cols * stride);
+        for (uint32_t row = 0; row < owned; ++row) {
+            VS(); uint32_t target = static_cast<uint32_t>(static_cast<int32_t>(norms.GetValue(core + row * cores))) - 1;
+            Store(result[offset + target * t.m], tileHigh[row * stride + r8], t.m);
+        }
+        SyncAll();
+        for (uint32_t row = 0; row < owned; ++row) {
+            Load(cache[row * r8], input[offset + (core + row * cores) * t.n], t.n);
+            Muls(cache[row * r8], cache[row * r8], 1.0f / power, r8); PipeBarrier<PIPE_V>();
+        }
+        Duplicate(tileHigh, 0.0f, owned * r8); Duplicate(tileLow, 0.0f, owned * r8); PipeBarrier<PIPE_V>(); VS();
+        for (uint32_t row = 0; row < owned; ++row) tileHigh.SetValue(row * r8 + core + row * cores, 1.0f);
+        SV();
+        uint32_t packedCount = t.inverseTile * r8;
+        for (uint32_t k = 0; k < t.cols; ++k) {
+            SetFlag<HardEvent::V_MTE2>(0); WaitFlag<HardEvent::V_MTE2>(0);
+            Load(u, result[offset + k * t.m], t.m);
+            for (uint32_t row = 0; row < t.inverseTile; ++row) {
+                DataCopy(batchU[row * r8], u, r8); Duplicate(batchV[row * r8], 0.0f, r8);
+            }
+            PipeBarrier<PIPE_V>();
+            Muls(batchCalc[0], batchU, 4097.0f, packedCount); PipeBarrier<PIPE_V>();
+            Sub(batchCalc[1], batchCalc[0], batchU, packedCount); PipeBarrier<PIPE_V>();
+            Sub(batchCalc[0], batchCalc[0], batchCalc[1], packedCount); PipeBarrier<PIPE_V>();
+            Sub(batchCalc[1], batchU, batchCalc[0], packedCount); PipeBarrier<PIPE_V>();
+            for (uint32_t first = 0; first < owned; first += t.inverseTile) {
+                uint32_t rows = owned - first < t.inverseTile ? owned - first : t.inverseTile;
+                for (uint32_t row = 0; row < rows; ++row) {
+                    float factor = cache.GetValue((first + row) * r8 + k);
+                    Duplicate(batchH[row * r8], factor, r8); Duplicate(batchL[row * r8], 0.0f, r8);
+                }
+                PipeBarrier<PIPE_V>(); x = tileHigh[first * r8]; y = tileLow[first * r8];
+                BatchEliminate(rows * r8, true); VS();
+            }
+        }
+        x = bx; y = by; u = bu; v = bv;
+        for (uint32_t row = 0; row < owned; ++row) {
+            Add(tileHigh[row * r8], tileHigh[row * r8], tileLow[row * r8], r8); PipeBarrier<PIPE_V>();
+            Store(residual[(core + row * cores) * r8], tileHigh[row * r8], t.n);
+            Load(cache[row * r8], result[offset + (core + row * cores) * t.m], t.m);
+        }
+        Duplicate(x, 0.0f, r8); Duplicate(y, 0.0f, r8); PipeBarrier<PIPE_V>();
+        for (uint32_t row = 0; row < owned; ++row) {
+            Mul(prod, tileHigh[row * r8], tileHigh[row * r8], r8); PipeBarrier<PIPE_V>(); Add(x, x, prod, r8); PipeBarrier<PIPE_V>();
+            Mul(prod, cache[row * r8], cache[row * r8], r8); PipeBarrier<PIPE_V>(); Add(y, y, prod, r8); PipeBarrier<PIPE_V>();
+        }
+        Store(normWork[core * r8], x, r8); Store(normWork[(cores + core) * r8], y, r8); SyncAll();
+        Duplicate(gather, 0.0f, r8); Duplicate(v, 0.0f, r8); PipeBarrier<PIPE_V>();
+        for (uint32_t peer = 0; peer < cores; ++peer) {
+            SetFlag<HardEvent::V_MTE2>(0); WaitFlag<HardEvent::V_MTE2>(0); Load(output, normWork[peer * r8], r8);
+            Add(gather, gather, output, r8); PipeBarrier<PIPE_V>();
+            SetFlag<HardEvent::V_MTE2>(0); WaitFlag<HardEvent::V_MTE2>(0); Load(output, normWork[(cores + peer) * r8], r8);
+            Add(v, v, output, r8); PipeBarrier<PIPE_V>();
+        }
+        ReduceSum(red, gather, tmp, r8); VS(); float rf = Root(red.GetValue(0)) * 1.001f;
+        float af = Root(total) * 1.001f, yf = Root(inverseTotal) * 1.001f;
+        constexpr float unit = 5.9604644775390625e-8f;
+        float gd = 32.0f * t.cols * unit * unit;
+        float gamma = (2.0f * t.cols * unit) / (1.0f - 2.0f * t.cols * unit);
+        float er = gd * af * yf + unit * rf, denominator = 1.0f - rf - er;
+        if (!(denominator > 0.0f)) return false;
+        Sqrt(gather, gather, r8); Sqrt(v, v, r8); PipeBarrier<PIPE_V>();
+        Muls(gather, gather, 1.001f, r8); Muls(v, v, 1.001f, r8); PipeBarrier<PIPE_V>();
+        Muls(output, v, gd * af, r8); Muls(prod, gather, unit, r8); PipeBarrier<PIPE_V>(); Add(output, output, prod, r8); PipeBarrier<PIPE_V>();
+        Duplicate(tileLow, 0.0f, owned * r8); PipeBarrier<PIPE_V>();
+        for (uint32_t k = 0; k < t.cols; ++k) {
+            SetFlag<HardEvent::V_MTE2>(0); WaitFlag<HardEvent::V_MTE2>(0); Load(u, residual[k * r8], t.n);
+            for (uint32_t row = 0; row < owned; ++row) Duplicate(batchCalc[0][row * 8], cache.GetValue(row * r8 + k), 8);
+            PipeBarrier<PIPE_V>();
+            for (uint32_t col = 0; col < r8; col += 64) {
+                uint32_t mask = r8 - col < 64 ? r8 - col : 64;
+                MulAddDst(tileLow[col], u[col], batchCalc[0], static_cast<uint64_t>(mask), static_cast<uint8_t>(owned), {1, 1, 0, static_cast<uint8_t>(r8 / 8), 0, 1});
+                PipeBarrier<PIPE_V>();
+            }
+        }
+        bool valid = true; float correctedTotal = 0.0f;
+        for (uint32_t row = 0; row < owned; ++row) {
+            Add(tileHigh[row * r8], cache[row * r8], tileLow[row * r8], r8); PipeBarrier<PIPE_V>();
+            float cn = Root(Dot(tileLow[row * r8], tileLow[row * r8])) * 1.001f;
+            float yn = Root(Dot(cache[row * r8], cache[row * r8])) * 1.001f;
+            correctedTotal += Dot(tileHigh[row * r8], tileHigh[row * r8]);
+            float ct = cn + gamma * yn * rf + yn * er;
+            Muls(x, gather, gamma * yn + ct / denominator, r8); Muls(y, output, yn + ct / denominator, r8); PipeBarrier<PIPE_V>(); Add(x, x, y, r8); PipeBarrier<PIPE_V>();
+            Abs(y, cache[row * r8], r8); Abs(prod, tileLow[row * r8], r8); PipeBarrier<PIPE_V>(); Add(y, y, prod, r8); PipeBarrier<PIPE_V>(); Muls(y, y, unit, r8); PipeBarrier<PIPE_V>(); Add(x, x, y, r8); PipeBarrier<PIPE_V>(); Muls(x, x, 1.002f, r8); PipeBarrier<PIPE_V>();
+            Abs(y, tileHigh[row * r8], r8); PipeBarrier<PIPE_V>(); Muls(y, y, 1.0e-4f, r8); PipeBarrier<PIPE_V>(); Adds(y, y, 1.0e-4f * power, r8); PipeBarrier<PIPE_V>(); Sub(x, x, y, r8); PipeBarrier<PIPE_V>();
+            ReduceMax(red, x, tmp, r8, false); VS(); if (!(red.GetValue(0) <= 0.0f)) valid = false;
+        }
+        red.SetValue(0, correctedTotal); red.SetValue(1, valid ? 1.0f : 0.0f); Store(meta[core * 8], red, 2); SyncAll();
+        Load(gather, meta, cores * 8); correctedTotal = 0.0f;
+        for (uint32_t peer = 0; peer < cores; ++peer) {
+            correctedTotal += gather.GetValue(peer * 8);
+            if (gather.GetValue(peer * 8 + 1) < 0.5f) valid = false;
+        }
+        float scaledCutoff = cutoff / power;
+        if (!(valid && correctedTotal > 0.0f && (!certify || correctedTotal * scaledCutoff * scaledCutoff < 81.0f))) return false;
+        for (uint32_t row = 0; row < owned; ++row) {
+            Muls(output, tileHigh[row * r8], 1.0f / power, r8); PipeBarrier<PIPE_V>();
+            Store(result[offset + (core + row * cores) * t.m], output, t.m);
+        }
+        SyncAll(); return true;
+    }
     __aicore__ inline bool QuickResidentSquare(uint32_t b, uint32_t offset, float scale,
                                                GlobalTensor<float> meta, bool certify, float cutoff) {
         if (!(scale >= 0.1f)) return false;
@@ -326,8 +435,14 @@ class StablePinv {
         Load(gather, meta, cores * 8); inverseTotal = 0.0f;
         for (uint32_t i = 0; i < cores; ++i) inverseTotal += gather.GetValue(i * 8);
         float scaledCutoff = cutoff / power;
-        if (!(inverseTotal > 0.0f && total * inverseTotal < 3.6e9f)) return false;
+        if (!(inverseTotal > 0.0f)) return false;
         if (certify && !(inverseTotal * scaledCutoff * scaledCutoff < 81.0f)) return false;
+        if (!(total * inverseTotal < 3.6e9f)) {
+            if (total * inverseTotal < 4.0e11f && t.resident * r8 <= 8 * s &&
+                owned <= 255 && t.inverseTile * stride >= owned * 8 && 2 * cores * r8 <= t.cols * stride)
+                return RefineResident(b, offset, power, total, inverseTotal, meta, certify, cutoff);
+            return false;
+        }
         for (uint32_t row = 0; row < owned; ++row) {
             VS(); uint32_t target = static_cast<uint32_t>(static_cast<int32_t>(norms.GetValue(core + row * cores))) - 1;
             Muls(output, tileHigh[row * stride + r8], 1.0f / power, r8); PipeBarrier<PIPE_V>();
