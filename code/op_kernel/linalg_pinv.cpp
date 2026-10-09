@@ -184,7 +184,8 @@ class Pinv {
         Sub(y, x, u, s); PipeBarrier<PIPE_V>();
         Sub(y, calc[0], y, s); PipeBarrier<PIPE_V>();
     }
-    __aicore__ inline void AccurateSquare(uint32_t b, uint32_t offset, float scale, GlobalTensor<float> meta) {
+    __aicore__ inline bool AccurateSquare(uint32_t b, uint32_t offset, float scale, GlobalTensor<float> meta,
+                                         bool certify = false, float cutoff = 0.0f) {
         uint32_t core = GetBlockIdx(), cores = GetBlockNum();
         GlobalTensor<float> low;
         low.SetGlobalBuffer(workBase + uint64_t(t.batch + b) * t.cols * stride);
@@ -208,6 +209,7 @@ class Pinv {
             red.SetValue(0, static_cast<float>(static_cast<int32_t>(bestRow))); Store(meta[256 + core * 8], red, 1);
             SyncAll(); Load(gather, meta, cores * 8); best = 0; uint32_t bestCore = 0;
             for (uint32_t i = 0; i < cores; ++i) { float value = gather.GetValue(i * 8); if (value > best) { best = value; bestCore = i; } }
+            if (certify && !(best > 0.0f)) return false;
             Load(gather, meta[256], cores * 8);
             uint32_t pivot = static_cast<uint32_t>(static_cast<int32_t>(gather.GetValue(bestCore * 8)));
             if (core == 0) {
@@ -230,10 +232,34 @@ class Pinv {
             }
             SyncAll();
         }
+        if (certify) {
+            float inverseTotal = 0.0f;
+            for (uint32_t row = core; row < t.n; row += cores) {
+                ReadRow(x, row);
+                inverseTotal += Dot(x[r8], x[r8]);
+            }
+            red.SetValue(0, inverseTotal); Store(meta[core * 8], red, 1); SyncAll();
+            Load(gather, meta, cores * 8); inverseTotal = 0.0f;
+            for (uint32_t i = 0; i < cores; ++i) inverseTotal += gather.GetValue(i * 8);
+            float scaledCutoff = cutoff / power;
+            if (!(inverseTotal > 0.0f && inverseTotal * scaledCutoff * scaledCutoff < 0.81f)) return false;
+        }
         for (uint32_t row = core; row < t.n; row += cores) {
             ReadRow(x, row); Load(y, low[row * stride], rowLength); VS();
             for (uint32_t j = 0; j < t.m; ++j) output.SetValue(j, (x.GetValue(r8 + j) + y.GetValue(r8 + j)) / power);
             Store(result[offset + row * t.m], output, t.m);
+        }
+        SyncAll();
+        return true;
+    }
+    __aicore__ inline void RestoreJacobi(uint32_t offset, float scale) {
+        for (uint32_t i = GetBlockIdx(); i < t.cols; i += GetBlockNum()) {
+            Duplicate(x, 0.0f, rowLength); PipeBarrier<PIPE_V>();
+            DataCopyPad(gather, input[offset + i], DataCopyExtParams{static_cast<uint16_t>(t.m), 4, (t.n - 1) * 4, 0, 0}, DataCopyPadExtParams<float>{true, 0, 7, 0});
+            SetFlag<HardEvent::MTE2_S>(0); WaitFlag<HardEvent::MTE2_S>(0); VS();
+            for (uint32_t j = 0; j < t.rows; ++j) x.SetValue(j, gather.GetValue(j * 8));
+            x.SetValue(r8 + i, 1.0f); SV();
+            Muls(x, x, 1.0f / scale, r8); PipeBarrier<PIPE_V>(); SaveRow(x, i);
         }
         SyncAll();
     }
@@ -273,6 +299,12 @@ class Pinv {
             red.SetValue(0, total); Store(meta[core * 8], red, 1); SyncAll();
             Load(gather, meta, cores * 8); total = 0;
             for (uint32_t i = 0; i < cores; ++i) total += gather.GetValue(i * 8);
+            if (t.m == t.n) {
+                float cutoff = scale * Root(total) * t.rtol;
+                cutoff = cutoff > t.atol ? cutoff : t.atol;
+                if (AccurateSquare(b, offset, scale, meta, true, cutoff)) continue;
+                RestoreJacobi(offset, scale);
+            }
             float absTol = t.atol / scale, discard = absTol * absTol;
             float rel = t.rtol * t.rtol * total;
             discard = (discard > rel ? discard : rel) * 1.0e-8f;
