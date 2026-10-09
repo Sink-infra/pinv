@@ -1021,28 +1021,31 @@ class Pinv {
                 DataCopy(Row(p), Row(pivot), rowLength); if (!quick) DataCopy(lowMatrix[p * stride], lowMatrix[pivot * stride], rowLength); PipeBarrier<PIPE_V>();
                 DataCopy(Row(pivot), bx, rowLength); if (!quick) DataCopy(lowMatrix[pivot * stride], by, rowLength); PipeBarrier<PIPE_V>();
             }
-            x = Row(p); y = lowMatrix[p * stride]; u = bu; v = bv; if (pivot != p || !quick) VS();
-            Wide divisor = {highData[p * stride + p], quick ? 0.0f : lowData[p * stride + p]}; if (!quick) SV();
-            if (quick) { Muls(x, x, 1.0f / divisor.h, s); PipeBarrier<PIPE_V>(); }
-            else VectorNormalize(divisor);
-            if (!quick) VS();
-            if (quick) { DataCopy(bu, x, stride); PipeBarrier<PIPE_V>(); u = bu; }
-            else u = x;
-            v = y;
-            for (uint32_t first = 0; first < t.cols; first += t.inverseTile) {
-                uint32_t rows = t.cols - first < t.inverseTile ? t.cols - first : t.inverseTile;
-                if (quick) {
+            if (quick) {
+                if (pivot != p) VS();
+                auto pivotLocal = matrix[p * stride];
+                float divisor = highData[p * stride + p];
+                Muls(pivotLocal, pivotLocal, 1.0f / divisor, s); PipeBarrier<PIPE_V>();
+                DataCopy(bu, pivotLocal, stride); PipeBarrier<PIPE_V>();
+                for (uint32_t first = 0; first < t.cols; first += t.inverseTile) {
+                    uint32_t rows = t.cols - first < t.inverseTile ? t.cols - first : t.inverseTile;
                     for (uint32_t row = 0; row < 8; ++row) {
                         uint32_t i = first + row;
                         float factor = row >= rows || i == p ? 0.0f : highData[i * stride + p];
                         red.SetValue(row, -factor);
                     }
                     SV(); Brcb(batchH, red, 1, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)}); PipeBarrier<PIPE_V>();
-                    x = Row(first);
-                    MulAddDst(x, u, batchH, static_cast<uint64_t>(stride), static_cast<uint8_t>(rows), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, static_cast<uint8_t>(stride / 8)});
+                    auto target = matrix[first * stride];
+                    MulAddDst(target, bu, batchH, static_cast<uint64_t>(stride), static_cast<uint8_t>(rows), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, static_cast<uint8_t>(stride / 8)});
                     PipeBarrier<PIPE_V>(); VS();
-                    continue;
                 }
+                continue;
+            }
+            x = Row(p); y = lowMatrix[p * stride]; u = bu; v = bv; VS();
+            Wide divisor = {highData[p * stride + p], lowData[p * stride + p]}; SV();
+            VectorNormalize(divisor); VS(); u = x; v = y;
+            for (uint32_t first = 0; first < t.cols; first += t.inverseTile) {
+                uint32_t rows = t.cols - first < t.inverseTile ? t.cols - first : t.inverseTile;
                 for (uint32_t row = 0; row < rows; ++row) {
                     uint32_t i = first + row;
                     float fh = i == p ? 0.0f : highData[i * stride + p];
