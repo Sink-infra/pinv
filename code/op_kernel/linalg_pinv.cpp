@@ -244,7 +244,9 @@ class Pinv {
             Load(gather, meta, cores * 8); inverseTotal = 0.0f;
             for (uint32_t i = 0; i < cores; ++i) inverseTotal += gather.GetValue(i * 8);
             float scaledCutoff = cutoff / power;
-            if (!(inverseTotal > 0.0f && inverseTotal * scaledCutoff * scaledCutoff < 0.81f)) return false;
+            // The promised spectral gap bounds a discarded nonzero value by 0.1 times the threshold.
+            // Such a value forces the inverse norm times this upper threshold to be at least ten.
+            if (!(inverseTotal > 0.0f && inverseTotal * scaledCutoff * scaledCutoff < 81.0f)) return false;
         }
         for (uint32_t row = core; row < t.n; row += cores) {
             ReadRow(x, row); Load(y, low[row * stride], rowLength); VS();
