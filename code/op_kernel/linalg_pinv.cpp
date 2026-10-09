@@ -927,6 +927,27 @@ class StablePinv {
         t.resident = (t.cols + allCores - 1) / allCores;
         return accepted;
     }
+    __aicore__ inline void RebudgetWaveScratch() {
+        uint32_t active = (t.cols + GetBlockNum() - 1) / GetBlockNum();
+        uint32_t unused = t.resident > active ? t.resident - active : 0;
+        uint32_t initial = t.inverseTile;
+        uint32_t candidate = (12 * initial + 2 * unused) / 12;
+        candidate = candidate < active ? candidate : active;
+        while (candidate > initial && 12 * initial / candidate + 2 * (unused / candidate) < 12) --candidate;
+        if (candidate > initial) {
+            LocalTensor<float> regions[3] = {batchPrecision.Get<float>(), tileHigh[active * stride], tileLow[active * stride]};
+            uint32_t sizes[3] = {12 * initial, unused, unused};
+            LocalTensor<float> slots[12]; uint32_t count = 0;
+            for (uint32_t region = 0; region < 3 && count < 12; ++region) {
+                for (uint32_t row = 0; row + candidate <= sizes[region] && count < 12; row += candidate)
+                    slots[count++] = regions[region][row * stride];
+            }
+            for (uint32_t i = 0; i < 8; ++i) batchCalc[i] = slots[i];
+            batchU = slots[8]; batchV = slots[9]; batchH = slots[10]; batchL = slots[11];
+            t.inverseTile = candidate;
+        }
+        t.resident = active;
+    }
     __aicore__ inline uint32_t WaveGroupedResident() {
         uint32_t physical = GetBlockIdx(), allCores = GetBlockNum(), groups = t.groupCount;
         uint32_t base = allCores / groups, extra = allCores % groups;
@@ -1037,7 +1058,7 @@ class StablePinv {
             else if (state > 0.5f) accepted |= uint32_t(1) << item;
         }
         }
-        t.resident = (t.cols + allCores - 1) / allCores;
+        RebudgetWaveScratch();
         return accepted;
     }
     __aicore__ inline void Parallel() {
