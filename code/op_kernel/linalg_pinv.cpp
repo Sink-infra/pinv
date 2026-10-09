@@ -2,7 +2,7 @@
 #include "linalg_pinv_tiling.h"
 #include "tiling_key_linalg_pinv.h"
 using namespace AscendC;
-template <bool WAVE>
+template <bool WAVE, bool LOCAL>
 class StablePinv {
     TBuf<TPosition::VECCALC> mem, precision, vectorPrecision, inverseLow, batchPrecision, parallelElimination;
     LocalTensor<float> batchCalc[8], batchU, batchV, batchH, batchL;
@@ -1246,7 +1246,7 @@ public:
         workBase = (__gm__ float *)ws; work.SetGlobalBuffer(workBase);
     }
     __aicore__ inline void Process() {
-        if (t.parallel) { Parallel(); return; }
+        if constexpr (!LOCAL) { if (t.parallel) { Parallel(); return; } }
         for (uint32_t b = GetBlockIdx(); b < t.batch; b += GetBlockNum()) {
             uint32_t offset = b * t.m * t.n;
             if (t.localInverse && LocalInverse(offset)) continue;
@@ -2123,7 +2123,7 @@ public:
         }
     }
 };
-template <typename DT_A, bool COMPACT, bool TAIL, bool WAVE>
+template <typename DT_A, bool COMPACT, bool TAIL, bool WAVE, bool LOCAL>
 __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR workspace, GM_ADDR tiling) {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIV_1_0);
     REGISTER_TILING_DEFAULT(LinalgPinvTilingData);
@@ -2134,6 +2134,7 @@ __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR worksp
         Pinv<TAIL> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
     } else {
         if constexpr (WAVE) { data.parallel = 1; data.local = 0; data.localInverse = 0; }
-        StablePinv<WAVE> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
+        if constexpr (LOCAL) { data.parallel = 0; data.groupCount = 0; data.localInverse = 1; }
+        StablePinv<WAVE, LOCAL> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
     }
 }
