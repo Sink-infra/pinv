@@ -1247,11 +1247,26 @@ class Pinv {
                 x = Row(i); Muls(x, x, 1.0f / power, r8); PipeBarrier<PIPE_V>(); total += Dot(x, x);
             }
         }
+        bool vectorQuick = quick && t.cols >= 8;
+        auto indices = gather.ReinterpretCast<uint32_t>();
+        if (vectorQuick) {
+            for (uint32_t i = 0; i < k8; ++i) indices.SetValue(i, i < t.cols ? i * stride * sizeof(float) : 0);
+            Duplicate(norms, 0.0f, k8); PipeBarrier<PIPE_V>(); SV();
+        }
         for (uint32_t p = 0; p < t.cols; ++p) {
-            if (p == 0 || !quick) VS(); uint32_t pivot = p; float best = 0.0f;
-            for (uint32_t i = p; i < t.cols; ++i) {
-                float value = AbsScalar(highData[i * stride + p]);
-                if (value > best) { best = value; pivot = i; }
+            uint32_t pivot = p; float best = 0.0f;
+            if (vectorQuick) {
+                Gather(norms, matrix, indices, p * sizeof(float), t.cols); PipeBarrier<PIPE_V>();
+                Abs(prod, norms, k8); PipeBarrier<PIPE_V>();
+                uint64_t pivotMask[2] = {((uint64_t(1) << t.cols) - 1) & ~((uint64_t(1) << p) - 1), 0};
+                WholeReduceMax(red, prod, pivotMask, 1, 1, 1, 8); VS();
+                best = red.GetValue(0); pivot = red.ReinterpretCast<uint32_t>().GetValue(1);
+            } else {
+                if (p == 0 || !quick) VS();
+                for (uint32_t i = p; i < t.cols; ++i) {
+                    float value = AbsScalar(highData[i * stride + p]);
+                    if (value > best) { best = value; pivot = i; }
+                }
             }
             if (!(best > 0.0f)) return false;
             if (pivot != p) {
@@ -1265,6 +1280,16 @@ class Pinv {
                 float divisor = highData[p * stride + p];
                 Muls(pivotLocal, pivotLocal, 1.0f / divisor, s); PipeBarrier<PIPE_V>();
                 DataCopy(bu, pivotLocal, stride); PipeBarrier<PIPE_V>();
+                if (vectorQuick) {
+                    if (pivot != p) norms.SetValue(pivot, norms.GetValue(p));
+                    norms.SetValue(p, 0.0f); SV(); Muls(norms, norms, -1.0f, k8); PipeBarrier<PIPE_V>(); VS();
+                    Brcb(lowMatrix, norms, t.cols / 8, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)});
+                    for (uint32_t row = t.cols / 8 * 8; row < t.cols; ++row) Duplicate(lowMatrix[row * stride], norms.GetValue(row), 8);
+                    PipeBarrier<PIPE_V>();
+                    MulAddDst(matrix, bu, lowMatrix, static_cast<uint64_t>(stride), static_cast<uint8_t>(t.cols), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, static_cast<uint8_t>(stride / 8)});
+                    PipeBarrier<PIPE_V>();
+                    continue;
+                }
                 for (uint32_t first = 0; first < t.cols; first += t.inverseTile) {
                     uint32_t rows = t.cols - first < t.inverseTile ? t.cols - first : t.inverseTile;
                     for (uint32_t row = 0; row < 8; ++row) {
@@ -1298,6 +1323,7 @@ class Pinv {
             }
         }
         float inverseTotal = 0.0f;
+        if (vectorQuick) { Duplicate(lowMatrix, 0.0f, count); PipeBarrier<PIPE_V>(); }
         if (compact) {
             Add(matrix, matrix, lowMatrix, count); PipeBarrier<PIPE_V>(); Duplicate(lowMatrix, 0.0f, count); PipeBarrier<PIPE_V>();
             Mul(lowMatrix, matrix[r8], matrix[r8], static_cast<uint64_t>(r8), static_cast<uint8_t>(t.cols), {1, 1, 1, static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride / 8)});
