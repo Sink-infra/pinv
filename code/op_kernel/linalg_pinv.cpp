@@ -861,7 +861,9 @@ class StablePinv {
         float absolute = t.atol / power; cutoff = cutoff > absolute ? cutoff : absolute;
         uint64_t available = owned < 64 ? (uint64_t(1) << owned) - 1 : ~uint64_t(0);
         auto pivotIndices = tmp.ReinterpretCast<uint32_t>();
-        for (uint32_t row = 0; row < (owned + 7) / 8 * 8; ++row) pivotIndices.SetValue(row, row < owned ? row * stride * sizeof(float) : 0);
+        uint32_t factorRows = (owned + 7) / 8 * 8;
+        bool packed = t.inverseTile * stride >= factorRows * 8;
+        for (uint32_t row = 0; row < factorRows; ++row) pivotIndices.SetValue(row, row < owned ? row * stride * sizeof(float) : 0);
         SV();
         for (uint32_t p = 0; p < t.cols; ++p) {
             if (p == 0) {
@@ -887,16 +889,26 @@ class StablePinv {
             SyncAll();
             float nextBest = 0.0f; uint32_t nextRow = core;
             if (valid) {
-                Load(u, work, rowLength); VS();
-                for (uint32_t row = 0; row < owned; ++row) {
-                    uint32_t i = core + row * cores;
-                    float factor = i == pivot ? 0.0f : -tileHigh.GetValue(row * stride + p);
-                    Duplicate(tileLow[row * stride], factor, 8);
+                Load(u, work, rowLength);
+                if (packed) {
+                    Gather(v, tileHigh, pivotIndices, p * sizeof(float), factorRows); PipeBarrier<PIPE_V>();
+                    if (core == pivot % cores) { VS(); v.SetValue(pivot / cores, 0.0f); SV(); }
+                    Muls(v, v, -1.0f, factorRows); PipeBarrier<PIPE_V>();
+                    Brcb(batchH, v, factorRows / 8, {1, 8});
+                } else {
+                    VS();
+                    for (uint32_t row = 0; row < owned; ++row) {
+                        uint32_t i = core + row * cores;
+                        float factor = i == pivot ? 0.0f : -tileHigh.GetValue(row * stride + p);
+                        Duplicate(tileLow[row * stride], factor, 8);
+                    }
                 }
                 PipeBarrier<PIPE_V>();
+                auto factors = packed ? batchH : tileLow;
+                uint8_t factorStride = packed ? 1 : static_cast<uint8_t>(stride / 8);
                 for (uint32_t col = 0; col < s; col += 64) {
                     uint32_t mask = s - col < 64 ? s - col : 64;
-                    MulAddDst(tileHigh[col], u[col], tileLow, static_cast<uint64_t>(mask), static_cast<uint8_t>(owned), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, static_cast<uint8_t>(stride / 8)});
+                    MulAddDst(tileHigh[col], u[col], factors, static_cast<uint64_t>(mask), static_cast<uint8_t>(owned), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, factorStride});
                     PipeBarrier<PIPE_V>();
                 }
                 if (p + 1 < t.cols && available) {
