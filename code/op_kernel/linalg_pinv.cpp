@@ -330,7 +330,7 @@ class Pinv {
         Add(x, bh, e, count); PipeBarrier<PIPE_V>(); Sub(aux, x, bh, count); PipeBarrier<PIPE_V>(); Sub(y, e, aux, count); PipeBarrier<PIPE_V>();
     }
     __aicore__ inline bool LocalInverseBody(uint32_t offset, LocalTensor<float> bx, LocalTensor<float> by,
-                                            LocalTensor<float> bu, LocalTensor<float> bv) {
+                                            LocalTensor<float> bu, LocalTensor<float> bv, bool tryQuick = false) {
         float scale = 0.0f;
         for (uint32_t i = 0; i < t.cols; ++i) {
             x = Row(i); y = lowMatrix[i * stride];
@@ -341,6 +341,7 @@ class Pinv {
             x.SetValue(r8 + i, 1.0f); SV();
         }
         if (!(scale > 0.0f)) return false;
+        bool quick = tryQuick && stride <= 64 && scale >= 0.001f;
         float power = 1.0f;
         while (power < scale) power *= 2.0f;
         while (power * 0.5f >= scale) power *= 0.5f;
@@ -361,16 +362,34 @@ class Pinv {
                 DataCopy(Row(pivot), bx, rowLength); DataCopy(lowMatrix[pivot * stride], by, rowLength); PipeBarrier<PIPE_V>();
             }
             x = Row(p); y = lowMatrix[p * stride]; u = bu; v = bv; VS();
-            Wide divisor = {x.GetValue(p), y.GetValue(p)}; SV(); VectorNormalize(divisor);
-            VS(); u = x; v = y;
+            Wide divisor = {x.GetValue(p), y.GetValue(p)}; SV();
+            if (quick) { Muls(x, x, 1.0f / divisor.h, s); PipeBarrier<PIPE_V>(); }
+            else VectorNormalize(divisor);
+            VS();
+            if (quick) { DataCopy(bu, x, stride); PipeBarrier<PIPE_V>(); u = bu; }
+            else u = x;
+            v = y;
             for (uint32_t first = 0; first < t.cols; first += t.inverseTile) {
                 uint32_t rows = t.cols - first < t.inverseTile ? t.cols - first : t.inverseTile;
+                if (quick) {
+                    for (uint32_t row = 0; row < 8; ++row) {
+                        uint32_t i = first + row;
+                        float factor = row >= rows || i == p ? 0.0f : Row(i).GetValue(p);
+                        red.SetValue(row, -factor);
+                    }
+                    SV(); Brcb(batchH, red, 1, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)}); PipeBarrier<PIPE_V>();
+                    x = Row(first);
+                    MulAddDst(x, u, batchH, static_cast<uint64_t>(stride), static_cast<uint8_t>(rows), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, static_cast<uint8_t>(stride / 8)});
+                    PipeBarrier<PIPE_V>(); VS();
+                    continue;
+                }
                 for (uint32_t row = 0; row < rows; ++row) {
                     uint32_t i = first + row;
                     float fh = i == p ? 0.0f : Row(i).GetValue(p);
                     float fl = i == p ? 0.0f : lowMatrix[i * stride].GetValue(p);
-                    Duplicate(batchH[row * stride], fh, stride); Duplicate(batchL[row * stride], fl, stride);
-                    DataCopy(batchU[row * stride], u, stride); DataCopy(batchV[row * stride], v, stride);
+                    Duplicate(batchH[row * stride], fh, stride);
+                    DataCopy(batchU[row * stride], u, stride);
+                    Duplicate(batchL[row * stride], fl, stride); DataCopy(batchV[row * stride], v, stride);
                 }
                 PipeBarrier<PIPE_V>();
                 x = Row(first); y = lowMatrix[first * stride];
@@ -391,7 +410,7 @@ class Pinv {
     }
     __aicore__ inline bool LocalInverse(uint32_t offset) {
         auto bx = x, by = y, bu = u, bv = v;
-        bool accepted = LocalInverseBody(offset, bx, by, bu, bv);
+        bool accepted = LocalInverseBody(offset, bx, by, bu, bv, true);
         x = bx; y = by; u = bu; v = bv;
         return accepted;
     }
