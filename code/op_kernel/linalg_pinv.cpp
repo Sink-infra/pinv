@@ -407,13 +407,16 @@ class StablePinv {
         float total = red.GetValue(0);
         auto data = reinterpret_cast<__ubuf__ float *>(matrix.GetPhyAddr());
         for (uint32_t i = 0; i < t.cols; ++i) data[i * stride + r8 + i] = 1.0f;
-        SV();
+        auto indices = gather.ReinterpretCast<uint32_t>();
+        for (uint32_t i = 0; i < k8; ++i) indices.SetValue(i, i < t.cols ? i * stride * sizeof(float) : 0);
+        Duplicate(norms, 0.0f, k8); PipeBarrier<PIPE_V>(); SV();
         for (uint32_t p = 0; p < t.cols; ++p) {
-            VS(); uint32_t pivot = p; float best = 0.0f;
-            for (uint32_t i = p; i < t.cols; ++i) {
-                float value = AbsScalar(data[i * stride + p]);
-                if (value > best) { best = value; pivot = i; }
-            }
+            Gather(norms, matrix, indices, p * sizeof(float), t.cols); PipeBarrier<PIPE_V>();
+            Abs(prod, norms, k8); PipeBarrier<PIPE_V>();
+            if (p) { Duplicate(prod, 0.0f, p); PipeBarrier<PIPE_V>(); }
+            ReduceMax(red, prod, tmp, t.cols, true); VS();
+            float best = red.GetValue(0);
+            uint32_t pivot = red.ReinterpretCast<uint32_t>().GetValue(1);
             if (!(best > 0.0f)) return false;
             if (pivot != p) {
                 DataCopy(x, Row(p), rowLength); PipeBarrier<PIPE_V>();
@@ -422,8 +425,9 @@ class StablePinv {
             }
             Muls(Row(p), Row(p), 1.0f / data[p * stride + p], s); PipeBarrier<PIPE_V>();
             DataCopy(u, Row(p), rowLength); PipeBarrier<PIPE_V>();
-            for (uint32_t i = 0; i < t.cols; ++i) norms.SetValue(i, i == p ? 0.0f : -data[i * stride + p]);
-            SV();
+            if (pivot != p) norms.SetValue(pivot, norms.GetValue(p));
+            norms.SetValue(p, 0.0f); SV();
+            Muls(norms, norms, -1.0f, k8); PipeBarrier<PIPE_V>(); VS();
             Brcb(lowMatrix, norms, t.cols / 8, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)});
             for (uint32_t i = t.cols / 8 * 8; i < t.cols; ++i) Duplicate(lowMatrix[i * stride], norms.GetValue(i), 8);
             PipeBarrier<PIPE_V>();
