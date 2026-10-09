@@ -452,8 +452,8 @@ class StablePinv {
         SyncAll(); return true;
     }
     __aicore__ inline bool ResidentSquare(uint32_t b, uint32_t offset, float scale,
-                                          GlobalTensor<float> meta, bool certify, float cutoff) {
-        if (QuickResidentSquare(b, offset, scale, meta, certify, cutoff)) return true;
+                                          GlobalTensor<float> meta, bool certify, float cutoff, bool skipQuick = false) {
+        if (!skipQuick && QuickResidentSquare(b, offset, scale, meta, certify, cutoff)) return true;
         uint32_t core = GetBlockIdx(), cores = GetBlockNum();
         uint32_t owned = (t.cols + cores - 1 - core) / cores;
         GlobalTensor<float> low;
@@ -927,9 +927,123 @@ class StablePinv {
         t.resident = (t.cols + allCores - 1) / allCores;
         return accepted;
     }
+    __aicore__ inline uint32_t WaveGroupedResident() {
+        uint32_t physical = GetBlockIdx(), allCores = GetBlockNum(), groups = t.groupCount;
+        uint32_t base = allCores / groups, extra = allCores % groups;
+        uint32_t group, core, cores;
+        if (physical < extra * (base + 1)) { group = physical / (base + 1); core = physical % (base + 1); cores = base + 1; }
+        else { uint32_t rest = physical - extra * (base + 1); group = extra + rest / base; core = rest % base; cores = base; }
+        uint32_t accepted = 0;
+        for (uint32_t round = 0; round < t.batch / groups; ++round) {
+        uint32_t b = round * groups + group, offset = b * t.m * t.n, owned = (t.cols + cores - 1 - core) / cores;
+        GlobalTensor<float> meta;
+        meta.SetGlobalBuffer(workBase + uint64_t(2) * t.batch * t.cols * stride + uint64_t(b) * 8192);
+        work.SetGlobalBuffer(workBase + uint64_t(b) * t.cols * stride);
+        Duplicate(tileHigh, 0.0f, owned * stride); Duplicate(norms, 0.0f, k8); PipeBarrier<PIPE_V>();
+        float scale = 0.0f;
+        for (uint32_t row = 0; row < owned; ++row) {
+            Load(tileHigh[row * stride], input[offset + (core + row * cores) * t.n], t.n);
+            Abs(prod, tileHigh[row * stride], r8); PipeBarrier<PIPE_V>(); ReduceMax(red, prod, tmp, r8, false); VS();
+            float value = red.GetValue(0); scale = value > scale ? value : scale;
+        }
+        red.SetValue(0, scale); Store(meta[core * 8], red, 1); SyncAll();
+        Load(gather, meta, cores * 8); scale = 0.0f;
+        for (uint32_t peer = 0; peer < cores; ++peer) { float value = gather.GetValue(peer * 8); scale = value > scale ? value : scale; }
+        bool valid = scale >= 0.1f && scale < 1.7014118e38f;
+        float power = 1.0f;
+        if (valid) { while (power < scale) power *= 2.0f; while (power * 0.5f >= scale) power *= 0.5f; }
+        float total = 0.0f;
+        if (valid) for (uint32_t row = 0; row < owned; ++row) {
+            Muls(tileHigh[row * stride], tileHigh[row * stride], 1.0f / power, r8); PipeBarrier<PIPE_V>();
+            total += Dot(tileHigh[row * stride], tileHigh[row * stride]);
+            tileHigh.SetValue(row * stride + r8 + core + row * cores, 1.0f); SV();
+        }
+        red.SetValue(0, total); Store(meta[core * 8], red, 1); SyncAll(); Load(gather, meta, cores * 8); total = 0.0f;
+        for (uint32_t peer = 0; peer < cores; ++peer) total += gather.GetValue(peer * 8);
+        float cutoff = Root(total) * t.rtol;
+        float absolute = t.atol / power; cutoff = cutoff > absolute ? cutoff : absolute;
+        uint64_t available = owned < 64 ? (uint64_t(1) << owned) - 1 : ~uint64_t(0);
+        auto pivotIndices = tmp.ReinterpretCast<uint32_t>();
+        for (uint32_t row = 0; row < (owned + 7) / 8 * 8; ++row) pivotIndices.SetValue(row, row < owned ? row * stride * sizeof(float) : 0);
+        SV();
+        for (uint32_t p = 0; p < t.cols; ++p) {
+            if (p == 0) {
+                float best = 0.0f; uint32_t selected = core;
+                if (valid) {
+                    Gather(prod, tileHigh, pivotIndices, 0, owned); PipeBarrier<PIPE_V>(); Abs(prod, prod, owned); PipeBarrier<PIPE_V>();
+                    uint64_t active[2] = {available, 0}; WholeReduceMax(red, prod, active, 1, 1, 1, 8); VS();
+                    best = red.GetValue(0); selected = core + red.ReinterpretCast<uint32_t>().GetValue(1) * cores;
+                }
+                red.SetValue(0, best); red.SetValue(1, static_cast<float>(static_cast<int32_t>(selected))); Store(meta[core * 8], red, 2); SyncAll();
+            }
+            Load(gather, meta, cores * 8); float best = 0.0f; uint32_t pivot = 0;
+            GlobalPivot(cores, best, pivot); valid = valid && best > 0.0f;
+            if (valid) {
+                norms.SetValue(pivot, static_cast<float>(static_cast<int32_t>(p + 1))); SV();
+                if (core == pivot % cores) {
+                    available &= ~(uint64_t(1) << (pivot / cores));
+                    VS(); float divisor = tileHigh.GetValue((pivot / cores) * stride + p);
+                    Muls(tileHigh[(pivot / cores) * stride], tileHigh[(pivot / cores) * stride], 1.0f / divisor, s); PipeBarrier<PIPE_V>();
+                    Store(work, tileHigh[(pivot / cores) * stride], rowLength);
+                }
+            }
+            SyncAll();
+            float nextBest = 0.0f; uint32_t nextRow = core;
+            if (valid) {
+                Load(u, work, rowLength); VS();
+                for (uint32_t row = 0; row < owned; ++row) {
+                    uint32_t i = core + row * cores;
+                    float factor = i == pivot ? 0.0f : -tileHigh.GetValue(row * stride + p);
+                    Duplicate(tileLow[row * stride], factor, 8);
+                }
+                PipeBarrier<PIPE_V>();
+                for (uint32_t col = 0; col < s; col += 64) {
+                    uint32_t mask = s - col < 64 ? s - col : 64;
+                    MulAddDst(tileHigh[col], u[col], tileLow, static_cast<uint64_t>(mask), static_cast<uint8_t>(owned), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, static_cast<uint8_t>(stride / 8)});
+                    PipeBarrier<PIPE_V>();
+                }
+                if (p + 1 < t.cols && available) {
+                    Gather(prod, tileHigh, pivotIndices, (p + 1) * sizeof(float), owned); PipeBarrier<PIPE_V>(); Abs(prod, prod, owned); PipeBarrier<PIPE_V>();
+                    uint64_t active[2] = {available, 0}; WholeReduceMax(red, prod, active, 1, 1, 1, 8); VS();
+                    nextBest = red.GetValue(0); nextRow = core + red.ReinterpretCast<uint32_t>().GetValue(1) * cores;
+                }
+            }
+            if (p + 1 < t.cols) { red.SetValue(0, nextBest); red.SetValue(1, static_cast<float>(static_cast<int32_t>(nextRow))); Store(meta[core * 8], red, 2); }
+            SyncAll();
+        }
+        float inverseTotal = 0.0f;
+        if (valid) for (uint32_t row = 0; row < owned; ++row) inverseTotal += Dot(tileHigh[row * stride + r8], tileHigh[row * stride + r8]);
+        red.SetValue(0, inverseTotal); Store(meta[core * 8], red, 1); SyncAll(); Load(gather, meta, cores * 8); inverseTotal = 0.0f;
+        for (uint32_t peer = 0; peer < cores; ++peer) inverseTotal += gather.GetValue(peer * 8);
+        valid = valid && inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < 81.0f;
+        uint32_t normOwned = (t.cols + allCores - 1) / allCores;
+        bool prepared = valid && total * inverseTotal >= 3.6e9f && total * inverseTotal < 4.0e11f &&
+            normOwned * r8 <= 8 * s && t.inverseTile * stride >= normOwned * 8 && 2 * allCores * r8 <= t.cols * stride;
+        valid = valid && total * inverseTotal < 3.6e9f;
+        if (valid || prepared) for (uint32_t row = 0; row < owned; ++row) {
+            VS(); uint32_t target = static_cast<uint32_t>(static_cast<int32_t>(norms.GetValue(core + row * cores))) - 1;
+            Muls(output, tileHigh[row * stride + r8], valid ? 1.0f / power : 1.0f, r8); PipeBarrier<PIPE_V>(); Store(result[offset + target * t.m], output, t.m);
+        }
+        if (core == 0) {
+            red.SetValue(0, total); red.SetValue(1, inverseTotal); red.SetValue(2, power); Store(meta[1032], red, 3);
+            red.SetValue(0, valid ? 1.0f : (prepared ? 2.0f : 0.0f)); Store(meta[1024], red, 1);
+        }
+        SyncAll();
+        for (uint32_t peer = 0; peer < groups; ++peer) {
+            uint32_t item = round * groups + peer;
+            meta.SetGlobalBuffer(workBase + uint64_t(2) * t.batch * t.cols * stride + uint64_t(item) * 8192);
+            Load(gather, meta[1024], 1); float state = gather.GetValue(0);
+            if (state > 1.5f) accepted |= uint32_t(1) << (item + 4);
+            else if (state > 0.5f) accepted |= uint32_t(1) << item;
+        }
+        }
+        t.resident = (t.cols + allCores - 1) / allCores;
+        return accepted;
+    }
     __aicore__ inline void Parallel() {
         uint32_t core = GetBlockIdx(), cores = GetBlockNum();
-        uint32_t accepted = t.groupCount ? GroupedResident() : 0;
+        uint32_t grouped = t.groupCount ? (t.groupCount == t.batch ? GroupedResident() : WaveGroupedResident()) : 0;
+        uint32_t accepted = grouped & 15, prepared = grouped >> 4;
         uint32_t roundCols = (t.cols + 1) / 2 * 2;
         for (uint32_t b = 0; b < t.batch; ++b) {
             if (accepted & (uint32_t(1) << b)) continue;
@@ -968,7 +1082,15 @@ class StablePinv {
             if (t.m == t.n) {
                 float cutoff = scale * Root(total) * t.rtol;
                 cutoff = cutoff > t.atol ? cutoff : t.atol;
-                if (AccurateSquare(b, offset, scale, meta, true, cutoff)) continue;
+                if (prepared & (uint32_t(1) << b)) {
+                    Load(gather, meta[1032], 3);
+                    float cachedTotal = gather.GetValue(0), cachedInverse = gather.GetValue(1), power = gather.GetValue(2);
+                    VS(); for (uint32_t i = 0; i < t.cols; ++i) norms.SetValue(i, static_cast<float>(static_cast<int32_t>(i + 1))); SV();
+                    uint32_t owned = (t.cols + cores - 1 - core) / cores;
+                    for (uint32_t row = 0; row < owned; ++row) Load(tileHigh[row * stride + r8], result[offset + (core + row * cores) * t.m], t.m);
+                    if (RefineResident(b, offset, power, cachedTotal, cachedInverse, meta, true, cutoff)) continue;
+                    if (ResidentSquare(b, offset, scale, meta, true, cutoff, true)) continue;
+                } else if (AccurateSquare(b, offset, scale, meta, true, cutoff)) continue;
                 RestoreJacobi(offset, scale);
             }
             float absTol = t.atol / scale, discard = absTol * absTol;
