@@ -40,12 +40,19 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     t->localInverse = m == n && inverseBytes <= ubSize;
     if (t->localInverse) t->parallel = 0;
     if (t->parallel) t->stride = (t->stride + 127) / 128 * 128;
+    t->resident = 0;
     if (t->parallel && m == n) {
         uint64_t baseBytes = (4 * uint64_t(t->stride) + 4 * r8 + 8 * t->rows + k8 + 32 + 8 * (r8 + k8)) * sizeof(float);
         uint32_t cores = std::min<uint32_t>(platform.GetCoreNumAic(), (t->cols + 1) / 2);
         uint32_t owned = (t->cols + cores - 1) / cores;
         uint64_t capacity = ubSize > baseBytes ? (ubSize - baseBytes) / (14 * t->stride * sizeof(float)) : 1;
         t->inverseTile = std::max<uint32_t>(1, std::min<uint64_t>(owned, capacity));
+        uint64_t residentBytes = 2 * uint64_t(owned) * t->stride * sizeof(float);
+        uint64_t residentCapacity = ubSize > baseBytes + residentBytes ? (ubSize - baseBytes - residentBytes) / (12 * t->stride * sizeof(float)) : 0;
+        if (residentCapacity > 0) {
+            t->resident = owned;
+            t->inverseTile = std::min<uint64_t>(owned, residentCapacity);
+        }
     }
     uint64_t localBytes = (uint64_t(t->cols) * t->stride + 4 * t->stride + 4 * r8 + 8 * t->rows + k8 + 32) * 4;
     if (t->rows <= 32) localBytes += 4 * k8 * k8 * sizeof(float);
