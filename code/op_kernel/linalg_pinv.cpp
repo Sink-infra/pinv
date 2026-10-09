@@ -617,8 +617,15 @@ class StablePinv {
         for (uint32_t p = 0; p < t.cols; ++p) {
             Gather(norms, matrix, indices, p * sizeof(float), t.cols); PipeBarrier<PIPE_V>();
             Abs(prod, norms, k8); PipeBarrier<PIPE_V>();
-            if (p) { Duplicate(prod, 0.0f, p); PipeBarrier<PIPE_V>(); }
-            ReduceMax(red, prod, tmp, t.cols, true); VS();
+            if (t.cols <= 64) {
+                uint64_t limit = t.cols < 64 ? (uint64_t(1) << t.cols) - 1 : ~uint64_t(0);
+                uint64_t active[2] = {limit & (~uint64_t(0) << p), 0};
+                WholeReduceMax(red, prod, active, 1, 1, 1, 8);
+            } else {
+                if (p) { Duplicate(prod, 0.0f, p); PipeBarrier<PIPE_V>(); }
+                ReduceMax(red, prod, tmp, t.cols, true);
+            }
+            VS();
             float best = red.GetValue(0);
             uint32_t pivot = red.ReinterpretCast<uint32_t>().GetValue(1);
             if (!(best > 0.0f)) return false;
