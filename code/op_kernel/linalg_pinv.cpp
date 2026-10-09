@@ -991,7 +991,7 @@ class Pinv {
             }
         }
         if (!(scale > 0.0f)) return false;
-        bool quick = scale >= 0.001f;
+        bool quick = scale >= 0.1f;
         float power = 1.0f;
         while (power < scale) power *= 2.0f;
         while (power * 0.5f >= scale) power *= 0.5f;
