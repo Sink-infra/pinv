@@ -102,7 +102,8 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     uint32_t COMPACT = t->localInverse && t->stride <= 64;
     if (!COMPACT && ws[0] == 0) ws[0] = 32;
     uint32_t TAIL = COMPACT && t->cols % 8 != 0;
-    ASCENDC_TPL_SEL_PARAM(context, DT_A, COMPACT, TAIL);
+    uint32_t WAVE = t->groupCount > 0 && t->groupCount < t->batch;
+    ASCENDC_TPL_SEL_PARAM(context, DT_A, COMPACT, TAIL, WAVE);
     return ge::GRAPH_SUCCESS;
 }
 }

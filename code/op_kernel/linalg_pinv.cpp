@@ -2,6 +2,7 @@
 #include "linalg_pinv_tiling.h"
 #include "tiling_key_linalg_pinv.h"
 using namespace AscendC;
+template <bool WAVE>
 class StablePinv {
     TBuf<TPosition::VECCALC> mem, precision, vectorPrecision, inverseLow, batchPrecision, parallelElimination;
     LocalTensor<float> batchCalc[8], batchU, batchV, batchH, batchL;
@@ -1062,8 +1063,10 @@ class StablePinv {
     }
     __aicore__ inline void Parallel() {
         uint32_t core = GetBlockIdx(), cores = GetBlockNum();
-        uint32_t grouped = t.groupCount ? (t.groupCount == t.batch ? GroupedResident() : WaveGroupedResident()) : 0;
-        uint32_t accepted = grouped & 15, prepared = grouped >> 4;
+        uint32_t accepted = 0, prepared = 0;
+        if constexpr (WAVE) {
+            uint32_t grouped = WaveGroupedResident(); accepted = grouped & 15; prepared = grouped >> 4;
+        } else if (t.groupCount) accepted = GroupedResident();
         uint32_t roundCols = (t.cols + 1) / 2 * 2;
         for (uint32_t b = 0; b < t.batch; ++b) {
             if (accepted & (uint32_t(1) << b)) continue;
@@ -2108,7 +2111,7 @@ public:
         }
     }
 };
-template <typename DT_A, bool COMPACT, bool TAIL>
+template <typename DT_A, bool COMPACT, bool TAIL, bool WAVE>
 __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR workspace, GM_ADDR tiling) {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIV_1_0);
     REGISTER_TILING_DEFAULT(LinalgPinvTilingData);
@@ -2118,6 +2121,7 @@ __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR worksp
         data.parallel = 0; data.local = 1; data.localInverse = 1;
         Pinv<TAIL> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
     } else {
-        StablePinv op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
+        if constexpr (WAVE) { data.parallel = 1; data.local = 0; data.localInverse = 0; }
+        StablePinv<WAVE> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
     }
 }
