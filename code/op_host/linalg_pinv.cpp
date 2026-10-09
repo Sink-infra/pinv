@@ -40,7 +40,10 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     inverseBytes += 12 * t->inverseTile * t->stride * sizeof(float);
     t->localInverse = m == n && inverseBytes <= ubSize;
     if (t->localInverse) t->parallel = 0;
-    if (t->parallel) t->stride = (t->stride + 127) / 128 * 128;
+    if (t->parallel) {
+        uint32_t alignment = m == n ? 64 : 128;
+        t->stride = (t->stride + alignment - 1) / alignment * alignment;
+    }
     t->resident = 0;
     if (t->parallel && m == n) {
         uint64_t baseBytes = (4 * uint64_t(t->stride) + 4 * r8 + 8 * t->rows + k8 + 32 + 8 * (r8 + k8)) * sizeof(float);
