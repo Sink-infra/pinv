@@ -3,7 +3,8 @@
 #include "tiling_key_linalg_pinv.h"
 using namespace AscendC;
 class Pinv {
-    TBuf<TPosition::VECCALC> mem, precision, vectorPrecision, inverseLow;
+    TBuf<TPosition::VECCALC> mem, precision, vectorPrecision, inverseLow, batchPrecision;
+    LocalTensor<float> batchCalc[8], batchU, batchV, batchH, batchL;
     LocalTensor<float> lowMatrix;
     LocalTensor<float> calc[8];
     LocalTensor<float> gh, gl, ih, il;
@@ -264,6 +265,26 @@ class Pinv {
         }
         SyncAll();
     }
+    __aicore__ inline void BatchEliminate(uint32_t count) {
+        auto qh = batchCalc[0], ql = batchCalc[1], bh = batchCalc[2], bl = batchCalc[3], e = batchCalc[4], part = batchCalc[5], product = batchCalc[6], aux = batchCalc[7];
+        Muls(bh, batchH, 4097.0f, count); PipeBarrier<PIPE_V>();
+        Sub(bl, bh, batchH, count); PipeBarrier<PIPE_V>(); Sub(bh, bh, bl, count); PipeBarrier<PIPE_V>();
+        Sub(bl, batchH, bh, count); Muls(qh, batchU, 4097.0f, count); PipeBarrier<PIPE_V>();
+        Sub(ql, qh, batchU, count); PipeBarrier<PIPE_V>(); Sub(qh, qh, ql, count); PipeBarrier<PIPE_V>();
+        Sub(ql, batchU, qh, count); Mul(product, batchU, batchH, count); PipeBarrier<PIPE_V>();
+        Mul(e, qh, bh, count); PipeBarrier<PIPE_V>(); Sub(e, e, product, count); PipeBarrier<PIPE_V>();
+        Mul(part, ql, bh, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
+        Mul(part, qh, bl, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
+        Mul(part, ql, bl, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
+        Mul(part, batchV, batchH, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
+        Mul(part, batchU, batchL, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
+        Add(qh, product, e, count); PipeBarrier<PIPE_V>(); Sub(ql, qh, product, count); PipeBarrier<PIPE_V>(); Sub(ql, e, ql, count); PipeBarrier<PIPE_V>();
+        Sub(bh, x, qh, count); PipeBarrier<PIPE_V>(); Sub(bl, bh, x, count); PipeBarrier<PIPE_V>();
+        Sub(e, bh, bl, count); PipeBarrier<PIPE_V>(); Sub(e, x, e, count); Muls(part, qh, -1.0f, count); PipeBarrier<PIPE_V>();
+        Sub(part, part, bl, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
+        Add(e, e, y, count); PipeBarrier<PIPE_V>(); Sub(e, e, ql, count); PipeBarrier<PIPE_V>();
+        Add(x, bh, e, count); PipeBarrier<PIPE_V>(); Sub(aux, x, bh, count); PipeBarrier<PIPE_V>(); Sub(y, e, aux, count); PipeBarrier<PIPE_V>();
+    }
     __aicore__ inline bool LocalInverseBody(uint32_t offset, LocalTensor<float> bx, LocalTensor<float> by,
                                             LocalTensor<float> bu, LocalTensor<float> bv) {
         float scale = 0.0f;
@@ -298,11 +319,18 @@ class Pinv {
             x = Row(p); y = lowMatrix[p * stride]; u = bu; v = bv; VS();
             Wide divisor = {x.GetValue(p), y.GetValue(p)}; SV(); VectorNormalize(divisor);
             VS(); u = x; v = y;
-            for (uint32_t i = 0; i < t.cols; ++i) if (i != p) {
-                x = Row(i); y = lowMatrix[i * stride];
-                Wide factor = {x.GetValue(p), y.GetValue(p)};
-                if (factor.h == 0.0f && factor.l == 0.0f) continue;
-                SV(); VectorEliminate(factor); VS();
+            for (uint32_t first = 0; first < t.cols; first += t.inverseTile) {
+                uint32_t rows = t.cols - first < t.inverseTile ? t.cols - first : t.inverseTile;
+                for (uint32_t row = 0; row < rows; ++row) {
+                    uint32_t i = first + row;
+                    float fh = i == p ? 0.0f : Row(i).GetValue(p);
+                    float fl = i == p ? 0.0f : lowMatrix[i * stride].GetValue(p);
+                    Duplicate(batchH[row * stride], fh, stride); Duplicate(batchL[row * stride], fl, stride);
+                    DataCopy(batchU[row * stride], u, stride); DataCopy(batchV[row * stride], v, stride);
+                }
+                PipeBarrier<PIPE_V>();
+                x = Row(first); y = lowMatrix[first * stride];
+                BatchEliminate(rows * stride); VS();
             }
         }
         float inverseTotal = 0.0f;
@@ -461,6 +489,11 @@ public:
         if (t.localInverse) {
             pipe->InitBuffer(inverseLow, t.cols * stride * sizeof(float));
             lowMatrix = inverseLow.Get<float>();
+            uint32_t areaSize = t.inverseTile * stride;
+            pipe->InitBuffer(batchPrecision, 12 * areaSize * sizeof(float));
+            auto area = batchPrecision.Get<float>();
+            for (uint32_t i = 0; i < 8; ++i) batchCalc[i] = area[i * areaSize];
+            batchU = area[8 * areaSize]; batchV = area[9 * areaSize]; batchH = area[10 * areaSize]; batchL = area[11 * areaSize];
         }
         if (t.rows <= 32) {
             pipe->InitBuffer(precision, 4 * k8 * k8 * sizeof(float));
