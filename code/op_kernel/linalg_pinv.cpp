@@ -1752,6 +1752,7 @@ class Pinv {
             }
         }
         bool vectorQuick = quick && t.cols >= 8;
+        bool logicalPivot = vectorQuick && !TAIL;
         auto indices = gather.ReinterpretCast<uint32_t>();
         auto pivotOrder = output.ReinterpretCast<uint32_t>();
         uint64_t available = (uint64_t(1) << t.cols) - 1;
@@ -1764,7 +1765,7 @@ class Pinv {
             if (vectorQuick) {
                 Gather(norms, matrix, indices, p * sizeof(float), t.cols); PipeBarrier<PIPE_V>();
                 Abs(prod, norms, k8); PipeBarrier<PIPE_V>();
-                uint64_t pivotMask[2] = {available, 0};
+                uint64_t pivotMask[2] = {logicalPivot ? available : (((uint64_t(1) << t.cols) - 1) & ~((uint64_t(1) << p) - 1)), 0};
                 WholeReduceMax(red, prod, pivotMask, 1, 1, 1, 8); VS();
                 best = red.GetValue(0); pivot = red.ReinterpretCast<uint32_t>().GetValue(1);
             } else {
@@ -1775,22 +1776,28 @@ class Pinv {
                 }
             }
             if (!(best > 0.0f)) return false;
-            if (!vectorQuick && pivot != p) {
+            if (!logicalPivot && pivot != p) {
                 DataCopy(bx, Row(p), rowLength); if (!quick) DataCopy(by, lowMatrix[p * stride], rowLength); PipeBarrier<PIPE_V>();
                 DataCopy(Row(p), Row(pivot), rowLength); if (!quick) DataCopy(lowMatrix[p * stride], lowMatrix[pivot * stride], rowLength); PipeBarrier<PIPE_V>();
                 DataCopy(Row(pivot), bx, rowLength); if (!quick) DataCopy(lowMatrix[pivot * stride], by, rowLength); PipeBarrier<PIPE_V>();
             }
             if (quick) {
-                if (!vectorQuick && pivot != p) VS();
-                uint32_t physicalPivot = vectorQuick ? pivot : p;
+                if (!logicalPivot && pivot != p) VS();
+                uint32_t physicalPivot = logicalPivot ? pivot : p;
                 auto pivotLocal = matrix[physicalPivot * stride];
                 float divisor = highData[physicalPivot * stride + p];
                 Muls(pivotLocal, pivotLocal, 1.0f / divisor, s); PipeBarrier<PIPE_V>();
                 DataCopy(bu, pivotLocal, stride); PipeBarrier<PIPE_V>();
                 if (vectorQuick) {
-                    available &= ~(uint64_t(1) << pivot);
-                    pivotOrder.SetValue(pivot, p);
-                    norms.SetValue(pivot, 0.0f); SV(); Muls(norms, norms, -1.0f, k8); PipeBarrier<PIPE_V>();
+                    if (logicalPivot) {
+                        available &= ~(uint64_t(1) << pivot);
+                        pivotOrder.SetValue(pivot, p);
+                        norms.SetValue(pivot, 0.0f);
+                    } else {
+                        if (pivot != p) norms.SetValue(pivot, norms.GetValue(p));
+                        norms.SetValue(p, 0.0f);
+                    }
+                    SV(); Muls(norms, norms, -1.0f, k8); PipeBarrier<PIPE_V>();
                     if constexpr (TAIL) {
                         Brcb(lowMatrix, norms, k8 / 8, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)});
                     } else {
@@ -1848,7 +1855,7 @@ class Pinv {
         if (compact) {
             Muls(matrix, matrix, 1.0f / power, count); PipeBarrier<PIPE_V>();
             auto ordered = matrix;
-            if (vectorQuick) {
+            if (logicalPivot) {
                 for (uint32_t row = 0; row < t.cols; ++row) {
                     uint32_t target = pivotOrder.GetValue(row);
                     DataCopy(lowMatrix[target * stride], matrix[row * stride], stride);
@@ -2193,7 +2200,7 @@ __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR worksp
     TPipe pipe;
     if constexpr (COMPACT) {
         data.parallel = 0; data.local = 1; data.localInverse = 1;
-        if (data.rows > 8 && data.rows <= 16) {
+        if (!TAIL && data.rows > 8 && data.rows <= 16) {
             Pinv<TAIL, 16> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
         } else {
             Pinv<TAIL> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
