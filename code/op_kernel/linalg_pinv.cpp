@@ -1797,9 +1797,10 @@ class Pinv {
         Add(e, e, y, count); PipeBarrier<PIPE_V>(); Sub(e, e, ql, count); PipeBarrier<PIPE_V>();
         Add(x, bh, e, count); PipeBarrier<PIPE_V>(); Sub(aux, x, bh, count); PipeBarrier<PIPE_V>(); Sub(y, e, aux, count); PipeBarrier<PIPE_V>();
     }
-    __aicore__ inline bool CompactInverseLegacyBody(uint32_t offset, LocalTensor<float> bx, LocalTensor<float> by,
+    template <uint32_t LANES>
+    __aicore__ inline bool CompactInverseLegacyLanes(uint32_t offset, LocalTensor<float> bx, LocalTensor<float> by,
                                             LocalTensor<float> bu, LocalTensor<float> bv, bool tryQuick = false) {
-        const uint32_t n = t.cols;
+        const uint32_t n = LANES ? LANES : t.cols;
         auto highData = reinterpret_cast<__ubuf__ float *>(matrix.GetPhyAddr());
         auto lowData = reinterpret_cast<__ubuf__ float *>(lowMatrix.GetPhyAddr());
         bool compact = true;
@@ -1958,6 +1959,13 @@ class Pinv {
             Store(result[offset + i * n], output, n);
         }
         return true;
+    }
+    __aicore__ inline bool CompactInverseLegacyBody(uint32_t offset, LocalTensor<float> bx, LocalTensor<float> by,
+                                            LocalTensor<float> bu, LocalTensor<float> bv, bool tryQuick = false) {
+        if constexpr (PAD > 0) {
+            if (t.cols % 8 == 7) return CompactInverseLegacyLanes<PAD - 1>(offset, bx, by, bu, bv, tryQuick);
+        }
+        return CompactInverseLegacyLanes<0>(offset, bx, by, bu, bv, tryQuick);
     }
     __aicore__ inline bool CompactInverseBody(uint32_t offset, LocalTensor<float> bx, LocalTensor<float> by,
                                             LocalTensor<float> bu, LocalTensor<float> bv, bool tryQuick = false) {
