@@ -189,7 +189,7 @@ class StablePinv {
         Sub(y, calc[0], y, s); PipeBarrier<PIPE_V>();
     }
     __aicore__ inline void GlobalPivot(uint32_t cores, float &best, uint32_t &pivot) {
-        if (cores < 8 || cores > 128) {
+        if (cores == 0 || cores > 128 || (WAVE && cores < 8)) {
             for (uint32_t i = 0; i < cores; ++i) {
                 float value = gather.GetValue(i * 8);
                 if (value > best) { best = value; pivot = static_cast<uint32_t>(static_cast<int32_t>(gather.GetValue(i * 8 + 1))); }
@@ -975,7 +975,9 @@ class StablePinv {
             GlobalPivot(cores, best, pivot); valid = valid && best > 0.0f;
             if (valid) {
                 norms.SetValue(pivot, static_cast<float>(static_cast<int32_t>(p + 1))); SV();
-                Load(u, work[((p & 1) * cores + pivot % cores) * stride], rowLength);
+                if (core != pivot % cores) {
+                    DataCopyPad(u, work[((p & 1) * cores + pivot % cores) * stride], DataCopyExtParams{1, rowLength * 4, 0, 0, 0}, DataCopyPadExtParams<float>{true, 0, 0, 0});
+                }
                 if (core == pivot % cores) {
                     available &= ~(uint64_t(1) << (pivot / cores));
                     DataCopy(tileHigh[(pivot / cores) * stride], u, rowLength); PipeBarrier<PIPE_V>();
@@ -999,6 +1001,7 @@ class StablePinv {
                 PipeBarrier<PIPE_V>();
                 auto factors = packed ? batchH : tileLow;
                 uint8_t factorStride = packed ? 1 : static_cast<uint8_t>(stride / 8);
+                if (core != pivot % cores) { SetFlag<HardEvent::MTE2_V>(0); WaitFlag<HardEvent::MTE2_V>(0); }
                 for (uint32_t col = 0; col < s; col += 64) {
                     uint32_t mask = s - col < 64 ? s - col : 64;
                     MulAddDst(tileHigh[col], u[col], factors, static_cast<uint64_t>(mask), static_cast<uint8_t>(owned), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, factorStride});
