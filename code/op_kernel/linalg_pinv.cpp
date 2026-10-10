@@ -1097,6 +1097,8 @@ class StablePinv {
         auto rowIndices = tmp.ReinterpretCast<uint32_t>();
         auto compactIndices = gather.ReinterpretCast<uint32_t>();
         auto panelIndices = compactIndices[k8];
+        auto compactColumnIndices = compactIndices[k8 + PANEL];
+        for (uint32_t column = 0; column < PANEL; ++column) compactColumnIndices.SetValue(column, column * k8 * sizeof(float));
         for (uint32_t row = 0; row < t.cols; ++row) compactIndices.SetValue(row, row * PANEL * sizeof(float));
         Duplicate(norms, 1.0f, k8); PipeBarrier<PIPE_V>();
         for (uint32_t row = 0; row < factorRows; ++row) rowIndices.SetValue(row, row < owned ? row * stride * sizeof(float) : 0);
@@ -1108,8 +1110,11 @@ class StablePinv {
             SyncAll();
             if (valid) {
                 Load(tileLow, work, t.cols * PANEL);
+                auto columns = tileLow[t.cols * PANEL];
+                for (uint32_t column = 0; column < PANEL; ++column) Gather(columns[column * k8], tileLow, compactIndices, column * sizeof(float), t.cols);
+                PipeBarrier<PIPE_V>();
                 for (uint32_t column = 0; column < rows; ++column) {
-                    Gather(v, tileLow, compactIndices, column * sizeof(float), t.cols); PipeBarrier<PIPE_V>();
+                    DataCopy(v, columns[column * k8], k8); PipeBarrier<PIPE_V>();
                     Abs(x, v, t.cols);
                     Maxs(prod, norms, 0.0f, k8); PipeBarrier<PIPE_V>();
                     Mul(prod, prod, x, t.cols); PipeBarrier<PIPE_V>();
@@ -1128,14 +1133,14 @@ class StablePinv {
                     float divisor = v.GetValue(selected);
                     norms.SetValue(selected, -static_cast<float>(static_cast<int32_t>(first + column + 1)));
                     output.SetValue(column, static_cast<float>(static_cast<int32_t>(selected)));
-                    Muls(u, tileLow[selected * PANEL], 1.0f / divisor, PANEL); PipeBarrier<PIPE_V>();
-                    DataCopy(tileLow[selected * PANEL], u, PANEL); PipeBarrier<PIPE_V>();
+                    Gather(u, columns, compactColumnIndices, selected * sizeof(float), PANEL); PipeBarrier<PIPE_V>();
+                    Muls(u, u, 1.0f / divisor, PANEL); PipeBarrier<PIPE_V>();
                     v.SetValue(selected, 0.0f); SV();
                     Muls(v, v, -1.0f, k8); PipeBarrier<PIPE_V>();
-                    Brcb(tileLow[t.cols * PANEL], v, k8 / 8, {1, 8}); PipeBarrier<PIPE_V>();
-                    for (uint32_t begin = 0; begin < t.cols; begin += 255) {
-                        uint32_t count = t.cols - begin < 255 ? t.cols - begin : 255;
-                        MulAddDst(tileLow[begin * PANEL], u, tileLow[t.cols * PANEL + begin * 8], uint64_t(PANEL), static_cast<uint8_t>(count), {1, 1, 0, static_cast<uint8_t>(PANEL / 8), 0, 1});
+                    Brcb(batchH, u, (PANEL + 7) / 8, {1, 8}); PipeBarrier<PIPE_V>();
+                    for (uint32_t begin = 0; begin < t.cols; begin += 64) {
+                        uint32_t count = t.cols - begin < 64 ? t.cols - begin : 64;
+                        MulAddDst(columns[begin], v[begin], batchH, static_cast<uint64_t>(count), static_cast<uint8_t>(PANEL), {1, 1, 0, static_cast<uint8_t>(k8 / 8), 0, 1});
                     }
                     PipeBarrier<PIPE_V>();
                 }
