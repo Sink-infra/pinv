@@ -819,12 +819,15 @@ class StablePinv {
         SetFlag<HardEvent::MTE3_MTE2>(0); WaitFlag<HardEvent::MTE3_MTE2>(0);
         return true;
     }
-    __aicore__ inline bool QuickLocalInverseLogical(uint32_t offset) {
-        if (t.cols <= 32 || t.cols > 64) return false;
-        uint32_t count = t.cols * stride;
+    template <uint32_t PAD, bool ALIGNED>
+    __aicore__ inline bool QuickLocalInverseLogicalGeometry(uint32_t offset) {
+        constexpr uint32_t r8 = PAD, k8 = PAD, s = 2 * PAD, stride = 2 * PAD + 8, rowLength = stride;
+        const uint32_t n = ALIGNED ? PAD : t.cols;
+        if (n <= 32 || n > 64) return false;
+        uint32_t count = n * stride;
         Duplicate(matrix, 0.0f, count); PipeBarrier<PIPE_V>();
         SetFlag<HardEvent::V_MTE2>(0); WaitFlag<HardEvent::V_MTE2>(0);
-        DataCopyPad(matrix, input[offset], DataCopyExtParams{static_cast<uint16_t>(t.cols), t.n * 4, 0, (stride - r8) / 8, 0}, DataCopyPadExtParams<float>{true, 0, static_cast<uint8_t>(r8 - t.n), 0});
+        DataCopyPad(matrix, input[offset], DataCopyExtParams{static_cast<uint16_t>(n), n * 4, 0, (stride - r8) / 8, 0}, DataCopyPadExtParams<float>{true, 0, static_cast<uint8_t>(r8 - n), 0});
         SetFlag<HardEvent::MTE2_V>(0); WaitFlag<HardEvent::MTE2_V>(0);
         Abs(lowMatrix, matrix, count); PipeBarrier<PIPE_V>(); ReduceMax(red, lowMatrix, tmp, count, false); VS();
         float scale = red.GetValue(0);
@@ -836,14 +839,14 @@ class StablePinv {
         Mul(lowMatrix, matrix, matrix, count); PipeBarrier<PIPE_V>(); ReduceSum(red, lowMatrix, tmp, count); VS();
         float total = red.GetValue(0);
         auto data = reinterpret_cast<__ubuf__ float *>(matrix.GetPhyAddr());
-        for (uint32_t i = 0; i < t.cols; ++i) data[i * stride + r8 + i] = 1.0f;
+        for (uint32_t i = 0; i < n; ++i) data[i * stride + r8 + i] = 1.0f;
         auto indices = gather.ReinterpretCast<uint32_t>();
         auto pivotOrder = output.ReinterpretCast<uint32_t>();
-        uint64_t available = t.cols < 64 ? (uint64_t(1) << t.cols) - 1 : ~uint64_t(0);
-        for (uint32_t i = 0; i < k8; ++i) indices.SetValue(i, i < t.cols ? i * stride * sizeof(float) : 0);
+        uint64_t available = n < 64 ? (uint64_t(1) << n) - 1 : ~uint64_t(0);
+        for (uint32_t i = 0; i < k8; ++i) indices.SetValue(i, i < n ? i * stride * sizeof(float) : 0);
         Duplicate(norms, 0.0f, k8); PipeBarrier<PIPE_V>(); SV();
-        for (uint32_t p = 0; p < t.cols; ++p) {
-            Gather(norms, matrix, indices, p * sizeof(float), t.cols); PipeBarrier<PIPE_V>();
+        for (uint32_t p = 0; p < n; ++p) {
+            Gather(norms, matrix, indices, p * sizeof(float), n); PipeBarrier<PIPE_V>();
             Abs(prod, norms, k8); PipeBarrier<PIPE_V>();
             uint64_t active[2] = {available, 0};
             WholeReduceMax(red, prod, active, 1, 1, 1, 8);
@@ -853,39 +856,51 @@ class StablePinv {
             if (!(best > 0.0f)) return false;
             available &= ~(uint64_t(1) << pivot);
             pivotOrder.SetValue(pivot, p);
-            Muls(Row(pivot), Row(pivot), 1.0f / data[pivot * stride + p], s); PipeBarrier<PIPE_V>();
-            DataCopy(u, Row(pivot), rowLength); PipeBarrier<PIPE_V>();
+            Muls(matrix[pivot * stride], matrix[pivot * stride], 1.0f / data[pivot * stride + p], s); PipeBarrier<PIPE_V>();
+            DataCopy(u, matrix[pivot * stride], rowLength); PipeBarrier<PIPE_V>();
             norms.SetValue(pivot, 0.0f); SV();
             Muls(norms, norms, -1.0f, k8); PipeBarrier<PIPE_V>();
             Brcb(lowMatrix, norms, k8 / 8, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)});
             PipeBarrier<PIPE_V>();
             for (uint32_t col = 0; col < s; col += 64) {
                 uint32_t mask = s - col < 64 ? s - col : 64;
-                MulAddDst(matrix[col], u[col], lowMatrix, static_cast<uint64_t>(mask), static_cast<uint8_t>(t.cols), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, static_cast<uint8_t>(stride / 8)});
+                MulAddDst(matrix[col], u[col], lowMatrix, static_cast<uint64_t>(mask), static_cast<uint8_t>(n), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, static_cast<uint8_t>(stride / 8)});
             }
             PipeBarrier<PIPE_V>();
         }
         Duplicate(lowMatrix, 0.0f, count); PipeBarrier<PIPE_V>();
         for (uint32_t col = 0; col < r8; col += 64) {
             uint32_t mask = r8 - col < 64 ? r8 - col : 64;
-            Mul(lowMatrix[col], matrix[r8 + col], matrix[r8 + col], static_cast<uint64_t>(mask), static_cast<uint8_t>(t.cols), {1, 1, 1, static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride / 8)});
+            Mul(lowMatrix[col], matrix[r8 + col], matrix[r8 + col], static_cast<uint64_t>(mask), static_cast<uint8_t>(n), {1, 1, 1, static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride / 8)});
         }
         PipeBarrier<PIPE_V>(); ReduceSum(red, lowMatrix, tmp, count); VS();
         float inverseTotal = red.GetValue(0), cutoff = Root(total) * t.rtol;
         float absolute = t.atol / power; cutoff = cutoff > absolute ? cutoff : absolute;
         if (!(inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < 0.81f)) return false;
         Muls(matrix, matrix, 1.0f / power, count); PipeBarrier<PIPE_V>();
-        for (uint32_t row = 0; row < t.cols; ++row) {
+        for (uint32_t row = 0; row < n; ++row) {
             uint32_t target = pivotOrder.GetValue(row);
             DataCopy(lowMatrix[target * stride], matrix[row * stride], stride);
         }
         PipeBarrier<PIPE_V>();
         SetFlag<HardEvent::V_MTE3>(0); WaitFlag<HardEvent::V_MTE3>(0);
         SetFlag<HardEvent::S_MTE3>(0); WaitFlag<HardEvent::S_MTE3>(0);
-        DataCopyPad(result[offset], lowMatrix[r8], DataCopyExtParams{static_cast<uint16_t>(t.n), t.m * 4, (stride - r8) / 8, 0, 0});
+        DataCopyPad(result[offset], lowMatrix[r8], DataCopyExtParams{static_cast<uint16_t>(n), n * 4, (stride - r8) / 8, 0, 0});
         SetFlag<HardEvent::MTE3_V>(0); WaitFlag<HardEvent::MTE3_V>(0);
         SetFlag<HardEvent::MTE3_MTE2>(0); WaitFlag<HardEvent::MTE3_MTE2>(0);
         return true;
+    }
+    template <uint32_t PAD>
+    __aicore__ inline bool QuickLocalInverseLogicalCapacity(uint32_t offset) {
+        if (t.cols % 8 == 0) return QuickLocalInverseLogicalGeometry<PAD, true>(offset);
+        return QuickLocalInverseLogicalGeometry<PAD, false>(offset);
+    }
+    __aicore__ inline bool QuickLocalInverseLogical(uint32_t offset) {
+        if (t.cols <= 32 || t.cols > 64) return false;
+        if (t.cols <= 40) return QuickLocalInverseLogicalCapacity<40>(offset);
+        if (t.cols <= 48) return QuickLocalInverseLogicalCapacity<48>(offset);
+        if (t.cols <= 56) return QuickLocalInverseLogicalCapacity<56>(offset);
+        return QuickLocalInverseLogicalCapacity<64>(offset);
     }
     __aicore__ inline bool QuickLocalInverse(uint32_t offset) {
         if (t.cols <= 64) return QuickLocalInverseLogical(offset);
