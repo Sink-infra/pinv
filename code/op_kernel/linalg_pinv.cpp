@@ -14,7 +14,7 @@ class StablePinv {
     GlobalTensor<float> input, result, work;
     __gm__ float *workBase;
     LinalgPinvTilingData t;
-    uint32_t r8, k8, s, stride, rowLength;
+    uint32_t r8, k8, s, stride, rowLength, lowElements, residentElements;
     __aicore__ inline void VS() { SetFlag<HardEvent::V_S>(0); WaitFlag<HardEvent::V_S>(0); }
     __aicore__ inline void SV() { SetFlag<HardEvent::S_V>(0); WaitFlag<HardEvent::S_V>(0); }
     __aicore__ inline void Load(LocalTensor<float> dst, GlobalTensor<float> src, uint32_t count) {
@@ -215,6 +215,7 @@ class StablePinv {
                                           float total, float inverseTotal, GlobalTensor<float> meta,
                                           bool certify, float cutoff) {
         uint32_t core = GetBlockIdx(), cores = GetBlockNum();
+        if constexpr (WAVE) if ((t.cols + cores - 1) / cores * r8 > lowElements) return false;
         uint32_t owned = (t.cols + cores - 1 - core) / cores;
         auto bx = x, by = y, bu = u, bv = v, cache = calc[0];
         GlobalTensor<float> residual, normWork;
@@ -454,6 +455,7 @@ class StablePinv {
     }
     __aicore__ inline bool ResidentSquare(uint32_t b, uint32_t offset, float scale,
                                           GlobalTensor<float> meta, bool certify, float cutoff, bool skipQuick = false) {
+        if constexpr (WAVE) if ((t.cols + GetBlockNum() - 1) / GetBlockNum() * stride > lowElements) return false;
         if (!skipQuick && QuickResidentSquare(b, offset, scale, meta, certify, cutoff)) return true;
         uint32_t core = GetBlockIdx(), cores = GetBlockNum();
         uint32_t owned = (t.cols + cores - 1 - core) / cores;
@@ -541,8 +543,13 @@ class StablePinv {
         SyncAll(); return true;
     }
     __aicore__ inline bool AccurateSquare(uint32_t b, uint32_t offset, float scale, GlobalTensor<float> meta,
-                                         bool certify = false, float cutoff = 0.0f) {
-        if (t.resident) return ResidentSquare(b, offset, scale, meta, certify, cutoff);
+                                         bool certify = false, float cutoff = 0.0f, bool skipQuick = false) {
+        if (t.resident) {
+            if constexpr (WAVE) {
+                if ((t.cols + GetBlockNum() - 1) / GetBlockNum() * stride <= lowElements)
+                    return ResidentSquare(b, offset, scale, meta, certify, cutoff, skipQuick);
+            } else return ResidentSquare(b, offset, scale, meta, certify, cutoff, skipQuick);
+        }
         uint32_t core = GetBlockIdx(), cores = GetBlockNum();
         GlobalTensor<float> low;
         low.SetGlobalBuffer(workBase + uint64_t(t.batch + b) * t.cols * stride);
@@ -1065,6 +1072,8 @@ class StablePinv {
         uint32_t active = (t.cols + GetBlockNum() - 1) / GetBlockNum();
         if (t.singleResident) {
             tileLow = tileHigh[active * stride];
+            uint32_t remaining = residentElements > active * stride ? residentElements - active * stride : 0;
+            lowElements = remaining < active * stride ? remaining : active * stride;
             uint32_t unused = t.resident > 2 * active ? t.resident - 2 * active : 0;
             uint32_t initial = t.inverseTile;
             uint32_t candidate = (12 * initial + unused) / 12;
@@ -1082,9 +1091,11 @@ class StablePinv {
                 batchU = slots[8]; batchV = slots[9]; batchH = slots[10]; batchL = slots[11];
                 t.inverseTile = candidate;
             }
+            if (t.inverseTile * stride > lowElements) t.inverseTile = lowElements / stride;
             t.resident = active;
             return;
         }
+        lowElements = active * stride;
         uint32_t unused = t.resident > active ? t.resident - active : 0;
         uint32_t initial = t.inverseTile;
         uint32_t candidate = (12 * initial + 2 * unused) / 12;
@@ -1284,7 +1295,7 @@ class StablePinv {
                     uint32_t owned = (t.cols + cores - 1 - core) / cores;
                     for (uint32_t row = 0; row < owned; ++row) Load(tileHigh[row * stride + r8], result[offset + (core + row * cores) * t.m], t.m);
                     if (RefineResident(b, offset, power, cachedTotal, cachedInverse, meta, true, cutoff)) continue;
-                    if (ResidentSquare(b, offset, scale, meta, true, cutoff, true)) continue;
+                    if (AccurateSquare(b, offset, scale, meta, true, cutoff, true)) continue;
                 } else if (AccurateSquare(b, offset, scale, meta, true, cutoff)) continue;
                 RestoreJacobi(offset, scale);
             }
@@ -1367,6 +1378,7 @@ class StablePinv {
 public:
     __aicore__ inline void Init(GM_ADDR a, GM_ADDR out, GM_ADDR ws, const LinalgPinvTilingData &data, TPipe *pipe) {
         t = data; r8 = (t.rows + 7) / 8 * 8; k8 = (t.cols + 7) / 8 * 8; s = r8 + k8; stride = t.stride; rowLength = s + 8;
+        lowElements = 0; residentElements = 0;
         uint32_t bufferStride = t.parallel ? (rowLength + 63) / 64 * 64 : stride;
         uint32_t size = (t.local ? t.cols * stride : 0) + 4 * bufferStride + 4 * r8 + 8 * t.rows + k8 + 32;
         pipe->InitBuffer(mem, size * 4);
@@ -1399,7 +1411,9 @@ public:
                     residentBuffers = 1;
                     lowOffset = (t.cols + GetBlockNum() - 1) / GetBlockNum() * stride;
                 }
-                pipe->InitBuffer(parallelElimination, residentBuffers * residentSize * sizeof(float));
+                residentElements = residentBuffers * residentSize;
+                lowElements = residentElements - lowOffset;
+                pipe->InitBuffer(parallelElimination, residentElements * sizeof(float));
                 tileHigh = parallelElimination.Get<float>(); tileLow = tileHigh[lowOffset];
             }
         }
