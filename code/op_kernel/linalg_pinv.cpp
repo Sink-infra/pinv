@@ -1158,20 +1158,27 @@ class StablePinv {
                     if (!(AbsScalar(divisor) > 1.0e-6f)) { valid = false; break; }
                     Muls(u, tileLow[column * stride], 1.0f / divisor, s); PipeBarrier<PIPE_V>();
                     DataCopy(tileLow[column * stride], u, rowLength); PipeBarrier<PIPE_V>();
-                    prod.SetValue(column, 0.0f); SV();
-                    Muls(prod, prod, -1.0f, (PANEL + 7) / 8 * 8); PipeBarrier<PIPE_V>();
-                    Brcb(batchH, prod, (PANEL + 7) / 8, {1, 8}); PipeBarrier<PIPE_V>();
-                    for (uint32_t col = 0; col < s; col += 64) {
-                        uint32_t mask = s - col < 64 ? s - col : 64;
-                        MulAddDst(tileLow[col], u[col], batchH, static_cast<uint64_t>(mask), static_cast<uint8_t>(rows), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, 1});
+                    if (column + 1 < rows) {
+                        Muls(prod, prod, -1.0f, (PANEL + 7) / 8 * 8); PipeBarrier<PIPE_V>();
+                        Brcb(batchH, prod, (PANEL + 7) / 8, {1, 8}); PipeBarrier<PIPE_V>();
+                        for (uint32_t col = 0; col < s; col += 64) {
+                            uint32_t mask = s - col < 64 ? s - col : 64;
+                            MulAddDst(tileLow[(column + 1) * stride + col], u[col], batchH[(column + 1) * 8], static_cast<uint64_t>(mask), static_cast<uint8_t>(rows - column - 1), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, 1});
+                        }
+                        PipeBarrier<PIPE_V>();
                     }
-                    PipeBarrier<PIPE_V>();
                 }
             }
             if (valid) {
                 for (uint32_t column = 0; column < rows; ++column) {
+                    uint32_t selected = static_cast<uint32_t>(static_cast<int32_t>(output.GetValue(column)));
                     DataCopy(u, tileLow[column * stride], rowLength);
+                    if (selected % cores == core) {
+                        PipeBarrier<PIPE_V>();
+                        DataCopy(tileHigh[(selected / cores) * stride], u, rowLength); PipeBarrier<PIPE_V>();
+                    }
                     Gather(v, tileHigh, rowIndices, (first + column) * sizeof(float), factorRows); PipeBarrier<PIPE_V>();
+                    if (selected % cores == core) { VS(); v.SetValue(selected / cores, 0.0f); SV(); }
                     Muls(v, v, -1.0f, factorRows); PipeBarrier<PIPE_V>();
                     Brcb(batchH, v, factorRows / 8, {1, 8}); PipeBarrier<PIPE_V>();
                     for (uint32_t col = (first + column + 1) / 64 * 64; col < s; col += 64) {
@@ -1179,11 +1186,6 @@ class StablePinv {
                         MulAddDst(tileHigh[col], u[col], batchH, static_cast<uint64_t>(mask), static_cast<uint8_t>(owned), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, 1});
                         PipeBarrier<PIPE_V>();
                     }
-                }
-                VS();
-                for (uint32_t column = 0; column < rows; ++column) {
-                    uint32_t selected = static_cast<uint32_t>(static_cast<int32_t>(output.GetValue(column)));
-                    if (selected % cores == core) DataCopy(tileHigh[(selected / cores) * stride], tileLow[column * stride], rowLength);
                 }
                 PipeBarrier<PIPE_V>();
             }
