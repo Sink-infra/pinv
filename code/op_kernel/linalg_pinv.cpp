@@ -2538,12 +2538,12 @@ class LocalPinv {
             DataCopy(u, matrix[pivot * stride], rowLength); PipeBarrier<PIPE_V>();
             norms.SetValue(pivot, 0.0f); SV();
             Muls(norms, norms, -1.0f, k8); PipeBarrier<PIPE_V>();
-            if constexpr (PACKED) Brcb(batchH, norms, k8 / 8, {2, 16});
+            if constexpr (PACKED) Brcb(batchH, norms, k8 / 8, {ALIGNED ? uint8_t(1) : uint8_t(2), ALIGNED ? uint8_t(8) : uint8_t(16)});
             else Brcb(lowMatrix, norms, k8 / 8, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)});
             PipeBarrier<PIPE_V>();
             uint64_t activeColumns[2] = {~uint64_t(0) << (p / 8 * 8), 0};
-            MulAddDst(matrix, u, PACKED ? batchH : lowMatrix, activeColumns, static_cast<uint8_t>(n), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, PACKED ? uint8_t(2) : static_cast<uint8_t>(stride / 8)});
-            MulAddDst(matrix[64], u[64], PACKED ? batchH : lowMatrix, static_cast<uint64_t>(s - 64), static_cast<uint8_t>(n), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, PACKED ? uint8_t(2) : static_cast<uint8_t>(stride / 8)});
+            MulAddDst(matrix, u, PACKED ? batchH : lowMatrix, activeColumns, static_cast<uint8_t>(n), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, PACKED ? (ALIGNED ? uint8_t(1) : uint8_t(2)) : static_cast<uint8_t>(stride / 8)});
+            MulAddDst(matrix[64], u[64], PACKED ? batchH : lowMatrix, static_cast<uint64_t>(s - 64), static_cast<uint8_t>(n), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, PACKED ? (ALIGNED ? uint8_t(1) : uint8_t(2)) : static_cast<uint8_t>(stride / 8)});
             PipeBarrier<PIPE_V>();
         }
         Duplicate(lowMatrix, 0.0f, count); PipeBarrier<PIPE_V>();
