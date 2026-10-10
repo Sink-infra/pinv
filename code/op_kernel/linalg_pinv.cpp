@@ -1016,7 +1016,7 @@ class StablePinv {
                 auto factors = packed ? batchH : tileLow;
                 uint8_t factorStride = packed ? 1 : static_cast<uint8_t>(stride / 8);
                 if constexpr (!PACKETS) if (core != pivot % cores) { SetFlag<HardEvent::MTE2_V>(0); WaitFlag<HardEvent::MTE2_V>(0); }
-                for (uint32_t col = 0; col < s; col += 64) {
+                for (uint32_t col = (p + 1) / 64 * 64; col < s; col += 64) {
                     uint32_t mask = s - col < 64 ? s - col : 64;
                     MulAddDst(tileHigh[col], u[col + (PACKETS ? 8 : 0)], factors, static_cast<uint64_t>(mask), static_cast<uint8_t>(owned), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, factorStride});
                     PipeBarrier<PIPE_V>();
