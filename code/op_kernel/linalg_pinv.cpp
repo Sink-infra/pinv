@@ -1126,8 +1126,8 @@ class StablePinv {
                     }
                     if (!(best > 1.0e-6f)) { valid = false; break; }
                     float divisor = v.GetValue(selected);
-                    norms.SetValue(selected, -static_cast<float>(first + column + 1));
-                    output.SetValue(column, static_cast<float>(selected));
+                    norms.SetValue(selected, -static_cast<float>(static_cast<int32_t>(first + column + 1)));
+                    output.SetValue(column, static_cast<float>(static_cast<int32_t>(selected)));
                     Muls(u, tileLow[selected * PANEL], 1.0f / divisor, PANEL); PipeBarrier<PIPE_V>();
                     DataCopy(tileLow[selected * PANEL], u, PANEL); PipeBarrier<PIPE_V>();
                     v.SetValue(selected, 0.0f); SV();
@@ -1140,7 +1140,7 @@ class StablePinv {
                     PipeBarrier<PIPE_V>();
                 }
                 if (valid) for (uint32_t column = 0; column < rows; ++column) {
-                    uint32_t selected = static_cast<uint32_t>(output.GetValue(column));
+                    uint32_t selected = static_cast<uint32_t>(static_cast<int32_t>(output.GetValue(column)));
                     if (selected % cores == core) Store(work[t.cols * PANEL + column * stride], tileHigh[(selected / cores) * stride], rowLength);
                 }
             }
@@ -1177,7 +1177,7 @@ class StablePinv {
                 }
                 VS();
                 for (uint32_t column = 0; column < rows; ++column) {
-                    uint32_t selected = static_cast<uint32_t>(output.GetValue(column));
+                    uint32_t selected = static_cast<uint32_t>(static_cast<int32_t>(output.GetValue(column)));
                     if (selected % cores == core) DataCopy(tileHigh[(selected / cores) * stride], tileLow[column * stride], rowLength);
                 }
                 PipeBarrier<PIPE_V>();
@@ -1189,7 +1189,7 @@ class StablePinv {
         for (uint32_t peer = 0; peer < cores; ++peer) inverseTotal += gather.GetValue(peer * 8);
         valid = valid && inverseTotal > 0.0f && total * inverseTotal < 3.6e9f && inverseTotal * cutoff * cutoff < 0.81f;
         if (valid) for (uint32_t row = 0; row < owned; ++row) {
-            VS(); uint32_t target = static_cast<uint32_t>(-norms.GetValue(core + row * cores)) - 1;
+            VS(); uint32_t target = static_cast<uint32_t>(static_cast<int32_t>(-norms.GetValue(core + row * cores))) - 1;
             Muls(output, tileHigh[row * stride + r8], 1.0f / power, r8); PipeBarrier<PIPE_V>(); Store(result[offset + target * t.m], output, t.m);
         }
         if (core == 0) { red.SetValue(0, valid ? 1.0f : 0.0f); Store(meta[1024], red, 1); }
