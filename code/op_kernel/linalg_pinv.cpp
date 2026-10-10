@@ -950,6 +950,28 @@ class StablePinv {
     }
     __aicore__ inline void RebudgetWaveScratch() {
         uint32_t active = (t.cols + GetBlockNum() - 1) / GetBlockNum();
+        if (t.singleResident) {
+            tileLow = tileHigh[active * stride];
+            uint32_t unused = t.resident > 2 * active ? t.resident - 2 * active : 0;
+            uint32_t initial = t.inverseTile;
+            uint32_t candidate = (12 * initial + unused) / 12;
+            candidate = candidate < active ? candidate : active;
+            while (candidate > initial && 12 * initial / candidate + unused / candidate < 12) --candidate;
+            if (candidate > initial) {
+                LocalTensor<float> regions[2] = {batchPrecision.Get<float>(), tileHigh[2 * active * stride]};
+                uint32_t sizes[2] = {12 * initial, unused};
+                LocalTensor<float> slots[12]; uint32_t count = 0;
+                for (uint32_t region = 0; region < 2 && count < 12; ++region) {
+                    for (uint32_t row = 0; row + candidate <= sizes[region] && count < 12; row += candidate)
+                        slots[count++] = regions[region][row * stride];
+                }
+                for (uint32_t i = 0; i < 8; ++i) batchCalc[i] = slots[i];
+                batchU = slots[8]; batchV = slots[9]; batchH = slots[10]; batchL = slots[11];
+                t.inverseTile = candidate;
+            }
+            t.resident = active;
+            return;
+        }
         uint32_t unused = t.resident > active ? t.resident - active : 0;
         uint32_t initial = t.inverseTile;
         uint32_t candidate = (12 * initial + 2 * unused) / 12;
@@ -1255,8 +1277,13 @@ public:
             batchU = area[8 * areaSize]; batchV = area[9 * areaSize]; batchH = area[10 * areaSize]; batchL = area[11 * areaSize];
             if (t.parallel) {
                 uint32_t residentSize = (t.resident ? t.resident : t.inverseTile) * stride;
-                pipe->InitBuffer(parallelElimination, 2 * residentSize * sizeof(float));
-                tileHigh = parallelElimination.Get<float>(); tileLow = tileHigh[residentSize];
+                uint32_t residentBuffers = 2, lowOffset = residentSize;
+                if constexpr (WAVE) if (t.singleResident) {
+                    residentBuffers = 1;
+                    lowOffset = (t.cols + GetBlockNum() - 1) / GetBlockNum() * stride;
+                }
+                pipe->InitBuffer(parallelElimination, residentBuffers * residentSize * sizeof(float));
+                tileHigh = parallelElimination.Get<float>(); tileLow = tileHigh[lowOffset];
             }
         }
         if (t.rows <= 32) {
