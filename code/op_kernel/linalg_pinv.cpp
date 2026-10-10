@@ -1095,36 +1095,63 @@ class StablePinv {
         float absolute = t.atol / power; cutoff = cutoff > absolute ? cutoff : absolute;
         uint32_t factorRows = (owned + 7) / 8 * 8;
         auto rowIndices = tmp.ReinterpretCast<uint32_t>();
-        auto panelIndices = norms.ReinterpretCast<uint32_t>();
+        auto compactIndices = gather.ReinterpretCast<uint32_t>();
+        auto panelIndices = compactIndices[k8];
+        for (uint32_t row = 0; row < t.cols; ++row) compactIndices.SetValue(row, row * PANEL * sizeof(float));
+        Duplicate(norms, 1.0f, k8); PipeBarrier<PIPE_V>();
         for (uint32_t row = 0; row < factorRows; ++row) rowIndices.SetValue(row, row < owned ? row * stride * sizeof(float) : 0);
         for (uint32_t row = 0; row < PANEL; ++row) panelIndices.SetValue(row, row * stride * sizeof(float));
         Duplicate(u, 0.0f, rowLength); PipeBarrier<PIPE_V>(); SV();
         for (uint32_t first = 0; first < t.cols; first += PANEL) {
             uint32_t rows = t.cols - first < PANEL ? t.cols - first : PANEL;
-            uint32_t phase = ((first / PANEL) & 1) * PANEL * stride;
-            if (valid) for (uint32_t row = 0; row < owned; ++row) {
-                uint32_t index = core + row * cores;
-                if (index >= first && index < first + rows) Store(work[phase + (index - first) * stride], tileHigh[row * stride], rowLength);
+            if (valid) DataCopyPad(work[core * PANEL], tileHigh[first], DataCopyExtParams{static_cast<uint16_t>(owned), PANEL * 4, (stride - PANEL) / 8, (cores - 1) * PANEL * 4, 0});
+            SyncAll();
+            if (valid) {
+                Load(tileLow, work, t.cols * PANEL);
+                for (uint32_t column = 0; column < rows; ++column) {
+                    Gather(v, tileLow, compactIndices, column * sizeof(float), t.cols); PipeBarrier<PIPE_V>();
+                    Abs(x, v, t.cols);
+                    Maxs(prod, norms, 0.0f, k8); PipeBarrier<PIPE_V>();
+                    Mul(prod, prod, x, t.cols); PipeBarrier<PIPE_V>();
+                    uint32_t chunks = t.cols / 64, tail = t.cols % 64;
+                    WholeReduceMax(red, prod, uint64_t(64), static_cast<uint8_t>(chunks), 1, 1, 8);
+                    if (tail) {
+                        PipeBarrier<PIPE_V>();
+                        WholeReduceMax(red[chunks * 2], prod[chunks * 64], static_cast<uint64_t>(tail), 1, 1, 1, 8);
+                    }
+                    VS(); float best = 0.0f; uint32_t selected = 0;
+                    for (uint32_t chunk = 0; chunk < chunks + (tail != 0); ++chunk) {
+                        float value = red.GetValue(chunk * 2);
+                        if (value > best) { best = value; selected = chunk * 64 + red.ReinterpretCast<uint32_t>().GetValue(chunk * 2 + 1); }
+                    }
+                    if (!(best > 1.0e-6f)) { valid = false; break; }
+                    float divisor = v.GetValue(selected);
+                    norms.SetValue(selected, -static_cast<float>(first + column + 1));
+                    output.SetValue(column, static_cast<float>(selected));
+                    Muls(u, tileLow[selected * PANEL], 1.0f / divisor, PANEL); PipeBarrier<PIPE_V>();
+                    DataCopy(tileLow[selected * PANEL], u, PANEL); PipeBarrier<PIPE_V>();
+                    v.SetValue(selected, 0.0f); SV();
+                    Muls(v, v, -1.0f, k8); PipeBarrier<PIPE_V>();
+                    Brcb(tileLow[t.cols * PANEL], v, k8 / 8, {1, 8}); PipeBarrier<PIPE_V>();
+                    for (uint32_t begin = 0; begin < t.cols; begin += 255) {
+                        uint32_t count = t.cols - begin < 255 ? t.cols - begin : 255;
+                        MulAddDst(tileLow[begin * PANEL], u, tileLow[t.cols * PANEL + begin * 8], uint64_t(PANEL), static_cast<uint8_t>(count), {1, 1, 0, static_cast<uint8_t>(PANEL / 8), 0, 1});
+                    }
+                    PipeBarrier<PIPE_V>();
+                }
+                if (valid) for (uint32_t column = 0; column < rows; ++column) {
+                    uint32_t selected = static_cast<uint32_t>(output.GetValue(column));
+                    if (selected % cores == core) Store(work[t.cols * PANEL + column * stride], tileHigh[(selected / cores) * stride], rowLength);
+                }
             }
             SyncAll();
             if (valid) {
-                Load(tileLow, work[phase], rows * stride);
+                Load(tileLow, work[t.cols * PANEL], rows * stride);
                 for (uint32_t column = 0; column < rows; ++column) {
                     Gather(prod, tileLow, panelIndices, (first + column) * sizeof(float), rows); PipeBarrier<PIPE_V>();
-                    Abs(v, prod, rows); PipeBarrier<PIPE_V>();
-                    uint64_t active[2] = {((uint64_t(1) << rows) - 1) & (~uint64_t(0) << column), 0};
-                    WholeReduceMax(red, v, active, 1, 1, 1, 8); VS();
-                    float best = red.GetValue(0);
-                    uint32_t pivot = red.ReinterpretCast<uint32_t>().GetValue(1);
-                    if (!(best > 1.0e-6f)) { valid = false; break; }
-                    float divisor = prod.GetValue(pivot), displaced = prod.GetValue(column);
-                    Muls(u, tileLow[pivot * stride], 1.0f / divisor, s);
-                    if (pivot != column) DataCopy(v, tileLow[column * stride], rowLength);
-                    PipeBarrier<PIPE_V>();
-                    if (pivot != column) {
-                        DataCopy(tileLow[pivot * stride], v, rowLength);
-                        prod.SetValue(pivot, displaced);
-                    }
+                    VS(); float divisor = prod.GetValue(column);
+                    if (!(AbsScalar(divisor) > 1.0e-6f)) { valid = false; break; }
+                    Muls(u, tileLow[column * stride], 1.0f / divisor, s); PipeBarrier<PIPE_V>();
                     DataCopy(tileLow[column * stride], u, rowLength); PipeBarrier<PIPE_V>();
                     prod.SetValue(column, 0.0f); SV();
                     Muls(prod, prod, -1.0f, (PANEL + 7) / 8 * 8); PipeBarrier<PIPE_V>();
@@ -1148,9 +1175,10 @@ class StablePinv {
                         PipeBarrier<PIPE_V>();
                     }
                 }
-                for (uint32_t row = 0; row < owned; ++row) {
-                    uint32_t index = core + row * cores;
-                    if (index >= first && index < first + rows) DataCopy(tileHigh[row * stride], tileLow[(index - first) * stride], rowLength);
+                VS();
+                for (uint32_t column = 0; column < rows; ++column) {
+                    uint32_t selected = static_cast<uint32_t>(output.GetValue(column));
+                    if (selected % cores == core) DataCopy(tileHigh[(selected / cores) * stride], tileLow[column * stride], rowLength);
                 }
                 PipeBarrier<PIPE_V>();
             }
@@ -1161,7 +1189,7 @@ class StablePinv {
         for (uint32_t peer = 0; peer < cores; ++peer) inverseTotal += gather.GetValue(peer * 8);
         valid = valid && inverseTotal > 0.0f && total * inverseTotal < 3.6e9f && inverseTotal * cutoff * cutoff < 0.81f;
         if (valid) for (uint32_t row = 0; row < owned; ++row) {
-            uint32_t target = core + row * cores;
+            VS(); uint32_t target = static_cast<uint32_t>(-norms.GetValue(core + row * cores)) - 1;
             Muls(output, tileHigh[row * stride + r8], 1.0f / power, r8); PipeBarrier<PIPE_V>(); Store(result[offset + target * t.m], output, t.m);
         }
         if (core == 0) { red.SetValue(0, valid ? 1.0f : 0.0f); Store(meta[1024], red, 1); }
@@ -1177,7 +1205,9 @@ class StablePinv {
     __aicore__ inline uint32_t GroupedResident() {
         constexpr uint32_t panelRows = 8;
         uint32_t factorRows = (t.resident + 7) / 8 * 8;
-        if (t.resident * stride >= panelRows * stride && 2 * panelRows <= t.cols
+        if (t.resident * stride >= panelRows * stride
+            && t.resident * stride >= t.cols * panelRows + k8 * 8
+            && t.cols * panelRows + panelRows * stride <= t.cols * stride
             && t.inverseTile * stride >= factorRows * 8) return GroupedResidentPanels<panelRows>();
         uint32_t cores = (GetBlockNum() + t.groupCount - 1) / t.groupCount;
         uint32_t factors = (t.resident + 7) / 8 * 8;
