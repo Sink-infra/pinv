@@ -1142,7 +1142,7 @@ class StablePinv {
         uint64_t available = owned < 64 ? (uint64_t(1) << owned) - 1 : ~uint64_t(0);
         auto pivotIndices = tmp.ReinterpretCast<uint32_t>();
         for (uint32_t row = 0; row < (owned + 7) / 8 * 8; ++row) pivotIndices.SetValue(row, row < owned ? row * stride * sizeof(float) : 0);
-        SV();
+        SV(); Duplicate(u, 0.0f, rowLength); PipeBarrier<PIPE_V>();
         for (uint32_t p = 0; p < t.cols; ++p) {
             if (p == 0) {
                 float best = 0.0f; uint32_t selected = core;
@@ -1151,23 +1151,23 @@ class StablePinv {
                     uint64_t active[2] = {available, 0}; WholeReduceMax(red, prod, active, 1, 1, 1, 8); VS();
                     best = red.GetValue(0); selected = core + red.ReinterpretCast<uint32_t>().GetValue(1) * cores;
                 }
+                PrepareGroupedCandidate<false>(core, cores, selected, 0, best);
                 red.SetValue(0, best); red.SetValue(1, static_cast<float>(static_cast<int32_t>(selected))); Store(meta[core * 8], red, 2); SyncAll();
             }
             Load(gather, meta, cores * 8); float best = 0.0f; uint32_t pivot = 0;
             GlobalPivot(cores, best, pivot); valid = valid && best > 0.0f;
             if (valid) {
                 norms.SetValue(pivot, static_cast<float>(static_cast<int32_t>(p + 1))); SV();
+                if (core != pivot % cores) {
+                    DataCopyPad(u, work[((p & 1) * cores + pivot % cores) * stride], DataCopyExtParams{1, rowLength * 4, 0, 0, 0}, DataCopyPadExtParams<float>{true, 0, 0, 0});
+                }
                 if (core == pivot % cores) {
                     available &= ~(uint64_t(1) << (pivot / cores));
-                    VS(); float divisor = tileHigh.GetValue((pivot / cores) * stride + p);
-                    Muls(tileHigh[(pivot / cores) * stride], tileHigh[(pivot / cores) * stride], 1.0f / divisor, s); PipeBarrier<PIPE_V>();
-                    Store(work, tileHigh[(pivot / cores) * stride], rowLength);
+                    DataCopy(tileHigh[(pivot / cores) * stride], u, rowLength); PipeBarrier<PIPE_V>();
                 }
             }
-            SyncAll();
             float nextBest = 0.0f; uint32_t nextRow = core;
             if (valid) {
-                Load(u, work, rowLength);
                 uint32_t factorRows = (owned + 7) / 8 * 8;
                 bool packed = t.inverseTile * stride >= factorRows * 8;
                 if (packed) {
@@ -1186,6 +1186,7 @@ class StablePinv {
                 PipeBarrier<PIPE_V>();
                 auto factors = packed ? batchH : tileLow;
                 uint8_t factorStride = packed ? 1 : static_cast<uint8_t>(stride / 8);
+                if (core != pivot % cores) { SetFlag<HardEvent::MTE2_V>(0); WaitFlag<HardEvent::MTE2_V>(0); }
                 for (uint32_t col = 0; col < s; col += 64) {
                     uint32_t mask = s - col < 64 ? s - col : 64;
                     MulAddDst(tileHigh[col], u[col], factors, static_cast<uint64_t>(mask), static_cast<uint8_t>(owned), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, factorStride});
@@ -1197,7 +1198,10 @@ class StablePinv {
                     nextBest = red.GetValue(0); nextRow = core + red.ReinterpretCast<uint32_t>().GetValue(1) * cores;
                 }
             }
-            if (p + 1 < t.cols) { red.SetValue(0, nextBest); red.SetValue(1, static_cast<float>(static_cast<int32_t>(nextRow))); Store(meta[core * 8], red, 2); }
+            if (p + 1 < t.cols) {
+                PrepareGroupedCandidate<false>(core, cores, nextRow, p + 1, nextBest);
+                red.SetValue(0, nextBest); red.SetValue(1, static_cast<float>(static_cast<int32_t>(nextRow))); Store(meta[core * 8], red, 2);
+            }
             SyncAll();
         }
         float inverseTotal = 0.0f;
