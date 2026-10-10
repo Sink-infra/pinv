@@ -189,7 +189,7 @@ class StablePinv {
         Sub(y, calc[0], y, s); PipeBarrier<PIPE_V>();
     }
     __aicore__ inline void GlobalPivot(uint32_t cores, float &best, uint32_t &pivot) {
-        if (cores < 8 || cores > 128) {
+        if (cores == 0 || cores > 128 || (WAVE && cores < 8)) {
             for (uint32_t i = 0; i < cores; ++i) {
                 float value = gather.GetValue(i * 8);
                 if (value > best) { best = value; pivot = static_cast<uint32_t>(static_cast<int32_t>(gather.GetValue(i * 8 + 1))); }
