@@ -1059,7 +1059,126 @@ class StablePinv {
         t.resident = (t.cols + allCores - 1) / allCores;
         return accepted;
     }
+    template <uint32_t PANEL>
+    __aicore__ inline uint32_t GroupedResidentPanels() {
+        uint32_t physical = GetBlockIdx(), allCores = GetBlockNum(), groups = t.groupCount;
+        uint32_t base = allCores / groups, extra = allCores % groups;
+        uint32_t group, core, cores;
+        if (physical < extra * (base + 1)) { group = physical / (base + 1); core = physical % (base + 1); cores = base + 1; }
+        else { uint32_t rest = physical - extra * (base + 1); group = extra + rest / base; core = rest % base; cores = base; }
+        uint32_t b = group, offset = b * t.m * t.n, owned = (t.cols + cores - 1 - core) / cores;
+        GlobalTensor<float> meta;
+        meta.SetGlobalBuffer(workBase + uint64_t(2) * t.batch * t.cols * stride + uint64_t(b) * 8192);
+        work.SetGlobalBuffer(workBase + uint64_t(b) * t.cols * stride);
+        Duplicate(tileHigh, 0.0f, owned * stride); Duplicate(norms, 0.0f, k8); PipeBarrier<PIPE_V>();
+        float scale = 0.0f;
+        for (uint32_t row = 0; row < owned; ++row) {
+            Load(tileHigh[row * stride], input[offset + (core + row * cores) * t.n], t.n);
+            Abs(prod, tileHigh[row * stride], r8); PipeBarrier<PIPE_V>(); ReduceMax(red, prod, tmp, r8, false); VS();
+            float value = red.GetValue(0); scale = value > scale ? value : scale;
+        }
+        red.SetValue(0, scale); Store(meta[core * 8], red, 1); SyncAll();
+        Load(gather, meta, cores * 8); scale = 0.0f;
+        for (uint32_t peer = 0; peer < cores; ++peer) { float value = gather.GetValue(peer * 8); scale = value > scale ? value : scale; }
+        bool valid = scale >= 0.1f && scale < 1.7014118e38f;
+        float power = 1.0f;
+        if (valid) { while (power < scale) power *= 2.0f; while (power * 0.5f >= scale) power *= 0.5f; }
+        float total = 0.0f;
+        if (valid) for (uint32_t row = 0; row < owned; ++row) {
+            Muls(tileHigh[row * stride], tileHigh[row * stride], 1.0f / power, r8); PipeBarrier<PIPE_V>();
+            total += Dot(tileHigh[row * stride], tileHigh[row * stride]);
+            tileHigh.SetValue(row * stride + r8 + core + row * cores, 1.0f); SV();
+        }
+        red.SetValue(0, total); Store(meta[core * 8], red, 1); SyncAll(); Load(gather, meta, cores * 8); total = 0.0f;
+        for (uint32_t peer = 0; peer < cores; ++peer) total += gather.GetValue(peer * 8);
+        float cutoff = Root(total) * t.rtol;
+        float absolute = t.atol / power; cutoff = cutoff > absolute ? cutoff : absolute;
+        uint32_t factorRows = (owned + 7) / 8 * 8;
+        auto rowIndices = tmp.ReinterpretCast<uint32_t>();
+        auto panelIndices = norms.ReinterpretCast<uint32_t>();
+        for (uint32_t row = 0; row < factorRows; ++row) rowIndices.SetValue(row, row < owned ? row * stride * sizeof(float) : 0);
+        for (uint32_t row = 0; row < PANEL; ++row) panelIndices.SetValue(row, row * stride * sizeof(float));
+        Duplicate(u, 0.0f, rowLength); PipeBarrier<PIPE_V>(); SV();
+        for (uint32_t first = 0; first < t.cols; first += PANEL) {
+            uint32_t rows = t.cols - first < PANEL ? t.cols - first : PANEL;
+            uint32_t phase = ((first / PANEL) & 1) * PANEL * stride;
+            if (valid) for (uint32_t row = 0; row < owned; ++row) {
+                uint32_t index = core + row * cores;
+                if (index >= first && index < first + rows) Store(work[phase + (index - first) * stride], tileHigh[row * stride], rowLength);
+            }
+            SyncAll();
+            if (valid) {
+                Load(tileLow, work[phase], rows * stride);
+                for (uint32_t column = 0; column < rows; ++column) {
+                    Gather(prod, tileLow, panelIndices, (first + column) * sizeof(float), rows); PipeBarrier<PIPE_V>();
+                    Abs(v, prod, rows); PipeBarrier<PIPE_V>();
+                    uint64_t active[2] = {((uint64_t(1) << rows) - 1) & (~uint64_t(0) << column), 0};
+                    WholeReduceMax(red, v, active, 1, 1, 1, 8); VS();
+                    float best = red.GetValue(0);
+                    uint32_t pivot = red.ReinterpretCast<uint32_t>().GetValue(1);
+                    if (!(best > 1.0e-6f)) { valid = false; break; }
+                    float divisor = prod.GetValue(pivot), displaced = prod.GetValue(column);
+                    Muls(u, tileLow[pivot * stride], 1.0f / divisor, s);
+                    if (pivot != column) DataCopy(v, tileLow[column * stride], rowLength);
+                    PipeBarrier<PIPE_V>();
+                    if (pivot != column) {
+                        DataCopy(tileLow[pivot * stride], v, rowLength);
+                        prod.SetValue(pivot, displaced);
+                    }
+                    DataCopy(tileLow[column * stride], u, rowLength); PipeBarrier<PIPE_V>();
+                    prod.SetValue(column, 0.0f); SV();
+                    Muls(prod, prod, -1.0f, (PANEL + 7) / 8 * 8); PipeBarrier<PIPE_V>();
+                    Brcb(batchH, prod, (PANEL + 7) / 8, {1, 8}); PipeBarrier<PIPE_V>();
+                    for (uint32_t col = 0; col < s; col += 64) {
+                        uint32_t mask = s - col < 64 ? s - col : 64;
+                        MulAddDst(tileLow[col], u[col], batchH, static_cast<uint64_t>(mask), static_cast<uint8_t>(rows), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, 1});
+                    }
+                    PipeBarrier<PIPE_V>();
+                }
+            }
+            if (valid) {
+                for (uint32_t column = 0; column < rows; ++column) {
+                    DataCopy(u, tileLow[column * stride], rowLength);
+                    Gather(v, tileHigh, rowIndices, (first + column) * sizeof(float), factorRows); PipeBarrier<PIPE_V>();
+                    Muls(v, v, -1.0f, factorRows); PipeBarrier<PIPE_V>();
+                    Brcb(batchH, v, factorRows / 8, {1, 8}); PipeBarrier<PIPE_V>();
+                    for (uint32_t col = (first + column + 1) / 64 * 64; col < s; col += 64) {
+                        uint32_t mask = s - col < 64 ? s - col : 64;
+                        MulAddDst(tileHigh[col], u[col], batchH, static_cast<uint64_t>(mask), static_cast<uint8_t>(owned), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, 1});
+                        PipeBarrier<PIPE_V>();
+                    }
+                }
+                for (uint32_t row = 0; row < owned; ++row) {
+                    uint32_t index = core + row * cores;
+                    if (index >= first && index < first + rows) DataCopy(tileHigh[row * stride], tileLow[(index - first) * stride], rowLength);
+                }
+                PipeBarrier<PIPE_V>();
+            }
+        }
+        float inverseTotal = 0.0f;
+        if (valid) for (uint32_t row = 0; row < owned; ++row) inverseTotal += Dot(tileHigh[row * stride + r8], tileHigh[row * stride + r8]);
+        red.SetValue(0, inverseTotal); Store(meta[core * 8], red, 1); SyncAll(); Load(gather, meta, cores * 8); inverseTotal = 0.0f;
+        for (uint32_t peer = 0; peer < cores; ++peer) inverseTotal += gather.GetValue(peer * 8);
+        valid = valid && inverseTotal > 0.0f && total * inverseTotal < 3.6e9f && inverseTotal * cutoff * cutoff < 0.81f;
+        if (valid) for (uint32_t row = 0; row < owned; ++row) {
+            uint32_t target = core + row * cores;
+            Muls(output, tileHigh[row * stride + r8], 1.0f / power, r8); PipeBarrier<PIPE_V>(); Store(result[offset + target * t.m], output, t.m);
+        }
+        if (core == 0) { red.SetValue(0, valid ? 1.0f : 0.0f); Store(meta[1024], red, 1); }
+        SyncAll();
+        uint32_t accepted = 0;
+        for (uint32_t peer = 0; peer < groups; ++peer) {
+            meta.SetGlobalBuffer(workBase + uint64_t(2) * t.batch * t.cols * stride + uint64_t(peer) * 8192);
+            Load(gather, meta[1024], 1); if (gather.GetValue(0) > 0.5f) accepted |= uint32_t(1) << peer;
+        }
+        t.resident = (t.cols + allCores - 1) / allCores;
+        return accepted;
+    }
     __aicore__ inline uint32_t GroupedResident() {
+        constexpr uint32_t panelRows = 8;
+        uint32_t factorRows = (t.resident + 7) / 8 * 8;
+        if (t.resident * stride >= panelRows * stride && 2 * panelRows <= t.cols
+            && t.inverseTile * stride >= factorRows * 8) return GroupedResidentPanels<panelRows>();
         uint32_t cores = (GetBlockNum() + t.groupCount - 1) / t.groupCount;
         uint32_t factors = (t.resident + 7) / 8 * 8;
         bool fits = t.resident * stride >= cores * (rowLength + 8)
