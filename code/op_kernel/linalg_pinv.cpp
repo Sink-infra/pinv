@@ -14,7 +14,7 @@ class StablePinv {
     GlobalTensor<float> input, result, work;
     __gm__ float *workBase;
     LinalgPinvTilingData t;
-    uint32_t r8, k8, s, stride, rowLength;
+    uint32_t r8, k8, s, stride, rowLength, lowElements, residentElements;
     __aicore__ inline void VS() { SetFlag<HardEvent::V_S>(0); WaitFlag<HardEvent::V_S>(0); }
     __aicore__ inline void SV() { SetFlag<HardEvent::S_V>(0); WaitFlag<HardEvent::S_V>(0); }
     __aicore__ inline void Load(LocalTensor<float> dst, GlobalTensor<float> src, uint32_t count) {
@@ -215,6 +215,7 @@ class StablePinv {
                                           float total, float inverseTotal, GlobalTensor<float> meta,
                                           bool certify, float cutoff) {
         uint32_t core = GetBlockIdx(), cores = GetBlockNum();
+        if constexpr (WAVE) if ((t.cols + cores - 1) / cores * r8 > lowElements) return false;
         uint32_t owned = (t.cols + cores - 1 - core) / cores;
         auto bx = x, by = y, bu = u, bv = v, cache = calc[0];
         GlobalTensor<float> residual, normWork;
@@ -454,6 +455,7 @@ class StablePinv {
     }
     __aicore__ inline bool ResidentSquare(uint32_t b, uint32_t offset, float scale,
                                           GlobalTensor<float> meta, bool certify, float cutoff, bool skipQuick = false) {
+        if constexpr (WAVE) if ((t.cols + GetBlockNum() - 1) / GetBlockNum() * stride > lowElements) return false;
         if (!skipQuick && QuickResidentSquare(b, offset, scale, meta, certify, cutoff)) return true;
         uint32_t core = GetBlockIdx(), cores = GetBlockNum();
         uint32_t owned = (t.cols + cores - 1 - core) / cores;
@@ -541,8 +543,13 @@ class StablePinv {
         SyncAll(); return true;
     }
     __aicore__ inline bool AccurateSquare(uint32_t b, uint32_t offset, float scale, GlobalTensor<float> meta,
-                                         bool certify = false, float cutoff = 0.0f) {
-        if (t.resident) return ResidentSquare(b, offset, scale, meta, certify, cutoff);
+                                         bool certify = false, float cutoff = 0.0f, bool skipQuick = false) {
+        if (t.resident) {
+            if constexpr (WAVE) {
+                if ((t.cols + GetBlockNum() - 1) / GetBlockNum() * stride <= lowElements)
+                    return ResidentSquare(b, offset, scale, meta, certify, cutoff, skipQuick);
+            } else return ResidentSquare(b, offset, scale, meta, certify, cutoff, skipQuick);
+        }
         uint32_t core = GetBlockIdx(), cores = GetBlockNum();
         GlobalTensor<float> low;
         low.SetGlobalBuffer(workBase + uint64_t(t.batch + b) * t.cols * stride);
@@ -819,7 +826,7 @@ class StablePinv {
         SetFlag<HardEvent::MTE3_MTE2>(0); WaitFlag<HardEvent::MTE3_MTE2>(0);
         return true;
     }
-    template <uint32_t PAD, bool ALIGNED>
+    template <uint32_t PAD, bool ALIGNED, bool PACKED = true>
     __aicore__ inline bool QuickLocalInverseLogicalGeometry(uint32_t offset) {
         constexpr uint32_t r8 = PAD, k8 = PAD, s = 2 * PAD, stride = 2 * PAD + 8, rowLength = stride;
         const uint32_t n = ALIGNED ? PAD : t.cols;
@@ -860,11 +867,12 @@ class StablePinv {
             DataCopy(u, matrix[pivot * stride], rowLength); PipeBarrier<PIPE_V>();
             norms.SetValue(pivot, 0.0f); SV();
             Muls(norms, norms, -1.0f, k8); PipeBarrier<PIPE_V>();
-            Brcb(lowMatrix, norms, k8 / 8, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)});
+            if constexpr (PACKED) Brcb(batchH, norms, k8 / 8, {2, 16});
+            else Brcb(lowMatrix, norms, k8 / 8, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)});
             PipeBarrier<PIPE_V>();
             for (uint32_t col = 0; col < s; col += 64) {
                 uint32_t mask = s - col < 64 ? s - col : 64;
-                MulAddDst(matrix[col], u[col], lowMatrix, static_cast<uint64_t>(mask), static_cast<uint8_t>(n), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, static_cast<uint8_t>(stride / 8)});
+                MulAddDst(matrix[col], u[col], PACKED ? batchH : lowMatrix, static_cast<uint64_t>(mask), static_cast<uint8_t>(n), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, PACKED ? uint8_t(2) : static_cast<uint8_t>(stride / 8)});
             }
             PipeBarrier<PIPE_V>();
         }
@@ -913,15 +921,22 @@ class StablePinv {
         x = bx; y = by; u = bu; v = bv;
         return accepted;
     }
+    template <bool PACKETS>
     __aicore__ inline void PrepareGroupedCandidate(uint32_t core, uint32_t cores, uint32_t row, uint32_t column, float best) {
+        constexpr uint32_t header = PACKETS ? 8 : 0;
         if (best > 0.0f) {
             uint32_t localRow = row / cores;
             float divisor = tileHigh.GetValue(localRow * stride + column);
-            Muls(u, tileHigh[localRow * stride], 1.0f / divisor, s); PipeBarrier<PIPE_V>();
-            Store(work[((column & 1) * cores + core) * stride], u, rowLength);
+            Muls(u[header], tileHigh[localRow * stride], 1.0f / divisor, s); PipeBarrier<PIPE_V>();
+            if constexpr (!PACKETS) Store(work[((column & 1) * cores + core) * stride], u, rowLength);
+        }
+        if constexpr (PACKETS) {
+            u.SetValue(0, best); u.SetValue(1, static_cast<float>(static_cast<int32_t>(row)));
+            Store(work[((column & 1) * cores + core) * (rowLength + 8)], u, rowLength + 8);
         }
     }
-    __aicore__ inline uint32_t GroupedResident() {
+    template <bool PACKETS>
+    __aicore__ inline uint32_t GroupedResidentPath() {
         uint32_t physical = GetBlockIdx(), allCores = GetBlockNum(), groups = t.groupCount;
         uint32_t base = allCores / groups, extra = allCores % groups;
         uint32_t group, core, cores;
@@ -957,9 +972,9 @@ class StablePinv {
         uint64_t available = owned < 64 ? (uint64_t(1) << owned) - 1 : ~uint64_t(0);
         auto pivotIndices = tmp.ReinterpretCast<uint32_t>();
         uint32_t factorRows = (owned + 7) / 8 * 8;
-        bool packed = t.inverseTile * stride >= factorRows * 8;
+        bool packed = PACKETS || t.inverseTile * stride >= factorRows * 8;
         for (uint32_t row = 0; row < factorRows; ++row) pivotIndices.SetValue(row, row < owned ? row * stride * sizeof(float) : 0);
-        SV(); Duplicate(u, 0.0f, rowLength); PipeBarrier<PIPE_V>();
+        SV(); Duplicate(u, 0.0f, rowLength + (PACKETS ? 8 : 0)); PipeBarrier<PIPE_V>();
         for (uint32_t p = 0; p < t.cols; ++p) {
             if (p == 0) {
                 float best = 0.0f; uint32_t selected = core;
@@ -968,19 +983,25 @@ class StablePinv {
                     uint64_t active[2] = {available, 0}; WholeReduceMax(red, prod, active, 1, 1, 1, 8); VS();
                     best = red.GetValue(0); selected = core + red.ReinterpretCast<uint32_t>().GetValue(1) * cores;
                 }
-                PrepareGroupedCandidate(core, cores, selected, 0, best);
-                red.SetValue(0, best); red.SetValue(1, static_cast<float>(static_cast<int32_t>(selected))); Store(meta[core * 8], red, 2); SyncAll();
+                PrepareGroupedCandidate<PACKETS>(core, cores, selected, 0, best);
+                if constexpr (!PACKETS) { red.SetValue(0, best); red.SetValue(1, static_cast<float>(static_cast<int32_t>(selected))); Store(meta[core * 8], red, 2); }
+                SyncAll();
             }
-            Load(gather, meta, cores * 8); float best = 0.0f; uint32_t pivot = 0;
+            if constexpr (PACKETS) {
+                Load(tileLow, work[(p & 1) * cores * (rowLength + 8)], cores * (rowLength + 8));
+                Copy(gather, tileLow, uint64_t(8), static_cast<uint8_t>(cores), {1, 1, 1, static_cast<uint16_t>((rowLength + 8) / 8)}); VS();
+            } else Load(gather, meta, cores * 8);
+            float best = 0.0f; uint32_t pivot = 0;
             GlobalPivot(cores, best, pivot); valid = valid && best > 0.0f;
             if (valid) {
                 norms.SetValue(pivot, static_cast<float>(static_cast<int32_t>(p + 1))); SV();
                 if (core != pivot % cores) {
-                    DataCopyPad(u, work[((p & 1) * cores + pivot % cores) * stride], DataCopyExtParams{1, rowLength * 4, 0, 0, 0}, DataCopyPadExtParams<float>{true, 0, 0, 0});
+                    if constexpr (PACKETS) { DataCopy(u[8], tileLow[(pivot % cores) * (rowLength + 8) + 8], rowLength); PipeBarrier<PIPE_V>(); }
+                    else DataCopyPad(u, work[((p & 1) * cores + pivot % cores) * stride], DataCopyExtParams{1, rowLength * 4, 0, 0, 0}, DataCopyPadExtParams<float>{true, 0, 0, 0});
                 }
                 if (core == pivot % cores) {
                     available &= ~(uint64_t(1) << (pivot / cores));
-                    DataCopy(tileHigh[(pivot / cores) * stride], u, rowLength); PipeBarrier<PIPE_V>();
+                    DataCopy(tileHigh[(pivot / cores) * stride], u[PACKETS ? 8 : 0], rowLength); PipeBarrier<PIPE_V>();
                 }
             }
             float nextBest = 0.0f; uint32_t nextRow = core;
@@ -1001,10 +1022,10 @@ class StablePinv {
                 PipeBarrier<PIPE_V>();
                 auto factors = packed ? batchH : tileLow;
                 uint8_t factorStride = packed ? 1 : static_cast<uint8_t>(stride / 8);
-                if (core != pivot % cores) { SetFlag<HardEvent::MTE2_V>(0); WaitFlag<HardEvent::MTE2_V>(0); }
-                for (uint32_t col = 0; col < s; col += 64) {
+                if constexpr (!PACKETS) if (core != pivot % cores) { SetFlag<HardEvent::MTE2_V>(0); WaitFlag<HardEvent::MTE2_V>(0); }
+                for (uint32_t col = (p + 1) / 64 * 64; col < s; col += 64) {
                     uint32_t mask = s - col < 64 ? s - col : 64;
-                    MulAddDst(tileHigh[col], u[col], factors, static_cast<uint64_t>(mask), static_cast<uint8_t>(owned), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, factorStride});
+                    MulAddDst(tileHigh[col], u[col + (PACKETS ? 8 : 0)], factors, static_cast<uint64_t>(mask), static_cast<uint8_t>(owned), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, factorStride});
                     PipeBarrier<PIPE_V>();
                 }
                 if (p + 1 < t.cols && available) {
@@ -1014,8 +1035,8 @@ class StablePinv {
                 }
             }
             if (p + 1 < t.cols) {
-                PrepareGroupedCandidate(core, cores, nextRow, p + 1, nextBest);
-                red.SetValue(0, nextBest); red.SetValue(1, static_cast<float>(static_cast<int32_t>(nextRow))); Store(meta[core * 8], red, 2);
+                PrepareGroupedCandidate<PACKETS>(core, cores, nextRow, p + 1, nextBest);
+                if constexpr (!PACKETS) { red.SetValue(0, nextBest); red.SetValue(1, static_cast<float>(static_cast<int32_t>(nextRow))); Store(meta[core * 8], red, 2); }
             }
             SyncAll();
         }
@@ -1038,10 +1059,21 @@ class StablePinv {
         t.resident = (t.cols + allCores - 1) / allCores;
         return accepted;
     }
+    __aicore__ inline uint32_t GroupedResident() {
+        uint32_t cores = (GetBlockNum() + t.groupCount - 1) / t.groupCount;
+        uint32_t factors = (t.resident + 7) / 8 * 8;
+        bool fits = t.resident * stride >= cores * (rowLength + 8)
+                    && 2 * cores * (rowLength + 8) <= t.cols * stride
+                    && t.inverseTile * stride >= factors * 8;
+        if (fits) return GroupedResidentPath<true>();
+        return GroupedResidentPath<false>();
+    }
     __aicore__ inline void RebudgetWaveScratch() {
         uint32_t active = (t.cols + GetBlockNum() - 1) / GetBlockNum();
         if (t.singleResident) {
             tileLow = tileHigh[active * stride];
+            uint32_t remaining = residentElements > active * stride ? residentElements - active * stride : 0;
+            lowElements = remaining < active * stride ? remaining : active * stride;
             uint32_t unused = t.resident > 2 * active ? t.resident - 2 * active : 0;
             uint32_t initial = t.inverseTile;
             uint32_t candidate = (12 * initial + unused) / 12;
@@ -1059,9 +1091,11 @@ class StablePinv {
                 batchU = slots[8]; batchV = slots[9]; batchH = slots[10]; batchL = slots[11];
                 t.inverseTile = candidate;
             }
+            if (t.inverseTile * stride > lowElements) t.inverseTile = lowElements / stride;
             t.resident = active;
             return;
         }
+        lowElements = active * stride;
         uint32_t unused = t.resident > active ? t.resident - active : 0;
         uint32_t initial = t.inverseTile;
         uint32_t candidate = (12 * initial + 2 * unused) / 12;
@@ -1119,7 +1153,7 @@ class StablePinv {
         uint64_t available = owned < 64 ? (uint64_t(1) << owned) - 1 : ~uint64_t(0);
         auto pivotIndices = tmp.ReinterpretCast<uint32_t>();
         for (uint32_t row = 0; row < (owned + 7) / 8 * 8; ++row) pivotIndices.SetValue(row, row < owned ? row * stride * sizeof(float) : 0);
-        SV();
+        SV(); Duplicate(u, 0.0f, rowLength); PipeBarrier<PIPE_V>();
         for (uint32_t p = 0; p < t.cols; ++p) {
             if (p == 0) {
                 float best = 0.0f; uint32_t selected = core;
@@ -1128,23 +1162,23 @@ class StablePinv {
                     uint64_t active[2] = {available, 0}; WholeReduceMax(red, prod, active, 1, 1, 1, 8); VS();
                     best = red.GetValue(0); selected = core + red.ReinterpretCast<uint32_t>().GetValue(1) * cores;
                 }
+                PrepareGroupedCandidate<false>(core, cores, selected, 0, best);
                 red.SetValue(0, best); red.SetValue(1, static_cast<float>(static_cast<int32_t>(selected))); Store(meta[core * 8], red, 2); SyncAll();
             }
             Load(gather, meta, cores * 8); float best = 0.0f; uint32_t pivot = 0;
             GlobalPivot(cores, best, pivot); valid = valid && best > 0.0f;
             if (valid) {
                 norms.SetValue(pivot, static_cast<float>(static_cast<int32_t>(p + 1))); SV();
+                if (core != pivot % cores) {
+                    DataCopyPad(u, work[((p & 1) * cores + pivot % cores) * stride], DataCopyExtParams{1, rowLength * 4, 0, 0, 0}, DataCopyPadExtParams<float>{true, 0, 0, 0});
+                }
                 if (core == pivot % cores) {
                     available &= ~(uint64_t(1) << (pivot / cores));
-                    VS(); float divisor = tileHigh.GetValue((pivot / cores) * stride + p);
-                    Muls(tileHigh[(pivot / cores) * stride], tileHigh[(pivot / cores) * stride], 1.0f / divisor, s); PipeBarrier<PIPE_V>();
-                    Store(work, tileHigh[(pivot / cores) * stride], rowLength);
+                    DataCopy(tileHigh[(pivot / cores) * stride], u, rowLength); PipeBarrier<PIPE_V>();
                 }
             }
-            SyncAll();
             float nextBest = 0.0f; uint32_t nextRow = core;
             if (valid) {
-                Load(u, work, rowLength);
                 uint32_t factorRows = (owned + 7) / 8 * 8;
                 bool packed = t.inverseTile * stride >= factorRows * 8;
                 if (packed) {
@@ -1163,6 +1197,7 @@ class StablePinv {
                 PipeBarrier<PIPE_V>();
                 auto factors = packed ? batchH : tileLow;
                 uint8_t factorStride = packed ? 1 : static_cast<uint8_t>(stride / 8);
+                if (core != pivot % cores) { SetFlag<HardEvent::MTE2_V>(0); WaitFlag<HardEvent::MTE2_V>(0); }
                 for (uint32_t col = 0; col < s; col += 64) {
                     uint32_t mask = s - col < 64 ? s - col : 64;
                     MulAddDst(tileHigh[col], u[col], factors, static_cast<uint64_t>(mask), static_cast<uint8_t>(owned), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, factorStride});
@@ -1174,7 +1209,10 @@ class StablePinv {
                     nextBest = red.GetValue(0); nextRow = core + red.ReinterpretCast<uint32_t>().GetValue(1) * cores;
                 }
             }
-            if (p + 1 < t.cols) { red.SetValue(0, nextBest); red.SetValue(1, static_cast<float>(static_cast<int32_t>(nextRow))); Store(meta[core * 8], red, 2); }
+            if (p + 1 < t.cols) {
+                PrepareGroupedCandidate<false>(core, cores, nextRow, p + 1, nextBest);
+                red.SetValue(0, nextBest); red.SetValue(1, static_cast<float>(static_cast<int32_t>(nextRow))); Store(meta[core * 8], red, 2);
+            }
             SyncAll();
         }
         float inverseTotal = 0.0f;
@@ -1257,7 +1295,7 @@ class StablePinv {
                     uint32_t owned = (t.cols + cores - 1 - core) / cores;
                     for (uint32_t row = 0; row < owned; ++row) Load(tileHigh[row * stride + r8], result[offset + (core + row * cores) * t.m], t.m);
                     if (RefineResident(b, offset, power, cachedTotal, cachedInverse, meta, true, cutoff)) continue;
-                    if (ResidentSquare(b, offset, scale, meta, true, cutoff, true)) continue;
+                    if (AccurateSquare(b, offset, scale, meta, true, cutoff, true)) continue;
                 } else if (AccurateSquare(b, offset, scale, meta, true, cutoff)) continue;
                 RestoreJacobi(offset, scale);
             }
@@ -1340,6 +1378,7 @@ class StablePinv {
 public:
     __aicore__ inline void Init(GM_ADDR a, GM_ADDR out, GM_ADDR ws, const LinalgPinvTilingData &data, TPipe *pipe) {
         t = data; r8 = (t.rows + 7) / 8 * 8; k8 = (t.cols + 7) / 8 * 8; s = r8 + k8; stride = t.stride; rowLength = s + 8;
+        lowElements = 0; residentElements = 0;
         uint32_t bufferStride = t.parallel ? (rowLength + 63) / 64 * 64 : stride;
         uint32_t size = (t.local ? t.cols * stride : 0) + 4 * bufferStride + 4 * r8 + 8 * t.rows + k8 + 32;
         pipe->InitBuffer(mem, size * 4);
@@ -1372,7 +1411,9 @@ public:
                     residentBuffers = 1;
                     lowOffset = (t.cols + GetBlockNum() - 1) / GetBlockNum() * stride;
                 }
-                pipe->InitBuffer(parallelElimination, residentBuffers * residentSize * sizeof(float));
+                residentElements = residentBuffers * residentSize;
+                lowElements = residentElements - lowOffset;
+                pipe->InitBuffer(parallelElimination, residentElements * sizeof(float));
                 tileHigh = parallelElimination.Get<float>(); tileLow = tileHigh[lowOffset];
             }
         }
