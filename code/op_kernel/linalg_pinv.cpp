@@ -1710,6 +1710,153 @@ class Pinv {
         Add(e, e, y, count); PipeBarrier<PIPE_V>(); Sub(e, e, ql, count); PipeBarrier<PIPE_V>();
         Add(x, bh, e, count); PipeBarrier<PIPE_V>(); Sub(aux, x, bh, count); PipeBarrier<PIPE_V>(); Sub(y, e, aux, count); PipeBarrier<PIPE_V>();
     }
+    __aicore__ inline bool CompactInverseLegacyBody(uint32_t offset, LocalTensor<float> bx, LocalTensor<float> by,
+                                            LocalTensor<float> bu, LocalTensor<float> bv, bool tryQuick = false) {
+        auto highData = reinterpret_cast<__ubuf__ float *>(matrix.GetPhyAddr());
+        auto lowData = reinterpret_cast<__ubuf__ float *>(lowMatrix.GetPhyAddr());
+        bool compact = true;
+        uint32_t count = t.cols * stride;
+        float scale = 0.0f;
+        if (compact) {
+            Duplicate(matrix, 0.0f, count); Duplicate(lowMatrix, 0.0f, count); PipeBarrier<PIPE_V>();
+            SetFlag<HardEvent::V_MTE2>(0); WaitFlag<HardEvent::V_MTE2>(0);
+            DataCopyPad(matrix, input[offset], DataCopyExtParams{static_cast<uint16_t>(t.cols), t.n * 4, 0, (stride - r8) / 8, 0}, DataCopyPadExtParams<float>{true, 0, static_cast<uint8_t>(r8 - t.n), 0});
+            SetFlag<HardEvent::MTE2_V>(0); WaitFlag<HardEvent::MTE2_V>(0);
+            Abs(lowMatrix, matrix, count); PipeBarrier<PIPE_V>(); ReduceMax(red, lowMatrix, tmp, count, false); VS();
+            scale = red.GetValue(0);
+        } else {
+            for (uint32_t i = 0; i < t.cols; ++i) {
+                x = Row(i); y = lowMatrix[i * stride];
+                Duplicate(x, 0.0f, rowLength); Duplicate(y, 0.0f, rowLength); PipeBarrier<PIPE_V>();
+                Load(x, input[offset + i * t.n], t.n);
+                Abs(prod, x, r8); PipeBarrier<PIPE_V>(); ReduceMax(red, prod, tmp, r8, false); VS();
+                float mx = red.GetValue(0); scale = mx > scale ? mx : scale;
+                x.SetValue(r8 + i, 1.0f); SV();
+            }
+        }
+        if (!(scale > 0.0f)) return false;
+        bool quick = scale >= 0.1f;
+        float power = 1.0f;
+        while (power < scale) power *= 2.0f;
+        while (power * 0.5f >= scale) power *= 0.5f;
+        float total = 0.0f;
+        if (compact) {
+            Muls(matrix, matrix, 1.0f / power, count); PipeBarrier<PIPE_V>();
+            Mul(lowMatrix, matrix, matrix, count); PipeBarrier<PIPE_V>(); ReduceSum(red, lowMatrix, tmp, count); VS(); total = red.GetValue(0);
+            Duplicate(lowMatrix, 0.0f, count); PipeBarrier<PIPE_V>();
+            for (uint32_t i = 0; i < t.cols; ++i) highData[i * stride + r8 + i] = 1.0f;
+            SV();
+        } else {
+            for (uint32_t i = 0; i < t.cols; ++i) {
+                x = Row(i); Muls(x, x, 1.0f / power, r8); PipeBarrier<PIPE_V>(); total += Dot(x, x);
+            }
+        }
+        bool vectorQuick = quick && t.cols >= 8;
+        auto indices = gather.ReinterpretCast<uint32_t>();
+        if (vectorQuick) {
+            for (uint32_t i = 0; i < k8; ++i) indices.SetValue(i, i < t.cols ? i * stride * sizeof(float) : 0);
+            Duplicate(norms, 0.0f, k8); PipeBarrier<PIPE_V>(); SV();
+        }
+        for (uint32_t p = 0; p < t.cols; ++p) {
+            uint32_t pivot = p; float best = 0.0f;
+            if (vectorQuick) {
+                Gather(norms, matrix, indices, p * sizeof(float), t.cols); PipeBarrier<PIPE_V>();
+                Abs(prod, norms, k8); PipeBarrier<PIPE_V>();
+                uint64_t pivotMask[2] = {((uint64_t(1) << t.cols) - 1) & ~((uint64_t(1) << p) - 1), 0};
+                WholeReduceMax(red, prod, pivotMask, 1, 1, 1, 8); VS();
+                best = red.GetValue(0); pivot = red.ReinterpretCast<uint32_t>().GetValue(1);
+            } else {
+                if (p == 0 || !quick) VS();
+                for (uint32_t i = p; i < t.cols; ++i) {
+                    float value = AbsScalar(highData[i * stride + p]);
+                    if (value > best) { best = value; pivot = i; }
+                }
+            }
+            if (!(best > 0.0f)) return false;
+            if (pivot != p) {
+                DataCopy(bx, Row(p), rowLength); if (!quick) DataCopy(by, lowMatrix[p * stride], rowLength); PipeBarrier<PIPE_V>();
+                DataCopy(Row(p), Row(pivot), rowLength); if (!quick) DataCopy(lowMatrix[p * stride], lowMatrix[pivot * stride], rowLength); PipeBarrier<PIPE_V>();
+                DataCopy(Row(pivot), bx, rowLength); if (!quick) DataCopy(lowMatrix[pivot * stride], by, rowLength); PipeBarrier<PIPE_V>();
+            }
+            if (quick) {
+                if (pivot != p) VS();
+                auto pivotLocal = matrix[p * stride];
+                float divisor = highData[p * stride + p];
+                Muls(pivotLocal, pivotLocal, 1.0f / divisor, s); PipeBarrier<PIPE_V>();
+                DataCopy(bu, pivotLocal, stride); PipeBarrier<PIPE_V>();
+                if (vectorQuick) {
+                    if (pivot != p) norms.SetValue(pivot, norms.GetValue(p));
+                    norms.SetValue(p, 0.0f); SV(); Muls(norms, norms, -1.0f, k8); PipeBarrier<PIPE_V>();
+                    if constexpr (TAIL) {
+                        Brcb(lowMatrix, norms, k8 / 8, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)});
+                    } else {
+                        Brcb(lowMatrix, norms, t.cols / 8, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)});
+                    }
+                    PipeBarrier<PIPE_V>();
+                    MulAddDst(matrix, bu, lowMatrix, static_cast<uint64_t>(stride), static_cast<uint8_t>(t.cols), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, static_cast<uint8_t>(stride / 8)});
+                    PipeBarrier<PIPE_V>();
+                    continue;
+                }
+                for (uint32_t first = 0; first < t.cols; first += t.inverseTile) {
+                    uint32_t rows = t.cols - first < t.inverseTile ? t.cols - first : t.inverseTile;
+                    for (uint32_t row = 0; row < 8; ++row) {
+                        uint32_t i = first + row;
+                        float factor = row >= rows || i == p ? 0.0f : highData[i * stride + p];
+                        red.SetValue(row, -factor);
+                    }
+                    SV(); Brcb(batchH, red, 1, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)}); PipeBarrier<PIPE_V>();
+                    auto target = matrix[first * stride];
+                    MulAddDst(target, bu, batchH, static_cast<uint64_t>(stride), static_cast<uint8_t>(rows), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, static_cast<uint8_t>(stride / 8)});
+                    PipeBarrier<PIPE_V>(); VS();
+                }
+                continue;
+            }
+            x = Row(p); y = lowMatrix[p * stride]; u = bu; v = bv; VS();
+            Wide divisor = {highData[p * stride + p], lowData[p * stride + p]}; SV();
+            VectorNormalize(divisor); VS(); u = x; v = y;
+            for (uint32_t first = 0; first < t.cols; first += t.inverseTile) {
+                uint32_t rows = t.cols - first < t.inverseTile ? t.cols - first : t.inverseTile;
+                for (uint32_t row = 0; row < rows; ++row) {
+                    uint32_t i = first + row;
+                    float fh = i == p ? 0.0f : highData[i * stride + p];
+                    float fl = i == p ? 0.0f : lowData[i * stride + p];
+                    Duplicate(batchH[row * stride], fh, stride);
+                    DataCopy(batchU[row * stride], u, stride);
+                    Duplicate(batchL[row * stride], fl, stride); DataCopy(batchV[row * stride], v, stride);
+                }
+                PipeBarrier<PIPE_V>();
+                x = Row(first); y = lowMatrix[first * stride];
+                BatchEliminate(rows * stride); VS();
+            }
+        }
+        float inverseTotal = 0.0f;
+        if (compact) {
+            if (!vectorQuick) { Add(matrix, matrix, lowMatrix, count); PipeBarrier<PIPE_V>(); }
+            Duplicate(lowMatrix, 0.0f, count); PipeBarrier<PIPE_V>();
+            Mul(lowMatrix, matrix[r8], matrix[r8], static_cast<uint64_t>(r8), static_cast<uint8_t>(t.cols), {1, 1, 1, static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride / 8)});
+            PipeBarrier<PIPE_V>(); ReduceSum(red, lowMatrix, tmp, count); VS(); inverseTotal = red.GetValue(0);
+        } else {
+            for (uint32_t i = 0; i < t.cols; ++i) { x = Row(i); inverseTotal += Dot(x[r8], x[r8]); }
+        }
+        float cutoff = Root(total) * t.rtol;
+        float absolute = t.atol / power; cutoff = cutoff > absolute ? cutoff : absolute;
+        if (!(inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < 0.81f)) return false;
+        if (compact) {
+            Muls(matrix, matrix, 1.0f / power, count); PipeBarrier<PIPE_V>();
+            SetFlag<HardEvent::V_MTE3>(0); WaitFlag<HardEvent::V_MTE3>(0);
+            SetFlag<HardEvent::S_MTE3>(0); WaitFlag<HardEvent::S_MTE3>(0);
+            DataCopyPad(result[offset], matrix[r8], DataCopyExtParams{static_cast<uint16_t>(t.n), t.m * 4, (stride - r8) / 8, 0, 0});
+            SetFlag<HardEvent::MTE3_V>(0); WaitFlag<HardEvent::MTE3_V>(0);
+            SetFlag<HardEvent::MTE3_MTE2>(0); WaitFlag<HardEvent::MTE3_MTE2>(0);
+            return true;
+        }
+        for (uint32_t i = 0; i < t.n; ++i) {
+            x = Row(i); y = lowMatrix[i * stride];
+            Add(output, x[r8], y[r8], r8); PipeBarrier<PIPE_V>(); Muls(output, output, 1.0f / power, r8); PipeBarrier<PIPE_V>();
+            Store(result[offset + i * t.m], output, t.m);
+        }
+        return true;
+    }
     __aicore__ inline bool CompactInverseBody(uint32_t offset, LocalTensor<float> bx, LocalTensor<float> by,
                                             LocalTensor<float> bu, LocalTensor<float> bv, bool tryQuick = false) {
         auto highData = reinterpret_cast<__ubuf__ float *>(matrix.GetPhyAddr());
@@ -1938,7 +2085,9 @@ class Pinv {
     }
     __aicore__ inline bool LocalInverse(uint32_t offset) {
         auto bx = x, by = y, bu = u, bv = v;
-        bool accepted = stride <= 64 ? CompactInverseBody(offset, bx, by, bu, bv) : AccurateLocalInverseBody(offset, bx, by, bu, bv);
+        bool accepted;
+        if constexpr (TAIL) accepted = stride <= 64 ? CompactInverseLegacyBody(offset, bx, by, bu, bv) : AccurateLocalInverseBody(offset, bx, by, bu, bv);
+        else accepted = stride <= 64 ? CompactInverseBody(offset, bx, by, bu, bv) : AccurateLocalInverseBody(offset, bx, by, bu, bv);
         x = bx; y = by; u = bu; v = bv;
         return accepted;
     }
