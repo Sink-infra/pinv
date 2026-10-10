@@ -819,7 +819,7 @@ class StablePinv {
         SetFlag<HardEvent::MTE3_MTE2>(0); WaitFlag<HardEvent::MTE3_MTE2>(0);
         return true;
     }
-    template <uint32_t PAD, bool ALIGNED>
+    template <uint32_t PAD, bool ALIGNED, bool PACKED = true>
     __aicore__ inline bool QuickLocalInverseLogicalGeometry(uint32_t offset) {
         constexpr uint32_t r8 = PAD, k8 = PAD, s = 2 * PAD, stride = 2 * PAD + 8, rowLength = stride;
         const uint32_t n = ALIGNED ? PAD : t.cols;
@@ -860,11 +860,12 @@ class StablePinv {
             DataCopy(u, matrix[pivot * stride], rowLength); PipeBarrier<PIPE_V>();
             norms.SetValue(pivot, 0.0f); SV();
             Muls(norms, norms, -1.0f, k8); PipeBarrier<PIPE_V>();
-            Brcb(lowMatrix, norms, k8 / 8, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)});
+            if constexpr (PACKED) Brcb(batchH, norms, k8 / 8, {2, 16});
+            else Brcb(lowMatrix, norms, k8 / 8, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)});
             PipeBarrier<PIPE_V>();
             for (uint32_t col = 0; col < s; col += 64) {
                 uint32_t mask = s - col < 64 ? s - col : 64;
-                MulAddDst(matrix[col], u[col], lowMatrix, static_cast<uint64_t>(mask), static_cast<uint8_t>(n), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, static_cast<uint8_t>(stride / 8)});
+                MulAddDst(matrix[col], u[col], PACKED ? batchH : lowMatrix, static_cast<uint64_t>(mask), static_cast<uint8_t>(n), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, PACKED ? uint8_t(2) : static_cast<uint8_t>(stride / 8)});
             }
             PipeBarrier<PIPE_V>();
         }
