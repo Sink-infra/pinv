@@ -1382,7 +1382,7 @@ public:
         }
     }
 };
-template <bool TAIL>
+template <bool TAIL, uint32_t PAD = 0>
 class Pinv {
     TBuf<TPosition::VECCALC> mem, precision, vectorPrecision, inverseLow, batchPrecision, parallelElimination;
     LocalTensor<float> batchCalc[8], batchU, batchV, batchH, batchL;
@@ -2044,6 +2044,10 @@ class Pinv {
 public:
     __aicore__ inline void Init(GM_ADDR a, GM_ADDR out, GM_ADDR ws, const LinalgPinvTilingData &data, TPipe *pipe) {
         t = data; r8 = (t.rows + 7) / 8 * 8; k8 = (t.cols + 7) / 8 * 8; s = r8 + k8; stride = t.stride; rowLength = s + 8;
+        if constexpr (PAD > 0) {
+            r8 = PAD; k8 = PAD; s = 2 * PAD; stride = 2 * PAD + 8; rowLength = stride;
+            if constexpr (!TAIL) { t.m = PAD; t.n = PAD; t.rows = PAD; t.cols = PAD; }
+        }
         uint32_t bufferStride = t.parallel ? (rowLength + 63) / 64 * 64 : stride;
         uint32_t size = (t.local ? t.cols * stride : 0) + 4 * bufferStride + 4 * r8 + 8 * t.rows + k8 + 32;
         pipe->InitBuffer(mem, size * 4);
@@ -2177,7 +2181,11 @@ __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR worksp
     TPipe pipe;
     if constexpr (COMPACT) {
         data.parallel = 0; data.local = 1; data.localInverse = 1;
-        Pinv<TAIL> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
+        if (data.rows > 8 && data.rows <= 16) {
+            Pinv<TAIL, 16> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
+        } else {
+            Pinv<TAIL> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
+        }
     } else {
         if constexpr (WAVE) { data.parallel = 1; data.local = 0; data.localInverse = 0; }
         if constexpr (LOCAL) { data.parallel = 0; data.groupCount = 0; data.localInverse = 1; }
