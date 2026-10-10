@@ -2,7 +2,7 @@
 #include "linalg_pinv_tiling.h"
 #include "tiling_key_linalg_pinv.h"
 using namespace AscendC;
-template <bool WAVE, bool LOCAL>
+template <bool WAVE, bool LOCAL, bool GROUP = false>
 class StablePinv {
     TBuf<TPosition::VECCALC> mem, precision, vectorPrecision, inverseLow, batchPrecision, parallelElimination;
     LocalTensor<float> batchCalc[8], batchU, batchV, batchH, batchL;
@@ -1094,6 +1094,8 @@ class StablePinv {
         float cutoff = Root(total) * t.rtol;
         float absolute = t.atol / power; cutoff = cutoff > absolute ? cutoff : absolute;
         uint32_t factorRows = (owned + 7) / 8 * 8;
+        uint32_t summaries = (t.cols + 63) / 64;
+        uint64_t summaryMask[2] = {uint64_t(0x5555) & ((uint64_t(1) << (2 * summaries)) - 1), 0};
         auto rowIndices = tmp.ReinterpretCast<uint32_t>();
         auto compactIndices = gather.ReinterpretCast<uint32_t>();
         auto panelIndices = compactIndices[k8];
@@ -1122,16 +1124,31 @@ class StablePinv {
                     Abs(x, v, t.cols);
                     Maxs(prod, norms, 0.0f, k8); PipeBarrier<PIPE_V>();
                     Mul(prod, prod, x, t.cols); PipeBarrier<PIPE_V>();
+                    float best; uint32_t selected;
+                    if constexpr (GROUP) {
                     uint32_t chunks = t.cols / 64, tail = t.cols % 64;
                     WholeReduceMax(red, prod, uint64_t(64), static_cast<uint8_t>(chunks), 1, 1, 8);
                     if (tail) {
                         PipeBarrier<PIPE_V>();
                         WholeReduceMax(red[chunks * 2], prod[chunks * 64], static_cast<uint64_t>(tail), 1, 1, 1, 8);
                     }
-                    VS(); float best = 0.0f; uint32_t selected = 0;
+                    PipeBarrier<PIPE_V>();
+                    WholeReduceMax(prod, red, summaryMask, 1, 1, 1, 8); VS();
+                    best = prod.GetValue(0);
+                    uint32_t chunk = prod.ReinterpretCast<uint32_t>().GetValue(1) / 2;
+                    selected = chunk * 64 + red.ReinterpretCast<uint32_t>().GetValue(chunk * 2 + 1);
+                    } else {
+                    uint32_t chunks = t.cols / 64, tail = t.cols % 64;
+                    WholeReduceMax(red, prod, uint64_t(64), static_cast<uint8_t>(chunks), 1, 1, 8);
+                    if (tail) {
+                        PipeBarrier<PIPE_V>();
+                        WholeReduceMax(red[chunks * 2], prod[chunks * 64], static_cast<uint64_t>(tail), 1, 1, 1, 8);
+                    }
+                    VS(); best = 0.0f; selected = 0;
                     for (uint32_t chunk = 0; chunk < chunks + (tail != 0); ++chunk) {
                         float value = red.GetValue(chunk * 2);
                         if (value > best) { best = value; selected = chunk * 64 + red.ReinterpretCast<uint32_t>().GetValue(chunk * 2 + 1); }
+                    }
                     }
                     if (!(best > 1.0e-6f)) { valid = false; break; }
                     float divisor = v.GetValue(selected);
@@ -1214,6 +1231,14 @@ class StablePinv {
         return accepted;
     }
     __aicore__ inline uint32_t GroupedResident() {
+        if constexpr (GROUP) {
+        constexpr uint32_t widePanel = 16;
+        uint32_t wideFactors = (t.resident + 7) / 8 * 8;
+        if (t.resident * stride >= widePanel * stride
+            && t.resident * stride >= t.cols * widePanel + k8 * widePanel
+            && t.cols * widePanel + widePanel * stride <= t.cols * stride
+            && t.inverseTile * stride >= wideFactors * 8) return GroupedResidentPanels<widePanel>();
+        }
         constexpr uint32_t panelRows = 8;
         uint32_t factorRows = (t.resident + 7) / 8 * 8;
         if (t.resident * stride >= panelRows * stride
@@ -5253,7 +5278,7 @@ public:
         }
     }
 };
-template <typename DT_A, bool COMPACT, bool TAIL, bool WAVE, bool LOCAL>
+template <typename DT_A, bool COMPACT, bool TAIL, bool WAVE, bool LOCAL, bool GROUP>
 __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR workspace, GM_ADDR tiling) {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIV_1_0);
     REGISTER_TILING_DEFAULT(LinalgPinvTilingData);
@@ -5280,7 +5305,7 @@ __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR worksp
         if constexpr (LOCAL) {
             LocalPinv<WAVE, LOCAL> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
         } else {
-            StablePinv<WAVE, LOCAL> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
+            StablePinv<WAVE, LOCAL, GROUP> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
         }
     }
 }
