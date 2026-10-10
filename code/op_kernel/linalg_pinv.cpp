@@ -975,7 +975,7 @@ class StablePinv {
             GlobalPivot(cores, best, pivot); valid = valid && best > 0.0f;
             if (valid) {
                 norms.SetValue(pivot, static_cast<float>(static_cast<int32_t>(p + 1))); SV();
-                Load(u, work[((p & 1) * cores + pivot % cores) * stride], rowLength);
+                if (core != pivot % cores) Load(u, work[((p & 1) * cores + pivot % cores) * stride], rowLength);
                 if (core == pivot % cores) {
                     available &= ~(uint64_t(1) << (pivot / cores));
                     DataCopy(tileHigh[(pivot / cores) * stride], u, rowLength); PipeBarrier<PIPE_V>();
