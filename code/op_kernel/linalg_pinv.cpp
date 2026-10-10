@@ -1106,7 +1106,11 @@ class StablePinv {
         Duplicate(u, 0.0f, rowLength); PipeBarrier<PIPE_V>(); SV();
         for (uint32_t first = 0; first < t.cols; first += PANEL) {
             uint32_t rows = t.cols - first < PANEL ? t.cols - first : PANEL;
-            if (valid) DataCopyPad(work[core * PANEL], tileHigh[first], DataCopyExtParams{static_cast<uint16_t>(owned), PANEL * 4, (stride - PANEL) / 8, (cores - 1) * PANEL * 4, 0});
+            if (valid) {
+                SetFlag<HardEvent::V_MTE3>(0); WaitFlag<HardEvent::V_MTE3>(0);
+                SetFlag<HardEvent::S_MTE3>(0); WaitFlag<HardEvent::S_MTE3>(0);
+                DataCopyPad(work[core * PANEL], tileHigh[first], DataCopyExtParams{static_cast<uint16_t>(owned), PANEL * 4, (stride - PANEL) / 8, (cores - 1) * PANEL * 4, 0});
+            }
             SyncAll();
             if (valid) {
                 Load(tileLow, work, t.cols * PANEL);
