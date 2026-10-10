@@ -1159,9 +1159,18 @@ class StablePinv {
                     v.SetValue(selected, 0.0f); SV();
                     Muls(v, v, -1.0f, k8); PipeBarrier<PIPE_V>();
                     Brcb(batchH, u, (PANEL + 7) / 8, {1, 8}); PipeBarrier<PIPE_V>();
-                    for (uint32_t begin = 0; begin < t.cols; begin += 64) {
-                        uint32_t count = t.cols - begin < 64 ? t.cols - begin : 64;
-                        MulAddDst(columns[begin], v[begin], batchH, static_cast<uint64_t>(count), static_cast<uint8_t>(PANEL), {1, 1, 0, static_cast<uint8_t>(k8 / 8), 0, 1});
+                    if constexpr (GROUP) {
+                        if (column + 1 < rows) {
+                            for (uint32_t begin = 0; begin < t.cols; begin += 64) {
+                                uint32_t count = t.cols - begin < 64 ? t.cols - begin : 64;
+                                MulAddDst(columns[(column + 1) * k8 + begin], v[begin], batchH[(column + 1) * 8], static_cast<uint64_t>(count), static_cast<uint8_t>(rows - column - 1), {1, 1, 0, static_cast<uint8_t>(k8 / 8), 0, 1});
+                            }
+                        }
+                    } else {
+                        for (uint32_t begin = 0; begin < t.cols; begin += 64) {
+                            uint32_t count = t.cols - begin < 64 ? t.cols - begin : 64;
+                            MulAddDst(columns[begin], v[begin], batchH, static_cast<uint64_t>(count), static_cast<uint8_t>(PANEL), {1, 1, 0, static_cast<uint8_t>(k8 / 8), 0, 1});
+                        }
                     }
                     PipeBarrier<PIPE_V>();
                 }
@@ -1205,8 +1214,9 @@ class StablePinv {
                     for (uint32_t col = (first + column + 1) / 64 * 64; col < s; col += 64) {
                         uint32_t mask = s - col < 64 ? s - col : 64;
                         MulAddDst(tileHigh[col], u[col], batchH, static_cast<uint64_t>(mask), static_cast<uint8_t>(owned), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, 1});
-                        PipeBarrier<PIPE_V>();
+                        if constexpr (!GROUP) PipeBarrier<PIPE_V>();
                     }
+                    if constexpr (GROUP) PipeBarrier<PIPE_V>();
                 }
                 PipeBarrier<PIPE_V>();
             }
