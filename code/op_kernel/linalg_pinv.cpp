@@ -1753,6 +1753,8 @@ class Pinv {
         }
         bool vectorQuick = quick && t.cols >= 8;
         auto indices = gather.ReinterpretCast<uint32_t>();
+        auto pivotOrder = output.ReinterpretCast<uint32_t>();
+        uint64_t available = (uint64_t(1) << t.cols) - 1;
         if (vectorQuick) {
             for (uint32_t i = 0; i < k8; ++i) indices.SetValue(i, i < t.cols ? i * stride * sizeof(float) : 0);
             Duplicate(norms, 0.0f, k8); PipeBarrier<PIPE_V>(); SV();
@@ -1762,7 +1764,7 @@ class Pinv {
             if (vectorQuick) {
                 Gather(norms, matrix, indices, p * sizeof(float), t.cols); PipeBarrier<PIPE_V>();
                 Abs(prod, norms, k8); PipeBarrier<PIPE_V>();
-                uint64_t pivotMask[2] = {((uint64_t(1) << t.cols) - 1) & ~((uint64_t(1) << p) - 1), 0};
+                uint64_t pivotMask[2] = {available, 0};
                 WholeReduceMax(red, prod, pivotMask, 1, 1, 1, 8); VS();
                 best = red.GetValue(0); pivot = red.ReinterpretCast<uint32_t>().GetValue(1);
             } else {
@@ -1773,20 +1775,22 @@ class Pinv {
                 }
             }
             if (!(best > 0.0f)) return false;
-            if (pivot != p) {
+            if (!vectorQuick && pivot != p) {
                 DataCopy(bx, Row(p), rowLength); if (!quick) DataCopy(by, lowMatrix[p * stride], rowLength); PipeBarrier<PIPE_V>();
                 DataCopy(Row(p), Row(pivot), rowLength); if (!quick) DataCopy(lowMatrix[p * stride], lowMatrix[pivot * stride], rowLength); PipeBarrier<PIPE_V>();
                 DataCopy(Row(pivot), bx, rowLength); if (!quick) DataCopy(lowMatrix[pivot * stride], by, rowLength); PipeBarrier<PIPE_V>();
             }
             if (quick) {
-                if (pivot != p) VS();
-                auto pivotLocal = matrix[p * stride];
-                float divisor = highData[p * stride + p];
+                if (!vectorQuick && pivot != p) VS();
+                uint32_t physicalPivot = vectorQuick ? pivot : p;
+                auto pivotLocal = matrix[physicalPivot * stride];
+                float divisor = highData[physicalPivot * stride + p];
                 Muls(pivotLocal, pivotLocal, 1.0f / divisor, s); PipeBarrier<PIPE_V>();
                 DataCopy(bu, pivotLocal, stride); PipeBarrier<PIPE_V>();
                 if (vectorQuick) {
-                    if (pivot != p) norms.SetValue(pivot, norms.GetValue(p));
-                    norms.SetValue(p, 0.0f); SV(); Muls(norms, norms, -1.0f, k8); PipeBarrier<PIPE_V>();
+                    available &= ~(uint64_t(1) << pivot);
+                    pivotOrder.SetValue(pivot, p);
+                    norms.SetValue(pivot, 0.0f); SV(); Muls(norms, norms, -1.0f, k8); PipeBarrier<PIPE_V>();
                     if constexpr (TAIL) {
                         Brcb(lowMatrix, norms, k8 / 8, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)});
                     } else {
@@ -1843,9 +1847,17 @@ class Pinv {
         if (!(inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < 0.81f)) return false;
         if (compact) {
             Muls(matrix, matrix, 1.0f / power, count); PipeBarrier<PIPE_V>();
+            auto ordered = matrix;
+            if (vectorQuick) {
+                for (uint32_t row = 0; row < t.cols; ++row) {
+                    uint32_t target = pivotOrder.GetValue(row);
+                    DataCopy(lowMatrix[target * stride], matrix[row * stride], stride);
+                }
+                PipeBarrier<PIPE_V>(); ordered = lowMatrix;
+            }
             SetFlag<HardEvent::V_MTE3>(0); WaitFlag<HardEvent::V_MTE3>(0);
             SetFlag<HardEvent::S_MTE3>(0); WaitFlag<HardEvent::S_MTE3>(0);
-            DataCopyPad(result[offset], matrix[r8], DataCopyExtParams{static_cast<uint16_t>(t.n), t.m * 4, (stride - r8) / 8, 0, 0});
+            DataCopyPad(result[offset], ordered[r8], DataCopyExtParams{static_cast<uint16_t>(t.n), t.m * 4, (stride - r8) / 8, 0, 0});
             SetFlag<HardEvent::MTE3_V>(0); WaitFlag<HardEvent::MTE3_V>(0);
             SetFlag<HardEvent::MTE3_MTE2>(0); WaitFlag<HardEvent::MTE3_MTE2>(0);
             return true;
