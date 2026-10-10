@@ -1930,9 +1930,23 @@ class Pinv {
         if (!(inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < 0.81f)) return false;
         if (compact) {
             Muls(matrix, matrix, 1.0f / power, count); PipeBarrier<PIPE_V>();
+            bool packedOutput = t.cols * t.n <= 8 * s;
+            auto stored = matrix[r8];
+            if (packedOutput) {
+                auto pattern = red.ReinterpretCast<uint32_t>();
+                pattern.SetValue(0, (uint32_t(1) << t.cols) - 1);
+                for (uint32_t i = 1; i < 8; ++i) pattern.SetValue(i, 0);
+                SV();
+                auto packed = vectorPrecision.Get<float>();
+                uint64_t retained = 0;
+                GatherMask(packed, matrix[r8], pattern, false, 0,
+                           {1, static_cast<uint8_t>(t.cols), static_cast<uint16_t>(stride / 8), 0}, retained);
+                PipeBarrier<PIPE_V>(); stored = packed;
+            }
             SetFlag<HardEvent::V_MTE3>(0); WaitFlag<HardEvent::V_MTE3>(0);
             SetFlag<HardEvent::S_MTE3>(0); WaitFlag<HardEvent::S_MTE3>(0);
-            DataCopyPad(result[offset], matrix[r8], DataCopyExtParams{static_cast<uint16_t>(t.n), t.m * 4, (stride - r8) / 8, 0, 0});
+            if (packedOutput) DataCopyPad(result[offset], stored, DataCopyExtParams{1, t.m * t.n * 4, 0, 0, 0});
+            else DataCopyPad(result[offset], matrix[r8], DataCopyExtParams{static_cast<uint16_t>(t.n), t.m * 4, (stride - r8) / 8, 0, 0});
             SetFlag<HardEvent::MTE3_V>(0); WaitFlag<HardEvent::MTE3_V>(0);
             SetFlag<HardEvent::MTE3_MTE2>(0); WaitFlag<HardEvent::MTE3_MTE2>(0);
             return true;
