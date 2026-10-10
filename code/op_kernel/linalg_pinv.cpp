@@ -1723,7 +1723,7 @@ class LocalPinv {
             if (t.local) SV();
             SaveRow(x, i);
         }
-        if (t.parallel) SyncAll();
+        if constexpr (!LOCAL) if (t.parallel) SyncAll();
     }
     __aicore__ inline float Root(float value) {
         red.SetValue(0, value); SV(); Sqrt(red, red, 1); VS(); return red.GetValue(0);
