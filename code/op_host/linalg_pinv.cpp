@@ -189,7 +189,9 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
         && t->resident * t->stride >= (t->cols + k8) * 16
         && (t->cols + t->stride) * 16 <= t->cols * t->stride
         && t->inverseTile * t->stride >= factorRows * 8;
-    ASCENDC_TPL_SEL_PARAM(context, DT_A, COMPACT, TAIL, WAVE, LOCAL, GROUP);
+    uint32_t PANEL = panelLaunch && t->cols % 8 == 0;
+    if (PANEL) { WAVE = 0; GROUP = 1; }
+    ASCENDC_TPL_SEL_PARAM(context, DT_A, COMPACT, TAIL, WAVE, LOCAL, GROUP, PANEL);
     return ge::GRAPH_SUCCESS;
 }
 }

@@ -2,6 +2,7 @@
 #include "linalg_pinv_tiling.h"
 #include "tiling_key_linalg_pinv.h"
 using namespace AscendC;
+#include "grouped_panel_pinv.h"
 template <bool WAVE, bool LOCAL, bool GROUP = false>
 class StablePinv {
     TBuf<TPosition::VECCALC> mem, precision, vectorPrecision, inverseLow, batchPrecision, parallelElimination;
@@ -5550,7 +5551,7 @@ public:
         }
     }
 };
-template <typename DT_A, bool COMPACT, bool TAIL, bool WAVE, bool LOCAL, bool GROUP>
+template <typename DT_A, bool COMPACT, bool TAIL, bool WAVE, bool LOCAL, bool GROUP, bool PANEL>
 __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR workspace, GM_ADDR tiling) {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIV_1_0);
     REGISTER_TILING_DEFAULT(LinalgPinvTilingData);
@@ -5577,7 +5578,11 @@ __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR worksp
         if constexpr (LOCAL) {
             LocalPinv<WAVE, LOCAL> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
         } else {
-            StablePinv<WAVE, LOCAL, GROUP> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
+            if constexpr (PANEL) {
+                GroupedPanelPinv<WAVE, LOCAL, GROUP> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
+            } else {
+                StablePinv<WAVE, LOCAL, GROUP> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
+            }
         }
     }
 }
