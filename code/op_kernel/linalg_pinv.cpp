@@ -1203,24 +1203,11 @@ class StablePinv {
         auto compactIndices = gather.ReinterpretCast<uint32_t>();
         auto panelIndices = compactIndices[k8];
         auto compactColumnIndices = compactIndices[k8 + PANEL];
-        // These gather offsets are arithmetic progressions, one of them as long as the
-        // matrix. Building them with the scalar unit cost one unified-buffer store per
-        // entry before the panel loop even started; a counting sequence and a scale
-        // build each of them on the vector pipe instead.
-        auto columnOffsets = compactColumnIndices.ReinterpretCast<int32_t>();
-        CreateVecIndex(columnOffsets, 0, PANEL); PipeBarrier<PIPE_V>();
-        Muls(columnOffsets, columnOffsets, static_cast<int32_t>(k8 * sizeof(float)), PANEL); PipeBarrier<PIPE_V>();
-        auto rowOffsets = compactIndices.ReinterpretCast<int32_t>();
-        CreateVecIndex(rowOffsets, 0, t.cols); PipeBarrier<PIPE_V>();
-        Muls(rowOffsets, rowOffsets, static_cast<int32_t>(PANEL * sizeof(float)), t.cols); PipeBarrier<PIPE_V>();
-        auto panelOffsets = panelIndices.ReinterpretCast<int32_t>();
-        CreateVecIndex(panelOffsets, 0, PANEL); PipeBarrier<PIPE_V>();
-        Muls(panelOffsets, panelOffsets, static_cast<int32_t>(stride * sizeof(float)), PANEL); PipeBarrier<PIPE_V>();
-        auto residentOffsets = rowIndices.ReinterpretCast<int32_t>();
-        CreateVecIndex(residentOffsets, 0, factorRows); PipeBarrier<PIPE_V>();
-        Muls(residentOffsets, residentOffsets, static_cast<int32_t>(stride * sizeof(float)), factorRows); PipeBarrier<PIPE_V>();
-        Duplicate(norms, 1.0f, k8); PipeBarrier<PIPE_V>(); VS();
-        for (uint32_t row = owned; row < factorRows; ++row) rowIndices.SetValue(row, 0);
+        for (uint32_t column = 0; column < PANEL; ++column) compactColumnIndices.SetValue(column, column * k8 * sizeof(float));
+        for (uint32_t row = 0; row < t.cols; ++row) compactIndices.SetValue(row, row * PANEL * sizeof(float));
+        Duplicate(norms, 1.0f, k8); PipeBarrier<PIPE_V>();
+        for (uint32_t row = 0; row < factorRows; ++row) rowIndices.SetValue(row, row < owned ? row * stride * sizeof(float) : 0);
+        for (uint32_t row = 0; row < PANEL; ++row) panelIndices.SetValue(row, row * stride * sizeof(float));
         Duplicate(u, 0.0f, rowLength); PipeBarrier<PIPE_V>(); SV();
         for (uint32_t first = 0; first < t.cols; first += PANEL) {
             uint32_t rows = t.cols - first < PANEL ? t.cols - first : PANEL;
