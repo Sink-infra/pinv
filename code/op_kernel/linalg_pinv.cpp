@@ -945,7 +945,6 @@ class StablePinv {
             pivotOrder.SetValue(pivot, p);
             Muls(matrix[pivot * stride], matrix[pivot * stride], 1.0f / data[pivot * stride + p], s); PipeBarrier<PIPE_V>();
             DataCopy(u, matrix[pivot * stride], rowLength); PipeBarrier<PIPE_V>();
-            norms.SetValue(pivot, 0.0f); SV();
             Muls(norms, norms, -1.0f, k8); PipeBarrier<PIPE_V>();
             if constexpr (PACKED) Brcb(batchH, norms, k8 / 8, {2, 16});
             else Brcb(lowMatrix, norms, k8 / 8, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)});
@@ -955,6 +954,7 @@ class StablePinv {
                 MulAddDst(matrix[col], u[col], PACKED ? batchH : lowMatrix, static_cast<uint64_t>(mask), static_cast<uint8_t>(n), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, PACKED ? uint8_t(2) : static_cast<uint8_t>(stride / 8)});
             }
             PipeBarrier<PIPE_V>();
+            DataCopy(matrix[pivot * stride], u, rowLength); PipeBarrier<PIPE_V>();
         }
         Duplicate(lowMatrix, 0.0f, count); PipeBarrier<PIPE_V>();
         for (uint32_t col = 0; col < r8; col += 64) {
@@ -2667,7 +2667,6 @@ class LocalPinv {
             pivotOrder.SetValue(pivot, p);
             Muls(matrix[pivot * stride], matrix[pivot * stride], 1.0f / data[pivot * stride + p], s); PipeBarrier<PIPE_V>();
             DataCopy(u, matrix[pivot * stride], rowLength); PipeBarrier<PIPE_V>();
-            norms.SetValue(pivot, 0.0f); SV();
             Muls(norms, norms, -1.0f, k8); PipeBarrier<PIPE_V>();
             if constexpr (PACKED) Brcb(batchH, norms, k8 / 8, {ALIGNED ? uint8_t(1) : uint8_t(2), ALIGNED ? uint8_t(8) : uint8_t(16)});
             else Brcb(lowMatrix, norms, k8 / 8, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)});
@@ -2676,6 +2675,7 @@ class LocalPinv {
             MulAddDst(matrix, u, PACKED ? batchH : lowMatrix, activeColumns, static_cast<uint8_t>(n), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, PACKED ? (ALIGNED ? uint8_t(1) : uint8_t(2)) : static_cast<uint8_t>(stride / 8)});
             MulAddDst(matrix[64], u[64], PACKED ? batchH : lowMatrix, static_cast<uint64_t>(s - 64), static_cast<uint8_t>(n), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, PACKED ? (ALIGNED ? uint8_t(1) : uint8_t(2)) : static_cast<uint8_t>(stride / 8)});
             PipeBarrier<PIPE_V>();
+            DataCopy(matrix[pivot * stride], u, rowLength); PipeBarrier<PIPE_V>();
         }
         Duplicate(lowMatrix, 0.0f, count); PipeBarrier<PIPE_V>();
         for (uint32_t col = 0; col < r8; col += 64) {
@@ -4077,11 +4077,11 @@ class Pinv {
             order.SetValue(pivot, column);
             Muls(matrix[pivot * pitch], matrix[pivot * pitch], 1.0f / values[pivot * pitch + column], width); PipeBarrier<PIPE_V>();
             DataCopy(u, matrix[pivot * pitch], pitch); PipeBarrier<PIPE_V>();
-            norms.SetValue(pivot, 0.0f); SV();
             Muls(norms, norms, -1.0f, PAD); PipeBarrier<PIPE_V>();
             Brcb(lowMatrix, norms, PAD / 8, {static_cast<uint8_t>(pitch / 8), static_cast<uint8_t>(pitch)}); PipeBarrier<PIPE_V>();
             MulAddDst(matrix, u, lowMatrix, static_cast<uint64_t>(width), static_cast<uint8_t>(n), {1, 1, 0, static_cast<uint8_t>(pitch / 8), 0, static_cast<uint8_t>(pitch / 8)});
             PipeBarrier<PIPE_V>();
+            DataCopy(matrix[pivot * pitch], u, pitch); PipeBarrier<PIPE_V>();
         }
         Duplicate(lowMatrix, 0.0f, count); PipeBarrier<PIPE_V>();
         Mul(lowMatrix, matrix[PAD], matrix[PAD], static_cast<uint64_t>(PAD), static_cast<uint8_t>(n), {1, 1, 1, static_cast<uint8_t>(pitch / 8), static_cast<uint8_t>(pitch / 8), static_cast<uint8_t>(pitch / 8)});
@@ -5100,11 +5100,11 @@ class Pinv<false, PAD> {
             order.SetValue(pivot, column);
             Muls(matrix[pivot * pitch], matrix[pivot * pitch], 1.0f / values[pivot * pitch + column], width); PipeBarrier<PIPE_V>();
             DataCopy(u, matrix[pivot * pitch], pitch); PipeBarrier<PIPE_V>();
-            norms.SetValue(pivot, 0.0f); SV();
             Muls(norms, norms, -1.0f, n); PipeBarrier<PIPE_V>();
             Brcb(lowMatrix, norms, n / 8, {static_cast<uint8_t>(pitch / 8), static_cast<uint8_t>(pitch)}); PipeBarrier<PIPE_V>();
             MulAddDst(matrix, u, lowMatrix, static_cast<uint64_t>(width), static_cast<uint8_t>(n), {1, 1, 0, static_cast<uint8_t>(pitch / 8), 0, static_cast<uint8_t>(pitch / 8)});
             PipeBarrier<PIPE_V>();
+            DataCopy(matrix[pivot * pitch], u, pitch); PipeBarrier<PIPE_V>();
         }
         Duplicate(lowMatrix, 0.0f, count); PipeBarrier<PIPE_V>();
         Mul(lowMatrix, matrix[n], matrix[n], static_cast<uint64_t>(n), static_cast<uint8_t>(n), {1, 1, 1, static_cast<uint8_t>(pitch / 8), static_cast<uint8_t>(pitch / 8), static_cast<uint8_t>(pitch / 8)});
