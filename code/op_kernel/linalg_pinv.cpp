@@ -15,6 +15,7 @@ class StablePinv {
     __gm__ float *workBase;
     LinalgPinvTilingData t;
     uint32_t r8, k8, s, stride, rowLength, lowElements, residentElements;
+    uint32_t scratchSpan, freedRows;
     __aicore__ inline void VS() { SetFlag<HardEvent::V_S>(0); WaitFlag<HardEvent::V_S>(0); }
     __aicore__ inline void SV() { SetFlag<HardEvent::S_V>(0); WaitFlag<HardEvent::S_V>(0); }
     __aicore__ inline void Load(LocalTensor<float> dst, GlobalTensor<float> src, uint32_t count) {
@@ -211,12 +212,59 @@ class StablePinv {
         }
         if (best > 0.0f) pivot = static_cast<uint32_t>(static_cast<int32_t>(gather.GetValue(selected + 1)));
     }
+    __aicore__ inline void RestoreScratch(const LocalTensor<float> *savedCalc, LocalTensor<float> savedU,
+                                         LocalTensor<float> savedV, LocalTensor<float> savedH,
+                                         LocalTensor<float> savedL, uint32_t savedTile) {
+        for (uint32_t i = 0; i < 8; ++i) batchCalc[i] = savedCalc[i];
+        batchU = savedU; batchV = savedV; batchH = savedH; batchL = savedL; t.inverseTile = savedTile;
+    }
+    // Refinement packs its batch rows by r8 while the dense fallbacks index the same slots by the
+    // elimination row pitch, so an r8-wide packing is installed for the refinement pass only and
+    // reverted by the caller. Covering every owned row collapses the inner compensated-update loop
+    // to a single call per column instead of ceil(owned / tile) calls.
+    __aicore__ inline uint32_t InstallRefinePacking(uint32_t rows) {
+        if (!scratchSpan || !r8) return 0;
+        LocalTensor<float> regions[3]; uint32_t widths[3]; uint32_t regionCount;
+        uint32_t active = t.resident;
+        regions[0] = batchPrecision.Get<float>(); widths[0] = 12 * scratchSpan;
+        if (t.singleResident) {
+            regions[1] = tileHigh[2 * active * stride]; widths[1] = freedRows * stride;
+            regionCount = 2;
+        } else {
+            regions[1] = tileHigh[active * stride]; widths[1] = freedRows * stride;
+            regions[2] = tileLow[active * stride]; widths[2] = freedRows * stride;
+            regionCount = 3;
+        }
+        uint32_t candidate = rows;
+        while (candidate > t.inverseTile) {
+            uint32_t available = 0;
+            for (uint32_t region = 0; region < regionCount; ++region) available += widths[region] / (candidate * r8);
+            if (available >= 12) break;
+            --candidate;
+        }
+        if (candidate <= t.inverseTile) return 0;
+        uint32_t span = candidate * r8;
+        LocalTensor<float> slots[12]; uint32_t count = 0;
+        for (uint32_t region = 0; region < regionCount && count < 12; ++region)
+            for (uint32_t off = 0; off + span <= widths[region] && count < 12; off += span)
+                slots[count++] = regions[region][off];
+        if (count < 12) return 0;
+        for (uint32_t i = 0; i < 8; ++i) batchCalc[i] = slots[i];
+        batchU = slots[8]; batchV = slots[9]; batchH = slots[10]; batchL = slots[11];
+        return candidate;
+    }
     __aicore__ inline bool RefineResident(uint32_t b, uint32_t offset, float power,
                                           float total, float inverseTotal, GlobalTensor<float> meta,
                                           bool certify, float cutoff) {
         uint32_t core = GetBlockIdx(), cores = GetBlockNum();
         if constexpr (WAVE) if ((t.cols + cores - 1) / cores * r8 > lowElements) return false;
         uint32_t owned = (t.cols + cores - 1 - core) / cores;
+        LocalTensor<float> savedCalc[8];
+        for (uint32_t i = 0; i < 8; ++i) savedCalc[i] = batchCalc[i];
+        LocalTensor<float> savedU = batchU, savedV = batchV, savedH = batchH, savedL = batchL;
+        uint32_t savedTile = t.inverseTile;
+        uint32_t repacked = InstallRefinePacking((t.cols + cores - 1) / cores);
+        if (repacked) t.inverseTile = repacked;
         auto bx = x, by = y, bu = u, bv = v, cache = calc[0];
         GlobalTensor<float> residual, normWork;
         residual.SetGlobalBuffer(workBase + uint64_t(t.batch + b) * t.cols * stride);
@@ -234,25 +282,40 @@ class StablePinv {
         for (uint32_t row = 0; row < owned; ++row) tileHigh.SetValue(row * r8 + core + row * cores, 1.0f);
         SV();
         uint32_t packedCount = t.inverseTile * r8;
-        for (uint32_t k = 0; k < t.cols; ++k) {
+        // The inverse rows are read once per column; batching the reads turns t.cols
+        // single-row transfers (each with its own pipeline flush) into t.cols/span of them.
+        uint32_t active = (t.cols + cores - 1) / cores;
+        uint32_t cacheSpan = (active * r8 + 7) / 8 * 8;
+        uint32_t span = 8 * s > cacheSpan ? (8 * s - cacheSpan) / r8 : 0;
+        if (span > 8) span = 8;
+        auto block = span > 1 ? cache[cacheSpan] : u;
+        if (span < 1) span = 1;
+        for (uint32_t base = 0; base < t.cols; base += span) {
+            uint32_t chunk = t.cols - base < span ? t.cols - base : span;
             SetFlag<HardEvent::V_MTE2>(0); WaitFlag<HardEvent::V_MTE2>(0);
-            Load(u, result[offset + k * t.m], t.m);
-            for (uint32_t row = 0; row < t.inverseTile; ++row) {
-                DataCopy(batchU[row * r8], u, r8); Duplicate(batchV[row * r8], 0.0f, r8);
-            }
-            PipeBarrier<PIPE_V>();
-            Muls(batchCalc[0], batchU, 4097.0f, packedCount); PipeBarrier<PIPE_V>();
-            Sub(batchCalc[1], batchCalc[0], batchU, packedCount); PipeBarrier<PIPE_V>();
-            Sub(batchCalc[0], batchCalc[0], batchCalc[1], packedCount); PipeBarrier<PIPE_V>();
-            Sub(batchCalc[1], batchU, batchCalc[0], packedCount); PipeBarrier<PIPE_V>();
-            for (uint32_t first = 0; first < owned; first += t.inverseTile) {
-                uint32_t rows = owned - first < t.inverseTile ? owned - first : t.inverseTile;
-                for (uint32_t row = 0; row < rows; ++row) {
-                    float factor = cache.GetValue((first + row) * r8 + k);
-                    Duplicate(batchH[row * r8], factor, r8); Duplicate(batchL[row * r8], 0.0f, r8);
+            if (span > 1) {
+                DataCopyPad(block, result[offset + base * t.m],
+                            DataCopyExtParams{static_cast<uint16_t>(chunk), t.m * 4, 0, 0, 0},
+                            DataCopyPadExtParams<float>{true, 0, static_cast<uint8_t>((8 - t.m % 8) % 8), 0});
+                SetFlag<HardEvent::MTE2_V>(0); WaitFlag<HardEvent::MTE2_V>(0);
+                SetFlag<HardEvent::MTE2_S>(0); WaitFlag<HardEvent::MTE2_S>(0);
+            } else Load(block, result[offset + base * t.m], t.m);
+            for (uint32_t j = 0; j < chunk; ++j) {
+                uint32_t k = base + j;
+                auto source = block[j * r8];
+                for (uint32_t row = 0; row < t.inverseTile; ++row) DataCopy(batchU[row * r8], source, r8);
+                PipeBarrier<PIPE_V>();
+                Muls(batchCalc[0], batchU, 4097.0f, packedCount); PipeBarrier<PIPE_V>();
+                Sub(batchCalc[1], batchCalc[0], batchU, packedCount); PipeBarrier<PIPE_V>();
+                Sub(batchCalc[0], batchCalc[0], batchCalc[1], packedCount); PipeBarrier<PIPE_V>();
+                Sub(batchCalc[1], batchU, batchCalc[0], packedCount); PipeBarrier<PIPE_V>();
+                for (uint32_t first = 0; first < owned; first += t.inverseTile) {
+                    uint32_t rows = owned - first < t.inverseTile ? owned - first : t.inverseTile;
+                    for (uint32_t row = 0; row < rows; ++row)
+                        Duplicate(batchH[row * r8], cache.GetValue((first + row) * r8 + k), r8);
+                    PipeBarrier<PIPE_V>(); x = tileHigh[first * r8]; y = tileLow[first * r8];
+                    BatchEliminate(rows * r8, true, true); VS();
                 }
-                PipeBarrier<PIPE_V>(); x = tileHigh[first * r8]; y = tileLow[first * r8];
-                BatchEliminate(rows * r8, true); VS();
             }
         }
         x = bx; y = by; u = bu; v = bv;
@@ -280,19 +343,31 @@ class StablePinv {
         float gd = 32.0f * t.cols * unit * unit;
         float gamma = (2.0f * t.cols * unit) / (1.0f - 2.0f * t.cols * unit);
         float er = gd * af * yf + unit * rf, denominator = 1.0f - rf - er;
-        if (!(denominator > 0.0f)) return false;
+        if (!(denominator > 0.0f)) { RestoreScratch(savedCalc, savedU, savedV, savedH, savedL, savedTile); return false; }
         Sqrt(gather, gather, r8); Sqrt(v, v, r8); PipeBarrier<PIPE_V>();
         Muls(gather, gather, 1.001f, r8); Muls(v, v, 1.001f, r8); PipeBarrier<PIPE_V>();
         Muls(output, v, gd * af, r8); Muls(prod, gather, unit, r8); PipeBarrier<PIPE_V>(); Add(output, output, prod, r8); PipeBarrier<PIPE_V>();
         Duplicate(tileLow, 0.0f, owned * r8); PipeBarrier<PIPE_V>();
-        for (uint32_t k = 0; k < t.cols; ++k) {
-            SetFlag<HardEvent::V_MTE2>(0); WaitFlag<HardEvent::V_MTE2>(0); Load(u, residual[k * r8], t.n);
-            for (uint32_t row = 0; row < owned; ++row) Duplicate(batchCalc[0][row * 8], cache.GetValue(row * r8 + k), 8);
-            PipeBarrier<PIPE_V>();
-            for (uint32_t col = 0; col < r8; col += 64) {
-                uint32_t mask = r8 - col < 64 ? r8 - col : 64;
-                MulAddDst(tileLow[col], u[col], batchCalc[0], static_cast<uint64_t>(mask), static_cast<uint8_t>(owned), {1, 1, 0, static_cast<uint8_t>(r8 / 8), 0, 1});
+        for (uint32_t base = 0; base < t.cols; base += span) {
+            uint32_t chunk = t.cols - base < span ? t.cols - base : span;
+            SetFlag<HardEvent::V_MTE2>(0); WaitFlag<HardEvent::V_MTE2>(0);
+            if (span > 1) {
+                DataCopyPad(block, residual[base * r8],
+                            DataCopyExtParams{static_cast<uint16_t>(chunk), t.n * 4, 0, 0, 0},
+                            DataCopyPadExtParams<float>{true, 0, static_cast<uint8_t>((8 - t.n % 8) % 8), 0});
+                SetFlag<HardEvent::MTE2_V>(0); WaitFlag<HardEvent::MTE2_V>(0);
+                SetFlag<HardEvent::MTE2_S>(0); WaitFlag<HardEvent::MTE2_S>(0);
+            } else Load(block, residual[base * r8], t.n);
+            for (uint32_t j = 0; j < chunk; ++j) {
+                uint32_t k = base + j;
+                auto source = block[j * r8];
+                for (uint32_t row = 0; row < owned; ++row) Duplicate(batchCalc[0][row * 8], cache.GetValue(row * r8 + k), 8);
                 PipeBarrier<PIPE_V>();
+                for (uint32_t col = 0; col < r8; col += 64) {
+                    uint32_t mask = r8 - col < 64 ? r8 - col : 64;
+                    MulAddDst(tileLow[col], source[col], batchCalc[0], static_cast<uint64_t>(mask), static_cast<uint8_t>(owned), {1, 1, 0, static_cast<uint8_t>(r8 / 8), 0, 1});
+                    PipeBarrier<PIPE_V>();
+                }
             }
         }
         bool valid = true; float correctedTotal = 0.0f;
@@ -314,11 +389,14 @@ class StablePinv {
             if (gather.GetValue(peer * 8 + 1) < 0.5f) valid = false;
         }
         float scaledCutoff = cutoff / power;
-        if (!(valid && correctedTotal > 0.0f && (!certify || correctedTotal * scaledCutoff * scaledCutoff < 81.0f))) return false;
+        if (!(valid && correctedTotal > 0.0f && (!certify || correctedTotal * scaledCutoff * scaledCutoff < 81.0f))) {
+            RestoreScratch(savedCalc, savedU, savedV, savedH, savedL, savedTile); return false;
+        }
         for (uint32_t row = 0; row < owned; ++row) {
             Muls(output, tileHigh[row * r8], 1.0f / power, r8); PipeBarrier<PIPE_V>();
             Store(result[offset + (core + row * cores) * t.m], output, t.m);
         }
+        RestoreScratch(savedCalc, savedU, savedV, savedH, savedL, savedTile);
         SyncAll(); return true;
     }
     __aicore__ inline bool QuickResidentSquare(uint32_t b, uint32_t offset, float scale,
@@ -670,7 +748,7 @@ class StablePinv {
         }
         SyncAll();
     }
-    __aicore__ inline void BatchEliminate(uint32_t count, bool cached = false) {
+    __aicore__ inline void BatchEliminate(uint32_t count, bool cached = false, bool zeroLow = false) {
         auto qh = batchCalc[0], ql = batchCalc[1], bh = batchCalc[2], bl = batchCalc[3], e = batchCalc[4], part = batchCalc[5], product = batchCalc[6], aux = batchCalc[7];
         Muls(bh, batchH, 4097.0f, count); PipeBarrier<PIPE_V>();
         Sub(bl, bh, batchH, count); PipeBarrier<PIPE_V>(); Sub(bh, bh, bl, count); PipeBarrier<PIPE_V>();
@@ -685,8 +763,10 @@ class StablePinv {
         Mul(part, ql, bh, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
         Mul(part, qh, bl, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
         Mul(part, ql, bl, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
-        Mul(part, batchV, batchH, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
-        Mul(part, batchU, batchL, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
+        if (!zeroLow) {
+            Mul(part, batchV, batchH, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
+            Mul(part, batchU, batchL, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
+        }
         auto ph = cached ? aux : qh, pl = cached ? product : ql;
         Add(ph, product, e, count); PipeBarrier<PIPE_V>(); Sub(part, ph, product, count); PipeBarrier<PIPE_V>(); Sub(pl, e, part, count); PipeBarrier<PIPE_V>();
         Sub(bh, x, ph, count); PipeBarrier<PIPE_V>(); Sub(bl, bh, x, count); PipeBarrier<PIPE_V>();
@@ -1225,19 +1305,30 @@ class StablePinv {
         if (valid) for (uint32_t row = 0; row < owned; ++row) inverseTotal += Dot(tileHigh[row * stride + r8], tileHigh[row * stride + r8]);
         red.SetValue(0, inverseTotal); Store(meta[core * 8], red, 1); SyncAll(); Load(gather, meta, cores * 8); inverseTotal = 0.0f;
         for (uint32_t peer = 0; peer < cores; ++peer) inverseTotal += gather.GetValue(peer * 8);
-        valid = valid && inverseTotal > 0.0f && total * inverseTotal < 3.6e9f && inverseTotal * cutoff * cutoff < 0.81f;
-        if (valid) for (uint32_t row = 0; row < owned; ++row) {
+        bool sound = valid && inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < 81.0f;
+        uint32_t normOwned = (t.cols + allCores - 1) / allCores;
+        bool prepared = sound && total * inverseTotal >= 3.6e9f && total * inverseTotal < 4.0e11f &&
+            normOwned * r8 <= 8 * s && t.inverseTile * stride >= normOwned * 8 && 2 * allCores * r8 <= t.cols * stride;
+        valid = sound && total * inverseTotal < 3.6e9f;
+        if (valid || prepared) for (uint32_t row = 0; row < owned; ++row) {
             VS(); uint32_t target = static_cast<uint32_t>(static_cast<int32_t>(-norms.GetValue(core + row * cores))) - 1;
-            Muls(output, tileHigh[row * stride + r8], 1.0f / power, r8); PipeBarrier<PIPE_V>(); Store(result[offset + target * t.m], output, t.m);
+            Muls(output, tileHigh[row * stride + r8], valid ? 1.0f / power : 1.0f, r8); PipeBarrier<PIPE_V>(); Store(result[offset + target * t.m], output, t.m);
         }
-        if (core == 0) { red.SetValue(0, valid ? 1.0f : 0.0f); Store(meta[1024], red, 1); }
+        if (core == 0) {
+            red.SetValue(0, total); red.SetValue(1, inverseTotal); red.SetValue(2, power); Store(meta[1032], red, 3);
+            red.SetValue(0, valid ? 1.0f : (prepared ? 2.0f : 0.0f)); Store(meta[1024], red, 1);
+        }
         SyncAll();
         uint32_t accepted = 0;
         for (uint32_t peer = 0; peer < groups; ++peer) {
             meta.SetGlobalBuffer(workBase + uint64_t(2) * t.batch * t.cols * stride + uint64_t(peer) * 8192);
-            Load(gather, meta[1024], 1); if (gather.GetValue(0) > 0.5f) accepted |= uint32_t(1) << peer;
+            Load(gather, meta[1024], 1); float state = gather.GetValue(0);
+            if (state > 1.5f) accepted |= uint32_t(1) << (peer + 4);
+            else if (state > 0.5f) accepted |= uint32_t(1) << peer;
         }
-        t.resident = (t.cols + allCores - 1) / allCores;
+        if ((accepted & ((uint32_t(1) << groups) - 1)) == (uint32_t(1) << groups) - 1)
+            t.resident = (t.cols + allCores - 1) / allCores;
+        else RebudgetWaveScratch();
         return accepted;
     }
     __aicore__ inline uint32_t GroupedResident() {
@@ -1270,6 +1361,7 @@ class StablePinv {
             uint32_t remaining = residentElements > active * stride ? residentElements - active * stride : 0;
             lowElements = remaining < active * stride ? remaining : active * stride;
             uint32_t unused = t.resident > 2 * active ? t.resident - 2 * active : 0;
+            freedRows = unused;
             uint32_t initial = t.inverseTile;
             uint32_t candidate = (12 * initial + unused) / 12;
             candidate = candidate < active ? candidate : active;
@@ -1292,6 +1384,7 @@ class StablePinv {
         }
         lowElements = active * stride;
         uint32_t unused = t.resident > active ? t.resident - active : 0;
+        freedRows = unused;
         uint32_t initial = t.inverseTile;
         uint32_t candidate = (12 * initial + 2 * unused) / 12;
         candidate = candidate < active ? candidate : active;
@@ -1444,7 +1537,9 @@ class StablePinv {
         uint32_t accepted = 0, prepared = 0;
         if constexpr (WAVE) {
             uint32_t grouped = WaveGroupedResident(); accepted = grouped & 15; prepared = grouped >> 4;
-        } else if (t.groupCount) accepted = GroupedResident();
+        } else if (t.groupCount) {
+            uint32_t grouped = GroupedResident(); accepted = grouped & 15; prepared = grouped >> 4;
+        }
         uint32_t roundCols = (t.cols + 1) / 2 * 2;
         for (uint32_t b = 0; b < t.batch; ++b) {
             if (accepted & (uint32_t(1) << b)) continue;
@@ -1573,7 +1668,7 @@ class StablePinv {
 public:
     __aicore__ inline void Init(GM_ADDR a, GM_ADDR out, GM_ADDR ws, const LinalgPinvTilingData &data, TPipe *pipe) {
         t = data; r8 = (t.rows + 7) / 8 * 8; k8 = (t.cols + 7) / 8 * 8; s = r8 + k8; stride = t.stride; rowLength = s + 8;
-        lowElements = 0; residentElements = 0;
+        lowElements = 0; residentElements = 0; scratchSpan = 0; freedRows = 0;
         uint32_t bufferStride = t.parallel ? (rowLength + 63) / 64 * 64 : stride;
         uint32_t size = (t.local ? t.cols * stride : 0) + 4 * bufferStride + 4 * r8 + 8 * t.rows + k8 + 32;
         pipe->InitBuffer(mem, size * 4);
@@ -1595,6 +1690,7 @@ public:
         }
         if (t.localInverse || (t.parallel && t.m == t.n)) {
             uint32_t areaSize = t.inverseTile * stride;
+            scratchSpan = areaSize;
             pipe->InitBuffer(batchPrecision, 12 * areaSize * sizeof(float));
             auto area = batchPrecision.Get<float>();
             for (uint32_t i = 0; i < 8; ++i) batchCalc[i] = area[i * areaSize];
