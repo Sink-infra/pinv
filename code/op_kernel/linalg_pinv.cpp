@@ -1224,8 +1224,7 @@ class StablePinv {
                 for (uint32_t column = 0; column < rows; ++column) {
                     DataCopy(v, columns[column * k8], k8);
                     Abs(x, v, t.cols);
-                    Maxs(prod, norms, 0.0f, k8);
-                    Mul(prod, prod, x, t.cols);
+                    Mul(prod, norms, x, t.cols);
                     float best; uint32_t selected;
                     if constexpr (GROUP) {
                     uint32_t chunks = t.cols / 64, tail = t.cols % 64;
@@ -1284,14 +1283,13 @@ class StablePinv {
                     Gather(prod, tileLow, panelIndices, (first + column) * sizeof(float), rows);
                     VS(); float divisor = prod.GetValue(column);
                     if (!(AbsScalar(divisor) > 1.0e-6f)) { valid = false; break; }
-                    Muls(u, tileLow[column * stride], 1.0f / divisor, s);
-                    DataCopy(tileLow[column * stride], u, rowLength);
+                    Muls(tileLow[column * stride], tileLow[column * stride], 1.0f / divisor, s);
                     if (column + 1 < rows) {
                         Muls(prod, prod, -1.0f, (PANEL + 7) / 8 * 8);
                         Brcb(batchH, prod, (PANEL + 7) / 8, {1, 8});
                         for (uint32_t col = 0; col < s; col += 64) {
                             uint32_t mask = s - col < 64 ? s - col : 64;
-                            MulAddDst(tileLow[(column + 1) * stride + col], u[col], batchH[(column + 1) * 8], static_cast<uint64_t>(mask), static_cast<uint8_t>(rows - column - 1), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, 1});
+                            MulAddDst(tileLow[(column + 1) * stride + col], tileLow[column * stride + col], batchH[(column + 1) * 8], static_cast<uint64_t>(mask), static_cast<uint8_t>(rows - column - 1), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, 1});
                         }
                     }
                 }
@@ -1299,9 +1297,8 @@ class StablePinv {
             if (valid) {
                 for (uint32_t column = 0; column < rows; ++column) {
                     uint32_t selected = static_cast<uint32_t>(static_cast<int32_t>(output.GetValue(column)));
-                    DataCopy(u, tileLow[column * stride], rowLength);
                     if (selected % cores == core) {
-                        DataCopy(tileHigh[(selected / cores) * stride], u, rowLength);
+                        DataCopy(tileHigh[(selected / cores) * stride], tileLow[column * stride], rowLength);
                     }
                     Gather(v, tileHigh, rowIndices, (first + column) * sizeof(float), factorRows);
                     if (selected % cores == core) { VS(); v.SetValue(selected / cores, 0.0f); SV(); }
@@ -1309,7 +1306,7 @@ class StablePinv {
                     Brcb(batchH, v, factorRows / 8, {1, 8});
                     for (uint32_t col = (first + column + 1) / 64 * 64; col < s; col += 64) {
                         uint32_t mask = s - col < 64 ? s - col : 64;
-                        MulAddDst(tileHigh[col], u[col], batchH, static_cast<uint64_t>(mask), static_cast<uint8_t>(owned), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, 1});
+                        MulAddDst(tileHigh[col], tileLow[column * stride + col], batchH, static_cast<uint64_t>(mask), static_cast<uint8_t>(owned), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, 1});
                     }
                 }
             }
