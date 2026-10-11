@@ -783,13 +783,20 @@ class StablePinv {
             Mul(part, batchV, batchH, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
             Mul(part, batchU, batchL, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
         }
-        auto ph = cached ? aux : qh, pl = cached ? product : ql;
-        Add(ph, product, e, count); PipeBarrier<PIPE_V>(); Sub(part, ph, product, count); PipeBarrier<PIPE_V>(); Sub(pl, e, part, count); PipeBarrier<PIPE_V>();
+        // When both low parts are zero the product and its residual already satisfy
+        // |residual| <= half an interval of the product, so the pair is normalised by
+        // construction and renormalising it would be three operations for no accuracy.
+        // The split operands are dead by this point and serve as the running error.
+        LocalTensor<float> ph = product, pl = e, err = qh;
+        if (!zeroLow) {
+            ph = cached ? aux : qh; pl = cached ? product : ql; err = e;
+            Add(ph, product, e, count); PipeBarrier<PIPE_V>(); Sub(part, ph, product, count); PipeBarrier<PIPE_V>(); Sub(pl, e, part, count); PipeBarrier<PIPE_V>();
+        }
         Sub(bh, x, ph, count); PipeBarrier<PIPE_V>(); Sub(bl, bh, x, count); PipeBarrier<PIPE_V>();
-        Sub(e, bh, bl, count); PipeBarrier<PIPE_V>(); Sub(e, x, e, count); Muls(part, ph, -1.0f, count); PipeBarrier<PIPE_V>();
-        Sub(part, part, bl, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
-        Add(e, e, y, count); PipeBarrier<PIPE_V>(); Sub(e, e, pl, count); PipeBarrier<PIPE_V>();
-        Add(x, bh, e, count); PipeBarrier<PIPE_V>(); Sub(aux, x, bh, count); PipeBarrier<PIPE_V>(); Sub(y, e, aux, count); PipeBarrier<PIPE_V>();
+        Sub(err, bh, bl, count); PipeBarrier<PIPE_V>(); Sub(err, x, err, count); Muls(part, ph, -1.0f, count); PipeBarrier<PIPE_V>();
+        Sub(part, part, bl, count); PipeBarrier<PIPE_V>(); Add(err, err, part, count); PipeBarrier<PIPE_V>();
+        Add(err, err, y, count); PipeBarrier<PIPE_V>(); Sub(err, err, pl, count); PipeBarrier<PIPE_V>();
+        Add(x, bh, err, count); PipeBarrier<PIPE_V>(); Sub(aux, x, bh, count); PipeBarrier<PIPE_V>(); Sub(y, err, aux, count); PipeBarrier<PIPE_V>();
     }
     __aicore__ inline bool LocalInverseBody(uint32_t offset, LocalTensor<float> bx, LocalTensor<float> by,
                                             LocalTensor<float> bu, LocalTensor<float> bv) {
@@ -944,7 +951,7 @@ class StablePinv {
         auto data = reinterpret_cast<__ubuf__ float *>(matrix.GetPhyAddr());
         for (uint32_t i = 0; i < n; ++i) data[i * stride + r8 + i] = 1.0f;
         auto indices = gather.ReinterpretCast<uint32_t>();
-        auto pivotOrder = output.ReinterpretCast<uint32_t>();
+        uint32_t pivotOrder[PAD];
         uint64_t available = n < 64 ? (uint64_t(1) << n) - 1 : ~uint64_t(0);
         for (uint32_t i = 0; i < k8; ++i) indices.SetValue(i, i < n ? i * stride * sizeof(float) : 0);
         Duplicate(norms, 0.0f, k8); PipeBarrier<PIPE_V>(); SV();
@@ -958,7 +965,7 @@ class StablePinv {
             uint32_t pivot = red.ReinterpretCast<uint32_t>().GetValue(1);
             if (!(best > 0.0f)) return false;
             available &= ~(uint64_t(1) << pivot);
-            pivotOrder.SetValue(pivot, p);
+            pivotOrder[pivot] = p;
             Muls(matrix[pivot * stride], matrix[pivot * stride], 1.0f / data[pivot * stride + p], s); PipeBarrier<PIPE_V>();
             DataCopy(u, matrix[pivot * stride], rowLength); PipeBarrier<PIPE_V>();
             norms.SetValue(pivot, 0.0f); SV();
@@ -983,7 +990,7 @@ class StablePinv {
         if (!(inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < 0.81f)) return false;
         Muls(matrix, matrix, 1.0f / power, count); PipeBarrier<PIPE_V>();
         for (uint32_t row = 0; row < n; ++row) {
-            uint32_t target = pivotOrder.GetValue(row);
+            uint32_t target = pivotOrder[row];
             DataCopy(lowMatrix[target * stride], matrix[row * stride], stride);
         }
         PipeBarrier<PIPE_V>();
@@ -2668,7 +2675,7 @@ class LocalPinv {
         auto data = reinterpret_cast<__ubuf__ float *>(matrix.GetPhyAddr());
         for (uint32_t i = 0; i < n; ++i) data[i * stride + r8 + i] = 1.0f;
         auto indices = gather.ReinterpretCast<uint32_t>();
-        auto pivotOrder = output.ReinterpretCast<uint32_t>();
+        uint32_t pivotOrder[PAD];
         uint64_t available = n < 64 ? (uint64_t(1) << n) - 1 : ~uint64_t(0);
         for (uint32_t i = 0; i < k8; ++i) indices.SetValue(i, i < n ? i * stride * sizeof(float) : 0);
         Duplicate(norms, 0.0f, k8); PipeBarrier<PIPE_V>(); SV();
@@ -2682,7 +2689,7 @@ class LocalPinv {
             uint32_t pivot = red.ReinterpretCast<uint32_t>().GetValue(1);
             if (!(best > 0.0f)) return false;
             available &= ~(uint64_t(1) << pivot);
-            pivotOrder.SetValue(pivot, p);
+            pivotOrder[pivot] = p;
             Muls(matrix[pivot * stride], matrix[pivot * stride], 1.0f / data[pivot * stride + p], s); PipeBarrier<PIPE_V>();
             DataCopy(u, matrix[pivot * stride], rowLength); PipeBarrier<PIPE_V>();
             norms.SetValue(pivot, 0.0f); SV();
@@ -2706,7 +2713,7 @@ class LocalPinv {
         if (!(inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < 0.81f)) return false;
         Muls(matrix, matrix, 1.0f / power, count); PipeBarrier<PIPE_V>();
         for (uint32_t row = 0; row < n; ++row) {
-            uint32_t target = pivotOrder.GetValue(row);
+            uint32_t target = pivotOrder[row];
             DataCopy(lowMatrix[target * stride], matrix[row * stride], stride);
         }
         PipeBarrier<PIPE_V>();
@@ -4078,7 +4085,7 @@ class Pinv {
         auto values = reinterpret_cast<__ubuf__ float *>(matrix.GetPhyAddr());
         for (uint32_t i = 0; i < n; ++i) values[i * pitch + PAD + i] = 1.0f;
         auto indices = gather.ReinterpretCast<uint32_t>();
-        auto order = output.ReinterpretCast<uint32_t>();
+        uint32_t order[PAD];
         for (uint32_t i = 0; i < PAD; ++i) indices.SetValue(i, i < n ? i * pitch * sizeof(float) : 0);
         Duplicate(norms, 0.0f, PAD); PipeBarrier<PIPE_V>();
         uint64_t available = (uint64_t(1) << n) - 1;
@@ -4092,7 +4099,7 @@ class Pinv {
             uint32_t pivot = red.ReinterpretCast<uint32_t>().GetValue(1);
             if (!(best > 0.0f)) return false;
             available &= ~(uint64_t(1) << pivot);
-            order.SetValue(pivot, column);
+            order[pivot] = column;
             Muls(matrix[pivot * pitch], matrix[pivot * pitch], 1.0f / values[pivot * pitch + column], width); PipeBarrier<PIPE_V>();
             DataCopy(u, matrix[pivot * pitch], pitch); PipeBarrier<PIPE_V>();
             norms.SetValue(pivot, 0.0f); SV();
@@ -4109,7 +4116,7 @@ class Pinv {
         if (!(inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < 0.81f)) return false;
         Muls(matrix, matrix, 1.0f / power, count); PipeBarrier<PIPE_V>();
         for (uint32_t row = 0; row < n; ++row) {
-            uint32_t target = order.GetValue(row);
+            uint32_t target = order[row];
             DataCopy(lowMatrix[target * pitch], matrix[row * pitch], pitch);
         }
         PipeBarrier<PIPE_V>();
@@ -5102,7 +5109,7 @@ class Pinv<false, PAD> {
         auto values = reinterpret_cast<__ubuf__ float *>(matrix.GetPhyAddr());
         for (uint32_t i = 0; i < n; ++i) values[i * pitch + n + i] = 1.0f;
         auto indices = gather.ReinterpretCast<uint32_t>();
-        auto order = output.ReinterpretCast<uint32_t>();
+        uint32_t order[PAD];
         for (uint32_t i = 0; i < n; ++i) indices.SetValue(i, i * pitch * sizeof(float));
         uint64_t available = (uint64_t(1) << n) - 1;
         SV();
@@ -5115,7 +5122,7 @@ class Pinv<false, PAD> {
             uint32_t pivot = red.ReinterpretCast<uint32_t>().GetValue(1);
             if (!(best > 0.0f)) return false;
             available &= ~(uint64_t(1) << pivot);
-            order.SetValue(pivot, column);
+            order[pivot] = column;
             Muls(matrix[pivot * pitch], matrix[pivot * pitch], 1.0f / values[pivot * pitch + column], width); PipeBarrier<PIPE_V>();
             DataCopy(u, matrix[pivot * pitch], pitch); PipeBarrier<PIPE_V>();
             norms.SetValue(pivot, 0.0f); SV();
@@ -5132,7 +5139,7 @@ class Pinv<false, PAD> {
         if (!(inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < 0.81f)) return false;
         Muls(matrix, matrix, 1.0f / power, count); PipeBarrier<PIPE_V>();
         for (uint32_t row = 0; row < n; ++row) {
-            uint32_t target = order.GetValue(row);
+            uint32_t target = order[row];
             DataCopy(lowMatrix[target * pitch], matrix[row * pitch], pitch);
         }
         PipeBarrier<PIPE_V>();
