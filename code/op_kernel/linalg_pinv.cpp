@@ -4065,7 +4065,7 @@ class Pinv {
     }
     template <uint32_t LANES>
     __aicore__ inline bool CompactQuickLogical(uint32_t offset) {
-        constexpr uint32_t n = LANES, width = 2 * PAD, pitch = 2 * PAD + 8;
+        constexpr uint32_t n = LANES, width = 2 * PAD, pitch = 2 * PAD;
         constexpr uint32_t count = n * pitch;
         Duplicate(matrix, 0.0f, count); PipeBarrier<PIPE_V>();
         SetFlag<HardEvent::V_MTE2>(0); WaitFlag<HardEvent::V_MTE2>(0);
@@ -5092,7 +5092,7 @@ class Pinv<false, PAD> {
         return true;
     }
     __aicore__ inline bool CompactQuickLogical(uint32_t offset) {
-        constexpr uint32_t n = PAD, width = 2 * PAD, pitch = 2 * PAD + 8;
+        constexpr uint32_t n = PAD, width = 2 * PAD, pitch = 2 * PAD;
         constexpr uint32_t count = n * pitch;
         Duplicate(matrix, 0.0f, count); PipeBarrier<PIPE_V>();
         SetFlag<HardEvent::V_MTE2>(0); WaitFlag<HardEvent::V_MTE2>(0);
