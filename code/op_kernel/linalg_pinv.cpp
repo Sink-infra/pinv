@@ -1190,12 +1190,15 @@ class StablePinv {
         meta.SetGlobalBuffer(workBase + uint64_t(2) * t.batch * t.cols * stride + uint64_t(b) * 8192);
         work.SetGlobalBuffer(workBase + uint64_t(b) * t.cols * stride);
         Duplicate(tileHigh, 0.0f, owned * stride); Duplicate(norms, 0.0f, k8); PipeBarrier<PIPE_V>();
-        float scale = 0.0f;
-        for (uint32_t row = 0; row < owned; ++row) {
-            Load(tileHigh[row * stride], input[offset + (core + row * cores) * t.n], t.n);
-            Abs(prod, tileHigh[row * stride], r8); PipeBarrier<PIPE_V>(); ReduceMax(red, prod, tmp, r8, false); VS();
-            float value = red.GetValue(0); scale = value > scale ? value : scale;
-        }
+        SetFlag<HardEvent::V_MTE2>(0); WaitFlag<HardEvent::V_MTE2>(0);
+        DataCopyPad(tileHigh, input[offset + core * t.n],
+                    DataCopyExtParams{static_cast<uint16_t>(owned), t.n * 4, (cores - 1) * t.n * 4, (stride - r8) / 8, 0},
+                    DataCopyPadExtParams<float>{true, 0, static_cast<uint8_t>(r8 - t.n), 0});
+        SetFlag<HardEvent::MTE2_V>(0); WaitFlag<HardEvent::MTE2_V>(0);
+        Abs(tileLow, tileHigh, owned * stride); PipeBarrier<PIPE_V>();
+        auto reductionWork = batchPrecision.Get<float>();
+        ReduceMax(red, tileLow, reductionWork, owned * stride, false); VS();
+        float scale = red.GetValue(0);
         red.SetValue(0, scale); Store(meta[core * 8], red, 1); SyncAll();
         Load(gather, meta, cores * 8); scale = 0.0f;
         for (uint32_t peer = 0; peer < cores; ++peer) { float value = gather.GetValue(peer * 8); scale = value > scale ? value : scale; }
@@ -1203,10 +1206,14 @@ class StablePinv {
         float power = 1.0f;
         if (valid) { while (power < scale) power *= 2.0f; while (power * 0.5f >= scale) power *= 0.5f; }
         float total = 0.0f;
-        if (valid) for (uint32_t row = 0; row < owned; ++row) {
-            Muls(tileHigh[row * stride], tileHigh[row * stride], 1.0f / power, r8); PipeBarrier<PIPE_V>();
-            total += Dot(tileHigh[row * stride], tileHigh[row * stride]);
-            tileHigh.SetValue(row * stride + r8 + core + row * cores, 1.0f); SV();
+        if (valid) {
+            Muls(tileHigh, tileHigh, 1.0f / power, owned * stride); PipeBarrier<PIPE_V>();
+            Mul(tileLow, tileHigh, tileHigh, owned * stride); PipeBarrier<PIPE_V>();
+            ReduceSum(red, tileLow, reductionWork, owned * stride); VS();
+            total = red.GetValue(0);
+            for (uint32_t row = 0; row < owned; ++row)
+                tileHigh.SetValue(row * stride + r8 + core + row * cores, 1.0f);
+            SV();
         }
         red.SetValue(0, total); Store(meta[core * 8], red, 1); SyncAll(); Load(gather, meta, cores * 8); total = 0.0f;
         for (uint32_t peer = 0; peer < cores; ++peer) total += gather.GetValue(peer * 8);
