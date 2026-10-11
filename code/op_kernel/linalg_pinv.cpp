@@ -1202,7 +1202,6 @@ class StablePinv {
         for (uint32_t row = 0; row < factorRows; ++row) rowIndices.SetValue(row, row < owned ? row * stride * sizeof(float) : 0);
         for (uint32_t row = 0; row < PANEL; ++row) panelIndices.SetValue(row, row * stride * sizeof(float));
         Duplicate(u, 0.0f, rowLength); PipeBarrier<PIPE_V>(); SV();
-        uint32_t selection[PANEL];
         for (uint32_t first = 0; first < t.cols; first += PANEL) {
             uint32_t rows = t.cols - first < PANEL ? t.cols - first : PANEL;
             if (valid) {
@@ -1250,7 +1249,7 @@ class StablePinv {
                     if (!(best > 1.0e-6f)) { valid = false; break; }
                     float divisor = v.GetValue(selected);
                     norms.SetValue(selected, -static_cast<float>(static_cast<int32_t>(first + column + 1)));
-                    selection[column] = selected;
+                    output.SetValue(column, static_cast<float>(static_cast<int32_t>(selected)));
                     Gather(u, columns, compactColumnIndices, selected * sizeof(float), PANEL); PipeBarrier<PIPE_V>();
                     Muls(u, u, 1.0f / divisor, PANEL); PipeBarrier<PIPE_V>();
                     v.SetValue(selected, 0.0f); SV();
@@ -1272,7 +1271,7 @@ class StablePinv {
                     PipeBarrier<PIPE_V>();
                 }
                 if (valid) for (uint32_t column = 0; column < rows; ++column) {
-                    uint32_t selected = selection[column];
+                    uint32_t selected = static_cast<uint32_t>(static_cast<int32_t>(output.GetValue(column)));
                     if (selected % cores == core) Store(work[t.cols * PANEL + column * stride], tileHigh[(selected / cores) * stride], rowLength);
                 }
             }
@@ -1298,7 +1297,7 @@ class StablePinv {
             }
             if (valid) {
                 for (uint32_t column = 0; column < rows; ++column) {
-                    uint32_t selected = selection[column];
+                    uint32_t selected = static_cast<uint32_t>(static_cast<int32_t>(output.GetValue(column)));
                     DataCopy(u, tileLow[column * stride], rowLength);
                     if (selected % cores == core) {
                         PipeBarrier<PIPE_V>();
