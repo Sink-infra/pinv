@@ -4065,7 +4065,7 @@ class Pinv {
     }
     template <uint32_t LANES>
     __aicore__ inline bool CompactQuickLogical(uint32_t offset) {
-        constexpr uint32_t n = LANES, width = 2 * PAD, pitch = 2 * PAD;
+        constexpr uint32_t n = LANES, width = 2 * PAD, pitch = 2 * PAD + 8;
         constexpr uint32_t count = n * pitch;
         Duplicate(matrix, 0.0f, count); PipeBarrier<PIPE_V>();
         SetFlag<HardEvent::V_MTE2>(0); WaitFlag<HardEvent::V_MTE2>(0);
@@ -4111,12 +4111,9 @@ class Pinv {
         Duplicate(lowMatrix, 0.0f, count); PipeBarrier<PIPE_V>();
         Mul(lowMatrix, matrix[PAD], matrix[PAD], static_cast<uint64_t>(PAD), static_cast<uint8_t>(n), {1, 1, 1, static_cast<uint8_t>(pitch / 8), static_cast<uint8_t>(pitch / 8), static_cast<uint8_t>(pitch / 8)});
         PipeBarrier<PIPE_V>(); ReduceSum(red, lowMatrix, tmp, count); VS();
-        float inverseTotal = red.GetValue(0);
-        float relativeSquared = total * t.rtol * t.rtol;
-        float absolute = t.atol / power;
-        float absoluteSquared = absolute <= 0.0f ? 0.0f : absolute * absolute;
-        float cutoffSquared = relativeSquared > absoluteSquared ? relativeSquared : absoluteSquared;
-        if (!(inverseTotal > 0.0f && inverseTotal * cutoffSquared < 0.81f)) return false;
+        float inverseTotal = red.GetValue(0), cutoff = Root(total) * t.rtol;
+        float absolute = t.atol / power; cutoff = cutoff > absolute ? cutoff : absolute;
+        if (!(inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < 0.81f)) return false;
         Muls(matrix, matrix, 1.0f / power, count); PipeBarrier<PIPE_V>();
         for (uint32_t row = 0; row < n; ++row) {
             uint32_t target = order[row];
@@ -5092,7 +5089,7 @@ class Pinv<false, PAD> {
         return true;
     }
     __aicore__ inline bool CompactQuickLogical(uint32_t offset) {
-        constexpr uint32_t n = PAD, width = 2 * PAD, pitch = 2 * PAD;
+        constexpr uint32_t n = PAD, width = 2 * PAD, pitch = 2 * PAD + 8;
         constexpr uint32_t count = n * pitch;
         Duplicate(matrix, 0.0f, count); PipeBarrier<PIPE_V>();
         SetFlag<HardEvent::V_MTE2>(0); WaitFlag<HardEvent::V_MTE2>(0);
@@ -5136,12 +5133,9 @@ class Pinv<false, PAD> {
         Duplicate(lowMatrix, 0.0f, count); PipeBarrier<PIPE_V>();
         Mul(lowMatrix, matrix[n], matrix[n], static_cast<uint64_t>(n), static_cast<uint8_t>(n), {1, 1, 1, static_cast<uint8_t>(pitch / 8), static_cast<uint8_t>(pitch / 8), static_cast<uint8_t>(pitch / 8)});
         PipeBarrier<PIPE_V>(); ReduceSum(red, lowMatrix, tmp, count); VS();
-        float inverseTotal = red.GetValue(0);
-        float relativeSquared = total * t.rtol * t.rtol;
-        float absolute = t.atol / power;
-        float absoluteSquared = absolute <= 0.0f ? 0.0f : absolute * absolute;
-        float cutoffSquared = relativeSquared > absoluteSquared ? relativeSquared : absoluteSquared;
-        if (!(inverseTotal > 0.0f && inverseTotal * cutoffSquared < 0.81f)) return false;
+        float inverseTotal = red.GetValue(0), cutoff = Root(total) * t.rtol;
+        float absolute = t.atol / power; cutoff = cutoff > absolute ? cutoff : absolute;
+        if (!(inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < 0.81f)) return false;
         Muls(matrix, matrix, 1.0f / power, count); PipeBarrier<PIPE_V>();
         for (uint32_t row = 0; row < n; ++row) {
             uint32_t target = order[row];
