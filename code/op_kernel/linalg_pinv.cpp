@@ -320,32 +320,14 @@ class StablePinv {
                 for (uint32_t first = 0; first < owned; first += t.inverseTile) {
                     uint32_t rows = owned - first < t.inverseTile ? owned - first : t.inverseTile;
                     Gather(v, cache, rowIndex, (first * r8 + k) * sizeof(float), rows); PipeBarrier<PIPE_V>();
-                    uint32_t factorPad = (rows + 7) / 8 * 8;
-                    bool splitFactors = 19 * factorPad <= 8 * t.rows;
-                    Brcb(output, v, factorPad / 8, {1, 8});
-                    if (splitFactors) {
-                        auto fh = gather, fl = gather[factorPad], ft = gather[2 * factorPad];
-                        Muls(fh, v, 4097.0f, rows); PipeBarrier<PIPE_V>();
-                        Sub(ft, fh, v, rows); PipeBarrier<PIPE_V>();
-                        Sub(fh, fh, ft, rows); PipeBarrier<PIPE_V>();
-                        Sub(fl, v, fh, rows); PipeBarrier<PIPE_V>();
-                        Brcb(gather[3 * factorPad], fh, factorPad / 8, {1, 8});
-                        Brcb(gather[11 * factorPad], fl, factorPad / 8, {1, 8});
-                    }
-                    PipeBarrier<PIPE_V>();
+                    Brcb(output, v, (rows + 7) / 8, {1, 8}); PipeBarrier<PIPE_V>();
                     for (uint32_t col = 0; col < r8; col += 64) {
                         uint32_t mask = r8 - col < 64 ? r8 - col : 64;
-                        if (splitFactors) {
-                            Copy(batchH[col], output, static_cast<uint64_t>(mask), static_cast<uint8_t>(rows), {1, 0, static_cast<uint16_t>(r8 / 8), 1});
-                            Copy(batchCalc[2][col], gather[3 * factorPad], static_cast<uint64_t>(mask), static_cast<uint8_t>(rows), {1, 0, static_cast<uint16_t>(r8 / 8), 1});
-                            Copy(batchCalc[3][col], gather[11 * factorPad], static_cast<uint64_t>(mask), static_cast<uint8_t>(rows), {1, 0, static_cast<uint16_t>(r8 / 8), 1});
-                        } else {
-                            Mul(batchH[col], tmp[col], output, static_cast<uint64_t>(mask), static_cast<uint8_t>(rows),
-                                {1, 1, 0, static_cast<uint8_t>(r8 / 8), 0, 1});
-                        }
+                        Mul(batchH[col], tmp[col], output, static_cast<uint64_t>(mask), static_cast<uint8_t>(rows),
+                            {1, 1, 0, static_cast<uint8_t>(r8 / 8), 0, 1});
                     }
                     PipeBarrier<PIPE_V>(); x = tileHigh[first * r8]; y = tileLow[first * r8];
-                    BatchEliminate(rows * r8, true, true, splitFactors);
+                    BatchEliminate(rows * r8, true, true);
                 }
             }
         }
@@ -782,13 +764,11 @@ class StablePinv {
         }
         SyncAll();
     }
-    __aicore__ inline void BatchEliminate(uint32_t count, bool cached = false, bool zeroLow = false, bool splitFactors = false) {
+    __aicore__ inline void BatchEliminate(uint32_t count, bool cached = false, bool zeroLow = false) {
         auto qh = batchCalc[0], ql = batchCalc[1], bh = batchCalc[2], bl = batchCalc[3], e = batchCalc[4], part = batchCalc[5], product = batchCalc[6], aux = batchCalc[7];
-        if (!splitFactors) {
-            Muls(bh, batchH, 4097.0f, count); PipeBarrier<PIPE_V>();
-            Sub(bl, bh, batchH, count); PipeBarrier<PIPE_V>(); Sub(bh, bh, bl, count); PipeBarrier<PIPE_V>();
-            Sub(bl, batchH, bh, count);
-        }
+        Muls(bh, batchH, 4097.0f, count); PipeBarrier<PIPE_V>();
+        Sub(bl, bh, batchH, count); PipeBarrier<PIPE_V>(); Sub(bh, bh, bl, count); PipeBarrier<PIPE_V>();
+        Sub(bl, batchH, bh, count);
         if (!cached) {
             Muls(qh, batchU, 4097.0f, count); PipeBarrier<PIPE_V>();
             Sub(ql, qh, batchU, count); PipeBarrier<PIPE_V>(); Sub(qh, qh, ql, count); PipeBarrier<PIPE_V>();
