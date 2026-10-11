@@ -783,13 +783,20 @@ class StablePinv {
             Mul(part, batchV, batchH, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
             Mul(part, batchU, batchL, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
         }
-        auto ph = cached ? aux : qh, pl = cached ? product : ql;
-        Add(ph, product, e, count); PipeBarrier<PIPE_V>(); Sub(part, ph, product, count); PipeBarrier<PIPE_V>(); Sub(pl, e, part, count); PipeBarrier<PIPE_V>();
+        // When both low parts are zero the product and its residual already satisfy
+        // |residual| <= half an interval of the product, so the pair is normalised by
+        // construction and renormalising it would be three operations for no accuracy.
+        // The split operands are dead by this point and serve as the running error.
+        LocalTensor<float> ph = product, pl = e, err = qh;
+        if (!zeroLow) {
+            ph = cached ? aux : qh; pl = cached ? product : ql; err = e;
+            Add(ph, product, e, count); PipeBarrier<PIPE_V>(); Sub(part, ph, product, count); PipeBarrier<PIPE_V>(); Sub(pl, e, part, count); PipeBarrier<PIPE_V>();
+        }
         Sub(bh, x, ph, count); PipeBarrier<PIPE_V>(); Sub(bl, bh, x, count); PipeBarrier<PIPE_V>();
-        Sub(e, bh, bl, count); PipeBarrier<PIPE_V>(); Sub(e, x, e, count); Muls(part, ph, -1.0f, count); PipeBarrier<PIPE_V>();
-        Sub(part, part, bl, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
-        Add(e, e, y, count); PipeBarrier<PIPE_V>(); Sub(e, e, pl, count); PipeBarrier<PIPE_V>();
-        Add(x, bh, e, count); PipeBarrier<PIPE_V>(); Sub(aux, x, bh, count); PipeBarrier<PIPE_V>(); Sub(y, e, aux, count); PipeBarrier<PIPE_V>();
+        Sub(err, bh, bl, count); PipeBarrier<PIPE_V>(); Sub(err, x, err, count); Muls(part, ph, -1.0f, count); PipeBarrier<PIPE_V>();
+        Sub(part, part, bl, count); PipeBarrier<PIPE_V>(); Add(err, err, part, count); PipeBarrier<PIPE_V>();
+        Add(err, err, y, count); PipeBarrier<PIPE_V>(); Sub(err, err, pl, count); PipeBarrier<PIPE_V>();
+        Add(x, bh, err, count); PipeBarrier<PIPE_V>(); Sub(aux, x, bh, count); PipeBarrier<PIPE_V>(); Sub(y, err, aux, count); PipeBarrier<PIPE_V>();
     }
     __aicore__ inline bool LocalInverseBody(uint32_t offset, LocalTensor<float> bx, LocalTensor<float> by,
                                             LocalTensor<float> bu, LocalTensor<float> bv) {
