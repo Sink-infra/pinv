@@ -4090,7 +4090,6 @@ class Pinv {
         Duplicate(norms, 0.0f, PAD); PipeBarrier<PIPE_V>();
         uint64_t available = (uint64_t(1) << n) - 1;
         SV();
-        #pragma unroll
         for (uint32_t column = 0; column < n; ++column) {
             Gather(norms, matrix, indices, column * sizeof(float), n); PipeBarrier<PIPE_V>();
             Abs(prod, norms, PAD); PipeBarrier<PIPE_V>();
@@ -4102,10 +4101,11 @@ class Pinv {
             available &= ~(uint64_t(1) << pivot);
             order[pivot] = column;
             Muls(matrix[pivot * pitch], matrix[pivot * pitch], 1.0f / values[pivot * pitch + column], width); PipeBarrier<PIPE_V>();
+            DataCopy(u, matrix[pivot * pitch], pitch); PipeBarrier<PIPE_V>();
             norms.SetValue(pivot, 0.0f); SV();
             Muls(norms, norms, -1.0f, PAD); PipeBarrier<PIPE_V>();
             Brcb(lowMatrix, norms, PAD / 8, {static_cast<uint8_t>(pitch / 8), static_cast<uint8_t>(pitch)}); PipeBarrier<PIPE_V>();
-            MulAddDst(matrix, matrix[pivot * pitch], lowMatrix, static_cast<uint64_t>(width), static_cast<uint8_t>(n), {1, 1, 0, static_cast<uint8_t>(pitch / 8), 0, static_cast<uint8_t>(pitch / 8)});
+            MulAddDst(matrix, u, lowMatrix, static_cast<uint64_t>(width), static_cast<uint8_t>(n), {1, 1, 0, static_cast<uint8_t>(pitch / 8), 0, static_cast<uint8_t>(pitch / 8)});
             PipeBarrier<PIPE_V>();
         }
         Duplicate(lowMatrix, 0.0f, count); PipeBarrier<PIPE_V>();
