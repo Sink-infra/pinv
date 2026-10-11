@@ -278,8 +278,15 @@ class StablePinv {
             Load(cache[row * r8], input[offset + (core + row * cores) * t.n], t.n);
             Muls(cache[row * r8], cache[row * r8], 1.0f / power, r8); PipeBarrier<PIPE_V>();
         }
-        Duplicate(tileHigh, 0.0f, owned * r8); Duplicate(tileLow, 0.0f, owned * r8); PipeBarrier<PIPE_V>(); VS();
-        for (uint32_t row = 0; row < owned; ++row) tileHigh.SetValue(row * r8 + core + row * cores, 1.0f);
+        float sumShift = 0.0f;
+        float conditionBound = total * inverseTotal;
+        if (conditionBound > 0.0f && conditionBound < 4.0e11f) {
+            float bound = 2.02f * Root(conditionBound);
+            sumShift = 1.0f;
+            while (sumShift < bound) sumShift *= 2.0f;
+        }
+        Duplicate(tileHigh, sumShift, owned * r8); Duplicate(tileLow, 0.0f, owned * r8); PipeBarrier<PIPE_V>(); VS();
+        for (uint32_t row = 0; row < owned; ++row) tileHigh.SetValue(row * r8 + core + row * cores, sumShift + 1.0f);
         SV();
         uint32_t packedCount = t.inverseTile * r8;
         // The inverse rows are read once per column; batching the reads turns t.cols
@@ -327,9 +334,12 @@ class StablePinv {
                             {1, 1, 0, static_cast<uint8_t>(r8 / 8), 0, 1});
                     }
                     PipeBarrier<PIPE_V>(); x = tileHigh[first * r8]; y = tileLow[first * r8];
-                    BatchEliminate(rows * r8, true, true);
+                    BatchEliminate(rows * r8, true, true, sumShift > 0.0f);
                 }
             }
+        }
+        if (sumShift > 0.0f) {
+            Adds(tileHigh, tileHigh, -sumShift, owned * r8); PipeBarrier<PIPE_V>();
         }
         x = bx; y = by; u = bu; v = bv;
         for (uint32_t row = 0; row < owned; ++row) {
@@ -764,7 +774,7 @@ class StablePinv {
         }
         SyncAll();
     }
-    __aicore__ inline void BatchEliminate(uint32_t count, bool cached = false, bool zeroLow = false) {
+    __aicore__ inline void BatchEliminate(uint32_t count, bool cached = false, bool zeroLow = false, bool dominated = false) {
         auto qh = batchCalc[0], ql = batchCalc[1], bh = batchCalc[2], bl = batchCalc[3], e = batchCalc[4], part = batchCalc[5], product = batchCalc[6], aux = batchCalc[7];
         Muls(bh, batchH, 4097.0f, count); PipeBarrier<PIPE_V>();
         Sub(bl, bh, batchH, count); PipeBarrier<PIPE_V>(); Sub(bh, bh, bl, count); PipeBarrier<PIPE_V>();
@@ -792,9 +802,15 @@ class StablePinv {
             ph = cached ? aux : qh; pl = cached ? product : ql; err = e;
             Add(ph, product, e, count); PipeBarrier<PIPE_V>(); Sub(part, ph, product, count); PipeBarrier<PIPE_V>(); Sub(pl, e, part, count); PipeBarrier<PIPE_V>();
         }
-        Sub(bh, x, ph, count); PipeBarrier<PIPE_V>(); Sub(bl, bh, x, count); PipeBarrier<PIPE_V>();
-        Sub(err, bh, bl, count); PipeBarrier<PIPE_V>(); Sub(err, x, err, count); Add(part, ph, bl, count); PipeBarrier<PIPE_V>();
-        Sub(err, err, part, count); PipeBarrier<PIPE_V>();
+        Sub(bh, x, ph, count); PipeBarrier<PIPE_V>();
+        if (dominated) {
+            Sub(bl, x, bh, count); PipeBarrier<PIPE_V>();
+            Sub(err, bl, ph, count); PipeBarrier<PIPE_V>();
+        } else {
+            Sub(bl, bh, x, count); PipeBarrier<PIPE_V>();
+            Sub(err, bh, bl, count); PipeBarrier<PIPE_V>(); Sub(err, x, err, count); Add(part, ph, bl, count); PipeBarrier<PIPE_V>();
+            Sub(err, err, part, count); PipeBarrier<PIPE_V>();
+        }
         Add(err, err, y, count); PipeBarrier<PIPE_V>(); Sub(err, err, pl, count); PipeBarrier<PIPE_V>();
         Add(x, bh, err, count); PipeBarrier<PIPE_V>(); Sub(aux, x, bh, count); PipeBarrier<PIPE_V>(); Sub(y, err, aux, count); PipeBarrier<PIPE_V>();
     }
