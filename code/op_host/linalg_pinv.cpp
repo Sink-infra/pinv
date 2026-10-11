@@ -157,17 +157,17 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
         t->local = 0;
         context->SetBlockDim(launchCores);
         context->SetScheduleMode(1);
-    } else context->SetBlockDim(std::min<uint64_t>(batch, platform.GetCoreNumAiv()));
+    } else context->SetBlockDim(std::min<uint64_t>(std::max<uint64_t>(batch, 4), platform.GetCoreNumAiv()));
     auto ws = context->GetWorkspaceSizes(1);
     ws[0] = t->local ? 0 : platform.GetLibApiWorkSpaceSize() + batch * (t->cols * t->stride * (t->parallel ? 2 : 1) + (t->parallel ? 8192 : 0)) * sizeof(float);
     uint32_t DT_A = static_cast<uint32_t>(ge::DT_FLOAT);
     uint32_t COMPACT = t->localInverse && t->stride <= 64;
-    if (COMPACT) context->SetBlockDim(std::min<uint64_t>((batch + 1) / 2 * 2, platform.GetCoreNumAiv()));
+    if (COMPACT) context->SetBlockDim(std::min<uint64_t>(std::max<uint64_t>((batch + 1) / 2 * 2, 4), platform.GetCoreNumAiv()));
     if (!COMPACT && ws[0] == 0) ws[0] = 32;
     uint32_t TAIL = COMPACT && t->cols % 8 != 0;
     uint32_t WAVE = t->groupCount > 0 && (t->groupCount < t->batch || t->singleResident);
     uint32_t LOCAL = !COMPACT && t->localInverse && !t->parallel;
-    if (LOCAL) context->SetBlockDim(std::min<uint64_t>((batch + 1) / 2 * 2, platform.GetCoreNumAiv()));
+    if (LOCAL) context->SetBlockDim(std::min<uint64_t>(std::max<uint64_t>((batch + 1) / 2 * 2, 4), platform.GetCoreNumAiv()));
     uint32_t factorRows = (t->resident + 7) / 8 * 8;
     uint32_t GROUP = !COMPACT && !LOCAL && !WAVE && t->groupCount
         && t->resident * t->stride >= 16 * t->stride
