@@ -244,6 +244,11 @@ class StablePinv {
         }
         if (candidate <= t.inverseTile) return 0;
         uint32_t span = candidate * r8;
+        if (r8 % 64 == 0) {
+            uint32_t separatedSpan = span + 64, available = 0;
+            for (uint32_t region = 0; region < regionCount; ++region) available += widths[region] / separatedSpan;
+            if (available >= 12) span = separatedSpan;
+        }
         LocalTensor<float> slots[12]; uint32_t count = 0;
         for (uint32_t region = 0; region < regionCount && count < 12; ++region)
             for (uint32_t off = 0; off + span <= widths[region] && count < 12; off += span)
