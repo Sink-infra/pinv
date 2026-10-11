@@ -1572,6 +1572,16 @@ class StablePinv {
             work.SetGlobalBuffer(workBase + uint64_t(b) * t.cols * stride);
             GlobalTensor<float> meta;
             meta.SetGlobalBuffer(workBase + uint64_t(2) * t.batch * t.cols * stride + uint64_t(b) * 8192);
+            if (prepared & (uint32_t(1) << b)) {
+                Load(gather, meta[1032], 3);
+                float cachedTotal = gather.GetValue(0), cachedInverse = gather.GetValue(1), power = gather.GetValue(2);
+                float cutoff = power * Root(cachedTotal) * t.rtol;
+                cutoff = cutoff > t.atol ? cutoff : t.atol;
+                VS(); for (uint32_t i = 0; i < t.cols; ++i) norms.SetValue(i, static_cast<float>(static_cast<int32_t>(i + 1))); SV();
+                uint32_t owned = (t.cols + cores - 1 - core) / cores;
+                for (uint32_t row = 0; row < owned; ++row) Load(tileHigh[row * stride + r8], result[offset + (core + row * cores) * t.m], t.m);
+                if (RefineResident(b, offset, power, cachedTotal, cachedInverse, meta, true, cutoff)) continue;
+            }
             float scale = 0;
             for (uint32_t i = core; i < t.cols; i += cores) {
                 Duplicate(x, 0.0f, rowLength); PipeBarrier<PIPE_V>();
@@ -1603,15 +1613,7 @@ class StablePinv {
             if (t.m == t.n) {
                 float cutoff = scale * Root(total) * t.rtol;
                 cutoff = cutoff > t.atol ? cutoff : t.atol;
-                if (prepared & (uint32_t(1) << b)) {
-                    Load(gather, meta[1032], 3);
-                    float cachedTotal = gather.GetValue(0), cachedInverse = gather.GetValue(1), power = gather.GetValue(2);
-                    VS(); for (uint32_t i = 0; i < t.cols; ++i) norms.SetValue(i, static_cast<float>(static_cast<int32_t>(i + 1))); SV();
-                    uint32_t owned = (t.cols + cores - 1 - core) / cores;
-                    for (uint32_t row = 0; row < owned; ++row) Load(tileHigh[row * stride + r8], result[offset + (core + row * cores) * t.m], t.m);
-                    if (RefineResident(b, offset, power, cachedTotal, cachedInverse, meta, true, cutoff)) continue;
-                    if (AccurateSquare(b, offset, scale, meta, true, cutoff, true)) continue;
-                } else if (AccurateSquare(b, offset, scale, meta, true, cutoff)) continue;
+                if (AccurateSquare(b, offset, scale, meta, true, cutoff, (prepared & (uint32_t(1) << b)) != 0)) continue;
                 RestoreJacobi(offset, scale);
             }
             float absTol = t.atol / scale, discard = absTol * absTol;
