@@ -40,9 +40,10 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     inverseBytes += 12 * t->inverseTile * t->stride * sizeof(float);
     t->localInverse = m == n && inverseBytes <= ubSize;
     if (t->localInverse) t->parallel = 0;
+    uint32_t parallelPadding = r8 % 64 ? 8 : 0;
     if (t->parallel) {
-        uint32_t narrowStride = (t->stride + 63) / 64 * 64 + 8;
-        t->stride = (t->stride + 127) / 128 * 128 + 8;
+        uint32_t narrowStride = (t->stride + 63) / 64 * 64 + parallelPadding;
+        t->stride = (t->stride + 127) / 128 * 128 + parallelPadding;
         if (m == n && narrowStride != t->stride) {
             uint32_t cores = std::min<uint32_t>(platform.GetCoreNumAic(), (t->cols + 1) / 2);
             uint32_t owned = (t->cols + cores - 1) / cores;
@@ -109,7 +110,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     if (t->parallel && m == n && batch > 1 && t->groupCount > 0 && (t->groupCount < t->batch || t->singleResident)) {
         uint32_t vectorCores = std::min<uint32_t>(platform.GetCoreNumAiv(), (t->cols + 1) / 2);
         uint32_t groupCores = vectorCores / batch;
-        uint32_t narrow = (r8 + k8 + 8 + 63) / 64 * 64 + 8;
+        uint32_t narrow = (r8 + k8 + 8 + 63) / 64 * 64 + parallelPadding;
         uint32_t candidates[2] = {t->stride, narrow};
         for (uint32_t c = 0; c < 2 && groupCores > 0; ++c) {
             uint64_t pitch = candidates[c];
