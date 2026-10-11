@@ -105,8 +105,37 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
             }
         }
     }
+    uint32_t panelLaunch = 0;
+    if (t->parallel && m == n && batch > 1 && t->groupCount > 0 && (t->groupCount < t->batch || t->singleResident)) {
+        uint32_t vectorCores = std::min<uint32_t>(platform.GetCoreNumAiv(), (t->cols + 1) / 2);
+        uint32_t groupCores = vectorCores / batch;
+        uint32_t narrow = (r8 + k8 + 8 + 63) / 64 * 64;
+        uint32_t candidates[2] = {t->stride, narrow};
+        for (uint32_t c = 0; c < 2 && groupCores > 0; ++c) {
+            uint64_t pitch = candidates[c];
+            if (pitch < r8 + k8 + 8) continue;
+            uint64_t owned = (t->cols + groupCores - 1) / groupCores;
+            uint64_t baseBytes = (4 * pitch + 4 * r8 + 8 * t->rows + k8 + 32 + 8 * (r8 + k8)) * sizeof(float);
+            uint64_t residentBytes = 2 * owned * pitch * sizeof(float);
+            uint64_t capacity = ubSize > baseBytes + residentBytes ? (ubSize - baseBytes - residentBytes) / (12 * pitch * sizeof(float)) : 0;
+            uint64_t tile = std::min<uint64_t>(owned, capacity);
+            uint64_t factorRows = (owned + 7) / 8 * 8;
+            if (owned > 64 || capacity == 0) continue;
+            if (owned * pitch >= 16 * pitch && owned * pitch >= uint64_t(t->cols + k8) * 16
+                && uint64_t(t->cols + pitch) * 16 <= uint64_t(t->cols) * pitch && tile * pitch >= factorRows * 8) {
+                t->stride = static_cast<uint32_t>(pitch);
+                t->groupCount = batch;
+                t->resident = static_cast<uint32_t>(owned);
+                t->singleResident = 0;
+                t->inverseTile = static_cast<uint32_t>(tile);
+                panelLaunch = vectorCores;
+                break;
+            }
+        }
+    }
     uint32_t launchCores = std::min<uint32_t>(platform.GetCoreNumAic(), (t->cols + 1) / 2);
-    if (t->parallel && t->groupCount > 0 && (t->groupCount < t->batch || t->singleResident)) {
+    if (panelLaunch) launchCores = panelLaunch;
+    if (!panelLaunch && t->parallel && t->groupCount > 0 && (t->groupCount < t->batch || t->singleResident)) {
         uint32_t vectorCores = std::min<uint32_t>(platform.GetCoreNumAiv(), (t->cols + 1) / 2);
         uint32_t groupCores = vectorCores / t->groupCount;
         uint32_t owned = (t->cols + groupCores - 1) / groupCores;
@@ -119,8 +148,8 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
             t->inverseTile = std::min<uint64_t>((t->cols + launchCores - 1) / launchCores, capacity);
         }
     }
-    bool wavePanel = false;
-    if (t->parallel && t->singleResident && t->groupCount == t->batch) {
+    bool wavePanel = panelLaunch != 0;
+    if (!wavePanel && t->parallel && t->singleResident && t->groupCount == t->batch) {
         uint64_t baseBytes = (4 * uint64_t(t->stride) + 4 * r8 + 8 * t->rows + k8 + 32 + 8 * (r8 + k8)) * sizeof(float);
         uint64_t residentBytes = 2 * uint64_t(t->resident) * t->stride * sizeof(float);
         uint64_t capacity = ubSize > baseBytes + residentBytes ? (ubSize - baseBytes - residentBytes) / (12 * t->stride * sizeof(float)) : 0;
