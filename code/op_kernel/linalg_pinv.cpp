@@ -2673,9 +2673,8 @@ class LocalPinv {
         Mul(lowMatrix, matrix, matrix, count); PipeBarrier<PIPE_V>(); ReduceSum(red, lowMatrix, tmp, count); VS();
         float total = red.GetValue(0);
         auto data = reinterpret_cast<__ubuf__ float *>(matrix.GetPhyAddr());
-        for (uint32_t i = 0; i < n; ++i) data[i * stride + r8 + i] = 1.0f;
         auto indices = gather.ReinterpretCast<uint32_t>();
-        uint32_t pivotOrder[PAD];
+        uint32_t pivotOrder[PAD], pivotRow[PAD];
         uint64_t available = n < 64 ? (uint64_t(1) << n) - 1 : ~uint64_t(0);
         for (uint32_t i = 0; i < k8; ++i) indices.SetValue(i, i < n ? i * stride * sizeof(float) : 0);
         Duplicate(norms, 0.0f, k8); PipeBarrier<PIPE_V>(); SV();
@@ -2689,16 +2688,20 @@ class LocalPinv {
             uint32_t pivot = red.ReinterpretCast<uint32_t>().GetValue(1);
             if (!(best > 0.0f)) return false;
             available &= ~(uint64_t(1) << pivot);
-            pivotOrder[pivot] = p;
-            norms.SetValue(pivot, 0.0f); SV();
-            Muls(matrix[pivot * stride], matrix[pivot * stride], 1.0f / data[pivot * stride + p], s);
+            pivotOrder[pivot] = p; pivotRow[p] = pivot;
+            constexpr uint32_t live = r8 + 8;
+            uint32_t base = p / 8 * 8;
+            norms.SetValue(pivot, 0.0f);
+            data[pivot * stride + r8 + p] = 1.0f;
+            SV();
+            Muls(matrix[pivot * stride + base], matrix[pivot * stride + base], 1.0f / data[pivot * stride + p], live);
             Muls(norms, norms, -1.0f, k8); PipeBarrier<PIPE_V>();
             if constexpr (PACKED) Brcb(batchH, norms, k8 / 8, {ALIGNED ? uint8_t(1) : uint8_t(2), ALIGNED ? uint8_t(8) : uint8_t(16)});
             else Brcb(lowMatrix, norms, k8 / 8, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)});
             PipeBarrier<PIPE_V>();
-            uint64_t activeColumns[2] = {~uint64_t(0) << (p / 8 * 8), 0};
-            MulAddDst(matrix, matrix[pivot * stride], PACKED ? batchH : lowMatrix, activeColumns, static_cast<uint8_t>(n), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, PACKED ? (ALIGNED ? uint8_t(1) : uint8_t(2)) : static_cast<uint8_t>(stride / 8)});
-            MulAddDst(matrix[64], matrix[pivot * stride + 64], PACKED ? batchH : lowMatrix, static_cast<uint64_t>(s - 64), static_cast<uint8_t>(n), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, PACKED ? (ALIGNED ? uint8_t(1) : uint8_t(2)) : static_cast<uint8_t>(stride / 8)});
+            MulAddDst(matrix[base], matrix[pivot * stride + base], PACKED ? batchH : lowMatrix, static_cast<uint64_t>(live < 64 ? live : 64), static_cast<uint8_t>(n), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, PACKED ? (ALIGNED ? uint8_t(1) : uint8_t(2)) : static_cast<uint8_t>(stride / 8)});
+            if constexpr (live > 64)
+                MulAddDst(matrix[base + 64], matrix[pivot * stride + base + 64], PACKED ? batchH : lowMatrix, static_cast<uint64_t>(live - 64), static_cast<uint8_t>(n), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, PACKED ? (ALIGNED ? uint8_t(1) : uint8_t(2)) : static_cast<uint8_t>(stride / 8)});
             PipeBarrier<PIPE_V>();
         }
         Duplicate(lowMatrix, 0.0f, count); PipeBarrier<PIPE_V>();
@@ -2710,15 +2713,15 @@ class LocalPinv {
         float inverseTotal = red.GetValue(0), cutoff = Root(total) * t.rtol;
         float absolute = t.atol / power; cutoff = cutoff > absolute ? cutoff : absolute;
         if (!(inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < 0.81f)) return false;
-        Muls(matrix, matrix, 1.0f / power, count); PipeBarrier<PIPE_V>();
-        for (uint32_t row = 0; row < n; ++row) {
-            uint32_t target = pivotOrder[row];
-            DataCopy(lowMatrix[target * stride], matrix[row * stride], stride);
-        }
+        Muls(matrix, matrix, 1.0f / power, count); PipeBarrier<PIPE_V>(); VS();
+        for (uint32_t col = 0; col < n; ++col) indices.SetValue(col, pivotOrder[col] * sizeof(float));
+        SV();
+        for (uint32_t row = 0; row < n; ++row)
+            Gather(lowMatrix[row * stride], matrix, indices, (pivotRow[row] * stride + r8) * sizeof(float), n);
         PipeBarrier<PIPE_V>();
         SetFlag<HardEvent::V_MTE3>(0); WaitFlag<HardEvent::V_MTE3>(0);
         SetFlag<HardEvent::S_MTE3>(0); WaitFlag<HardEvent::S_MTE3>(0);
-        DataCopyPad(result[offset], lowMatrix[r8], DataCopyExtParams{static_cast<uint16_t>(n), n * 4, (stride - r8) / 8, 0, 0});
+        DataCopyPad(result[offset], lowMatrix, DataCopyExtParams{static_cast<uint16_t>(n), n * 4, (stride - r8) / 8, 0, 0});
         SetFlag<HardEvent::MTE3_V>(0); WaitFlag<HardEvent::MTE3_V>(0);
         SetFlag<HardEvent::MTE3_MTE2>(0); WaitFlag<HardEvent::MTE3_MTE2>(0);
         return true;
