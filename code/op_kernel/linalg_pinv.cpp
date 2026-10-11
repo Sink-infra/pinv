@@ -247,6 +247,13 @@ class StablePinv {
             Sub(batchV, batchV, batchL, inputCount); PipeBarrier<PIPE_V>();
             Sub(batchL, cache, batchV, inputCount); PipeBarrier<PIPE_V>();
         }
+        bool broadcastInputSplit = cachedInputSplit && r8 % 64 == 0 && refinementTile == owned && owned * r8 / 64 <= 255;
+        auto coefficientIndices = tmp.ReinterpretCast<uint32_t>();
+        if (broadcastInputSplit) {
+            for (uint32_t row = 0; row < (owned + 7) / 8 * 8; ++row) coefficientIndices.SetValue(row, row < owned ? row * r8 * sizeof(float) : 0);
+            SV();
+            Duplicate(gather, 0.0f, 8); Duplicate(v, 0.0f, 8); Duplicate(output, 0.0f, 8); PipeBarrier<PIPE_V>();
+        }
         uint32_t packedCount = refinementTile * r8;
         for (uint32_t k = 0; k < t.cols; ++k) {
             SetFlag<HardEvent::V_MTE2>(0); WaitFlag<HardEvent::V_MTE2>(0);
@@ -259,6 +266,19 @@ class StablePinv {
             Sub(batchCalc[1], batchCalc[0], batchU, packedCount); PipeBarrier<PIPE_V>();
             Sub(batchCalc[0], batchCalc[0], batchCalc[1], packedCount); PipeBarrier<PIPE_V>();
             Sub(batchCalc[1], batchU, batchCalc[0], packedCount); PipeBarrier<PIPE_V>();
+            if (broadcastInputSplit) {
+                Gather(gather, cache, coefficientIndices, k * sizeof(float), owned);
+                Gather(v, batchV, coefficientIndices, k * sizeof(float), owned);
+                Gather(output, batchL, coefficientIndices, k * sizeof(float), owned); PipeBarrier<PIPE_V>();
+                uint32_t blocks = r8 / 64;
+                for (uint32_t block = 0; block < blocks; ++block) {
+                    Brcb(batchH[block * 8], gather, (owned + 7) / 8, {static_cast<uint8_t>(blocks), static_cast<uint8_t>(blocks * 8)});
+                    Brcb(batchCalc[2][block * 8], v, (owned + 7) / 8, {static_cast<uint8_t>(blocks), static_cast<uint8_t>(blocks * 8)});
+                    Brcb(batchCalc[3][block * 8], output, (owned + 7) / 8, {static_cast<uint8_t>(blocks), static_cast<uint8_t>(blocks * 8)});
+                }
+                PipeBarrier<PIPE_V>(); x = tileHigh; y = tileLow;
+                BatchEliminate<true, true, true>(owned * r8, true); VS();
+            } else {
             for (uint32_t first = 0; first < owned; first += refinementTile) {
                 uint32_t rows = owned - first < refinementTile ? owned - first : refinementTile;
                 for (uint32_t row = 0; row < rows; ++row) {
@@ -273,6 +293,7 @@ class StablePinv {
                 if (cachedInputSplit) BatchEliminate<true, true>(rows * r8, true);
                 else BatchEliminate(rows * r8, true);
                 VS();
+            }
             }
         }
         x = bx; y = by; u = bu; v = bv;
@@ -690,7 +711,14 @@ class StablePinv {
         }
         SyncAll();
     }
-    template <bool PURE = false, bool FACTOR_SPLIT = false>
+    template <bool COMPACT_COEFFICIENT>
+    __aicore__ inline void ResidualMultiply(LocalTensor<float> dst, LocalTensor<float> lhs,
+                                             LocalTensor<float> coefficient, uint32_t count) {
+        if constexpr (COMPACT_COEFFICIENT)
+            Mul(dst, lhs, coefficient, uint64_t(64), static_cast<uint8_t>(count / 64), {1, 1, 0, 8, 8, 1});
+        else Mul(dst, lhs, coefficient, count);
+    }
+    template <bool PURE = false, bool FACTOR_SPLIT = false, bool COMPACT_COEFFICIENT = false>
     __aicore__ inline void BatchEliminate(uint32_t count, bool cached = false) {
         auto qh = batchCalc[0], ql = batchCalc[1], bh = batchCalc[2], bl = batchCalc[3], e = batchCalc[4], part = batchCalc[5], product = batchCalc[6], aux = batchCalc[7];
         if constexpr (!FACTOR_SPLIT) {
@@ -703,11 +731,11 @@ class StablePinv {
             Sub(ql, qh, batchU, count); PipeBarrier<PIPE_V>(); Sub(qh, qh, ql, count); PipeBarrier<PIPE_V>();
             Sub(ql, batchU, qh, count);
         }
-        Mul(product, batchU, batchH, count); PipeBarrier<PIPE_V>();
-        Mul(e, qh, bh, count); PipeBarrier<PIPE_V>(); Sub(e, e, product, count); PipeBarrier<PIPE_V>();
-        Mul(part, ql, bh, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
-        Mul(part, qh, bl, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
-        Mul(part, ql, bl, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
+        ResidualMultiply<COMPACT_COEFFICIENT>(product, batchU, batchH, count); PipeBarrier<PIPE_V>();
+        ResidualMultiply<COMPACT_COEFFICIENT>(e, qh, bh, count); PipeBarrier<PIPE_V>(); Sub(e, e, product, count); PipeBarrier<PIPE_V>();
+        ResidualMultiply<COMPACT_COEFFICIENT>(part, ql, bh, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
+        ResidualMultiply<COMPACT_COEFFICIENT>(part, qh, bl, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
+        ResidualMultiply<COMPACT_COEFFICIENT>(part, ql, bl, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
         if constexpr (!PURE) {
             Mul(part, batchV, batchH, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
             Mul(part, batchU, batchL, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
@@ -1105,7 +1133,8 @@ class StablePinv {
         red.SetValue(0, scale); Store(meta[core * 8], red, 1); SyncAll();
         Load(gather, meta, cores * 8); scale = 0.0f;
         for (uint32_t peer = 0; peer < cores; ++peer) { float value = gather.GetValue(peer * 8); scale = value > scale ? value : scale; }
-        bool valid = scale >= 0.1f && scale < 1.7014118e38f;
+        bool valid = scale >= (WAVE ? 0x1p-20f : 0.1f) && scale < 1.7014118e38f;
+        bool requireRefinement = WAVE && scale < 0.1f;
         float power = 1.0f;
         if (valid) { while (power < scale) power *= 2.0f; while (power * 0.5f >= scale) power *= 0.5f; }
         float total = 0.0f;
@@ -1254,9 +1283,9 @@ class StablePinv {
         if constexpr (WAVE) {
             valid = valid && inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < 81.0f;
             uint32_t normOwned = (t.cols + allCores - 1) / allCores;
-            prepared = valid && total * inverseTotal >= 3.6e9f && total * inverseTotal < 4.0e11f &&
+            prepared = valid && (requireRefinement || total * inverseTotal >= 3.6e9f) && total * inverseTotal < 4.0e11f &&
                 normOwned * r8 <= 8 * s && t.inverseTile * stride >= normOwned * 8 && 2 * allCores * r8 <= t.cols * stride;
-            valid = valid && total * inverseTotal < 3.6e9f;
+            valid = valid && !requireRefinement && total * inverseTotal < 3.6e9f;
         } else valid = valid && inverseTotal > 0.0f && total * inverseTotal < 3.6e9f && inverseTotal * cutoff * cutoff < 0.81f;
         if (valid || prepared) for (uint32_t row = 0; row < owned; ++row) {
             VS(); uint32_t target = static_cast<uint32_t>(static_cast<int32_t>(-norms.GetValue(core + row * cores))) - 1;
