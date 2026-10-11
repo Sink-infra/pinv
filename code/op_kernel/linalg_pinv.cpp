@@ -1320,9 +1320,18 @@ class StablePinv {
         bool prepared = sound && total * inverseTotal >= 3.6e9f && total * inverseTotal < 4.0e11f &&
             normOwned * r8 <= 8 * s && t.inverseTile * stride >= normOwned * 8 && 2 * allCores * r8 <= t.cols * stride;
         valid = sound && total * inverseTotal < 3.6e9f;
-        if (valid || prepared) for (uint32_t row = 0; row < owned; ++row) {
-            VS(); uint32_t target = static_cast<uint32_t>(static_cast<int32_t>(-norms.GetValue(core + row * cores))) - 1;
-            Muls(output, tileHigh[row * stride + r8], valid ? 1.0f / power : 1.0f, r8); Store(result[offset + target * t.m], output, t.m);
+        if (valid || prepared) {
+            for (uint32_t row = 0; row < owned; ++row) {
+                Muls(tileHigh[row * stride + r8], tileHigh[row * stride + r8], valid ? 1.0f / power : 1.0f, r8); PipeBarrier<PIPE_V>();
+            }
+            SetFlag<HardEvent::V_MTE3>(0); WaitFlag<HardEvent::V_MTE3>(0);
+            SetFlag<HardEvent::S_MTE3>(0); WaitFlag<HardEvent::S_MTE3>(0);
+            for (uint32_t row = 0; row < owned; ++row) {
+                uint32_t target = static_cast<uint32_t>(static_cast<int32_t>(-norms.GetValue(core + row * cores))) - 1;
+                DataCopyPad(result[offset + target * t.m], tileHigh[row * stride + r8], DataCopyExtParams{1, static_cast<uint32_t>(t.m) * 4, 0, 0, 0});
+            }
+            SetFlag<HardEvent::MTE3_V>(0); WaitFlag<HardEvent::MTE3_V>(0);
+            SetFlag<HardEvent::MTE3_MTE2>(0); WaitFlag<HardEvent::MTE3_MTE2>(0);
         }
         if (core == 0) {
             if (prepared) {
