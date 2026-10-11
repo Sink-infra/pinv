@@ -170,9 +170,9 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     if (LOCAL) context->SetBlockDim(std::min<uint64_t>((batch + 1) / 2 * 2, platform.GetCoreNumAiv()));
     uint32_t factorRows = (t->resident + 7) / 8 * 8;
     uint32_t GROUP = !COMPACT && !LOCAL && !WAVE && t->groupCount
-        && t->resident * t->stride >= 8 * t->stride
-        && t->resident * t->stride >= (t->cols + k8) * 8
-        && (t->cols + t->stride) * 8 <= t->cols * t->stride
+        && t->resident * t->stride >= 16 * t->stride
+        && t->resident * t->stride >= (t->cols + k8) * 16
+        && (t->cols + t->stride) * 16 <= t->cols * t->stride
         && t->inverseTile * t->stride >= factorRows * 8;
     ASCENDC_TPL_SEL_PARAM(context, DT_A, COMPACT, TAIL, WAVE, LOCAL, GROUP);
     return ge::GRAPH_SUCCESS;
