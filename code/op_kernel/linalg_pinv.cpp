@@ -4090,6 +4090,7 @@ class Pinv {
         Duplicate(norms, 0.0f, PAD); PipeBarrier<PIPE_V>();
         uint64_t available = (uint64_t(1) << n) - 1;
         SV();
+        #pragma unroll
         for (uint32_t column = 0; column < n; ++column) {
             Gather(norms, matrix, indices, column * sizeof(float), n); PipeBarrier<PIPE_V>();
             Abs(prod, norms, PAD); PipeBarrier<PIPE_V>();
