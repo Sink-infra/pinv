@@ -334,7 +334,7 @@ class StablePinv {
                             {1, 1, 0, static_cast<uint8_t>(r8 / 8), 0, 1});
                     }
                     PipeBarrier<PIPE_V>(); x = tileHigh[first * r8]; y = tileLow[first * r8];
-                    BatchEliminate(rows * r8, true, true, sumShift > 0.0f);
+                    BatchEliminate(rows * r8, true, true, sumShift > 0.0f, sumShift <= 0.0f || (k & 1) != 0 || k + 1 == t.cols);
                 }
             }
         }
@@ -363,7 +363,7 @@ class StablePinv {
         ReduceSum(red, gather, tmp, r8); VS(); float rf = Root(red.GetValue(0)) * 1.001f;
         float af = Root(total) * 1.001f, yf = Root(inverseTotal) * 1.001f;
         constexpr float unit = 5.9604644775390625e-8f;
-        float gd = 32.0f * t.cols * unit * unit;
+        float gd = (sumShift > 0.0f ? 40.0f : 32.0f) * t.cols * unit * unit;
         float gamma = (2.0f * t.cols * unit) / (1.0f - 2.0f * t.cols * unit);
         float er = gd * af * yf + unit * rf, denominator = 1.0f - rf - er;
         if (!(denominator > 0.0f)) { RestoreScratch(savedCalc, savedU, savedV, savedH, savedL, savedTile); return false; }
@@ -774,7 +774,7 @@ class StablePinv {
         }
         SyncAll();
     }
-    __aicore__ inline void BatchEliminate(uint32_t count, bool cached = false, bool zeroLow = false, bool dominated = false) {
+    __aicore__ inline void BatchEliminate(uint32_t count, bool cached = false, bool zeroLow = false, bool dominated = false, bool normalize = true) {
         auto qh = batchCalc[0], ql = batchCalc[1], bh = batchCalc[2], bl = batchCalc[3], e = batchCalc[4], part = batchCalc[5], product = batchCalc[6], aux = batchCalc[7];
         Muls(bh, batchH, 4097.0f, count); PipeBarrier<PIPE_V>();
         Sub(bl, bh, batchH, count); PipeBarrier<PIPE_V>(); Sub(bh, bh, bl, count); PipeBarrier<PIPE_V>();
@@ -811,8 +811,13 @@ class StablePinv {
             Sub(err, bh, bl, count); PipeBarrier<PIPE_V>(); Sub(err, x, err, count); Add(part, ph, bl, count); PipeBarrier<PIPE_V>();
             Sub(err, err, part, count); PipeBarrier<PIPE_V>();
         }
-        Add(err, err, y, count); PipeBarrier<PIPE_V>(); Sub(err, err, pl, count); PipeBarrier<PIPE_V>();
-        Add(x, bh, err, count); PipeBarrier<PIPE_V>(); Sub(aux, x, bh, count); PipeBarrier<PIPE_V>(); Sub(y, err, aux, count); PipeBarrier<PIPE_V>();
+        if (normalize) {
+            Add(err, err, y, count); PipeBarrier<PIPE_V>(); Sub(err, err, pl, count); PipeBarrier<PIPE_V>();
+            Add(x, bh, err, count); PipeBarrier<PIPE_V>(); Sub(aux, x, bh, count); PipeBarrier<PIPE_V>(); Sub(y, err, aux, count); PipeBarrier<PIPE_V>();
+        } else {
+            Add(y, err, y, count); PipeBarrier<PIPE_V>(); Sub(y, y, pl, count); PipeBarrier<PIPE_V>();
+            DataCopy(x, bh, count); PipeBarrier<PIPE_V>();
+        }
     }
     __aicore__ inline bool LocalInverseBody(uint32_t offset, LocalTensor<float> bx, LocalTensor<float> by,
                                             LocalTensor<float> bu, LocalTensor<float> bv) {
