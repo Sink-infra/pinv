@@ -217,6 +217,11 @@ class StablePinv {
         uint32_t core = GetBlockIdx(), cores = GetBlockNum();
         if constexpr (WAVE) if ((t.cols + cores - 1) / cores * r8 > lowElements) return false;
         uint32_t owned = (t.cols + cores - 1 - core) / cores;
+        uint32_t refinementTile = t.inverseTile;
+        if constexpr (WAVE) {
+            uint32_t packedCapacity = t.inverseTile * stride / r8;
+            refinementTile = owned < packedCapacity ? owned : packedCapacity;
+        }
         auto bx = x, by = y, bu = u, bv = v, cache = calc[0];
         GlobalTensor<float> residual, normWork;
         residual.SetGlobalBuffer(workBase + uint64_t(t.batch + b) * t.cols * stride);
@@ -233,11 +238,11 @@ class StablePinv {
         Duplicate(tileHigh, 0.0f, owned * r8); Duplicate(tileLow, 0.0f, owned * r8); PipeBarrier<PIPE_V>(); VS();
         for (uint32_t row = 0; row < owned; ++row) tileHigh.SetValue(row * r8 + core + row * cores, 1.0f);
         SV();
-        uint32_t packedCount = t.inverseTile * r8;
+        uint32_t packedCount = refinementTile * r8;
         for (uint32_t k = 0; k < t.cols; ++k) {
             SetFlag<HardEvent::V_MTE2>(0); WaitFlag<HardEvent::V_MTE2>(0);
             Load(u, result[offset + k * t.m], t.m);
-            for (uint32_t row = 0; row < t.inverseTile; ++row) {
+            for (uint32_t row = 0; row < refinementTile; ++row) {
                 DataCopy(batchU[row * r8], u, r8); Duplicate(batchV[row * r8], 0.0f, r8);
             }
             PipeBarrier<PIPE_V>();
@@ -245,8 +250,8 @@ class StablePinv {
             Sub(batchCalc[1], batchCalc[0], batchU, packedCount); PipeBarrier<PIPE_V>();
             Sub(batchCalc[0], batchCalc[0], batchCalc[1], packedCount); PipeBarrier<PIPE_V>();
             Sub(batchCalc[1], batchU, batchCalc[0], packedCount); PipeBarrier<PIPE_V>();
-            for (uint32_t first = 0; first < owned; first += t.inverseTile) {
-                uint32_t rows = owned - first < t.inverseTile ? owned - first : t.inverseTile;
+            for (uint32_t first = 0; first < owned; first += refinementTile) {
+                uint32_t rows = owned - first < refinementTile ? owned - first : refinementTile;
                 for (uint32_t row = 0; row < rows; ++row) {
                     float factor = cache.GetValue((first + row) * r8 + k);
                     Duplicate(batchH[row * r8], factor, r8); Duplicate(batchL[row * r8], 0.0f, r8);
