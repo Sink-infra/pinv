@@ -5113,7 +5113,6 @@ class Pinv<false, PAD> {
         for (uint32_t i = 0; i < n; ++i) indices.SetValue(i, i * pitch * sizeof(float));
         uint64_t available = (uint64_t(1) << n) - 1;
         SV();
-        #pragma unroll
         for (uint32_t column = 0; column < n; ++column) {
             Gather(norms, matrix, indices, column * sizeof(float), n); PipeBarrier<PIPE_V>();
             Abs(prod, norms, n); PipeBarrier<PIPE_V>();
