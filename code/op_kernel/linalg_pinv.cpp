@@ -311,7 +311,11 @@ class StablePinv {
             for (uint32_t j = 0; j < chunk; ++j) {
                 uint32_t k = base + j;
                 auto source = block[j * r8];
-                for (uint32_t row = 0; row < t.inverseTile; ++row) DataCopy(batchU[row * r8], source, r8);
+                for (uint32_t col = 0; col < r8; col += 64) {
+                    uint32_t mask = r8 - col < 64 ? r8 - col : 64;
+                    Mul(batchU[col], source[col], tmp, static_cast<uint64_t>(mask), static_cast<uint8_t>(t.inverseTile),
+                        {1, 1, 0, static_cast<uint8_t>(r8 / 8), 0, 0});
+                }
                 PipeBarrier<PIPE_V>();
                 Muls(batchCalc[0], batchU, 4097.0f, packedCount); PipeBarrier<PIPE_V>();
                 Sub(batchCalc[1], batchCalc[0], batchU, packedCount); PipeBarrier<PIPE_V>();
