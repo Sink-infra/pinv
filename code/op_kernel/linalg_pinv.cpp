@@ -16,6 +16,7 @@ class StablePinv {
     LinalgPinvTilingData t;
     uint32_t r8, k8, s, stride, rowLength, lowElements, residentElements;
     uint32_t scratchSpan, freedRows;
+    bool fusedProduct;
     __aicore__ inline void VS() { SetFlag<HardEvent::V_S>(0); WaitFlag<HardEvent::V_S>(0); }
     __aicore__ inline void SV() { SetFlag<HardEvent::S_V>(0); WaitFlag<HardEvent::S_V>(0); }
     __aicore__ inline void Load(LocalTensor<float> dst, GlobalTensor<float> src, uint32_t count) {
@@ -305,10 +306,12 @@ class StablePinv {
                 auto source = block[j * r8];
                 for (uint32_t row = 0; row < t.inverseTile; ++row) DataCopy(batchU[row * r8], source, r8);
                 PipeBarrier<PIPE_V>();
-                Muls(batchCalc[0], batchU, 4097.0f, packedCount); PipeBarrier<PIPE_V>();
-                Sub(batchCalc[1], batchCalc[0], batchU, packedCount); PipeBarrier<PIPE_V>();
-                Sub(batchCalc[0], batchCalc[0], batchCalc[1], packedCount); PipeBarrier<PIPE_V>();
-                Sub(batchCalc[1], batchU, batchCalc[0], packedCount); PipeBarrier<PIPE_V>();
+                if (!fusedProduct) {
+                    Muls(batchCalc[0], batchU, 4097.0f, packedCount); PipeBarrier<PIPE_V>();
+                    Sub(batchCalc[1], batchCalc[0], batchU, packedCount); PipeBarrier<PIPE_V>();
+                    Sub(batchCalc[0], batchCalc[0], batchCalc[1], packedCount); PipeBarrier<PIPE_V>();
+                    Sub(batchCalc[1], batchU, batchCalc[0], packedCount); PipeBarrier<PIPE_V>();
+                }
                 for (uint32_t first = 0; first < owned; first += t.inverseTile) {
                     uint32_t rows = owned - first < t.inverseTile ? owned - first : t.inverseTile;
                     for (uint32_t row = 0; row < rows; ++row)
@@ -750,6 +753,11 @@ class StablePinv {
     }
     __aicore__ inline void BatchEliminate(uint32_t count, bool cached = false, bool zeroLow = false) {
         auto qh = batchCalc[0], ql = batchCalc[1], bh = batchCalc[2], bl = batchCalc[3], e = batchCalc[4], part = batchCalc[5], product = batchCalc[6], aux = batchCalc[7];
+        if (zeroLow && fusedProduct) {
+            Mul(product, batchU, batchH, count); PipeBarrier<PIPE_V>();
+            Muls(e, product, -1.0f, count); PipeBarrier<PIPE_V>();
+            MulAddDst(e, batchU, batchH, count); PipeBarrier<PIPE_V>();
+        } else {
         Muls(bh, batchH, 4097.0f, count); PipeBarrier<PIPE_V>();
         Sub(bl, bh, batchH, count); PipeBarrier<PIPE_V>(); Sub(bh, bh, bl, count); PipeBarrier<PIPE_V>();
         Sub(bl, batchH, bh, count);
@@ -766,6 +774,7 @@ class StablePinv {
         if (!zeroLow) {
             Mul(part, batchV, batchH, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
             Mul(part, batchU, batchL, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
+        }
         }
         auto ph = cached ? aux : qh, pl = cached ? product : ql;
         Add(ph, product, e, count); PipeBarrier<PIPE_V>(); Sub(part, ph, product, count); PipeBarrier<PIPE_V>(); Sub(pl, e, part, count); PipeBarrier<PIPE_V>();
@@ -1670,7 +1679,7 @@ class StablePinv {
 public:
     __aicore__ inline void Init(GM_ADDR a, GM_ADDR out, GM_ADDR ws, const LinalgPinvTilingData &data, TPipe *pipe) {
         t = data; r8 = (t.rows + 7) / 8 * 8; k8 = (t.cols + 7) / 8 * 8; s = r8 + k8; stride = t.stride; rowLength = s + 8;
-        lowElements = 0; residentElements = 0; scratchSpan = 0; freedRows = 0;
+        lowElements = 0; residentElements = 0; scratchSpan = 0; freedRows = 0; fusedProduct = false;
         uint32_t bufferStride = t.parallel ? (rowLength + 63) / 64 * 64 : stride;
         uint32_t size = (t.local ? t.cols * stride : 0) + 4 * bufferStride + 4 * r8 + 8 * t.rows + k8 + 32;
         pipe->InitBuffer(mem, size * 4);
@@ -1716,6 +1725,18 @@ public:
         }
         input.SetGlobalBuffer((__gm__ float *)a); result.SetGlobalBuffer((__gm__ float *)out);
         workBase = (__gm__ float *)ws; work.SetGlobalBuffer(workBase);
+        // Probe once whether the multiply-accumulate keeps its product unrounded. When it
+        // does, the compensated update can take the exact product residual directly instead
+        // of reconstructing it from a split and four cross products. The probe squares
+        // 1 + 2^-12, whose square needs one more bit than the format carries, so an
+        // unrounded accumulate leaves a non-zero residual and a rounded one leaves zero.
+        if (t.parallel || t.localInverse) {
+            Duplicate(prod, 1.000244140625f, 8); PipeBarrier<PIPE_V>();
+            Mul(tmp, prod, prod, 8); PipeBarrier<PIPE_V>();
+            Muls(output, tmp, -1.0f, 8); PipeBarrier<PIPE_V>();
+            MulAddDst(output, prod, prod, 8); PipeBarrier<PIPE_V>();
+            VS(); fusedProduct = output.GetValue(0) != 0.0f; SV();
+        }
     }
     __aicore__ inline void Process() {
         if constexpr (!LOCAL) { if (t.parallel) { Parallel(); return; } }
@@ -2671,12 +2692,12 @@ class LocalPinv {
             DataCopy(u, matrix[pivot * stride], rowLength); PipeBarrier<PIPE_V>();
             norms.SetValue(pivot, 0.0f); SV();
             Muls(norms, norms, -1.0f, k8); PipeBarrier<PIPE_V>();
-            if constexpr (PACKED) Brcb(batchH, norms, k8 / 8, {1, 8});
+            if constexpr (PACKED) Brcb(batchH, norms, k8 / 8, {ALIGNED ? uint8_t(1) : uint8_t(2), ALIGNED ? uint8_t(8) : uint8_t(16)});
             else Brcb(lowMatrix, norms, k8 / 8, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)});
             PipeBarrier<PIPE_V>();
             uint64_t activeColumns[2] = {~uint64_t(0) << (p / 8 * 8), 0};
-            MulAddDst(matrix, u, PACKED ? batchH : lowMatrix, activeColumns, static_cast<uint8_t>(n), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, PACKED ? uint8_t(1) : static_cast<uint8_t>(stride / 8)});
-            MulAddDst(matrix[64], u[64], PACKED ? batchH : lowMatrix, static_cast<uint64_t>(s - 64), static_cast<uint8_t>(n), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, PACKED ? uint8_t(1) : static_cast<uint8_t>(stride / 8)});
+            MulAddDst(matrix, u, PACKED ? batchH : lowMatrix, activeColumns, static_cast<uint8_t>(n), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, PACKED ? (ALIGNED ? uint8_t(1) : uint8_t(2)) : static_cast<uint8_t>(stride / 8)});
+            MulAddDst(matrix[64], u[64], PACKED ? batchH : lowMatrix, static_cast<uint64_t>(s - 64), static_cast<uint8_t>(n), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, PACKED ? (ALIGNED ? uint8_t(1) : uint8_t(2)) : static_cast<uint8_t>(stride / 8)});
             PipeBarrier<PIPE_V>();
         }
         Duplicate(lowMatrix, 0.0f, count); PipeBarrier<PIPE_V>();
