@@ -327,7 +327,7 @@ class StablePinv {
                             {1, 1, 0, static_cast<uint8_t>(r8 / 8), 0, 1});
                     }
                     PipeBarrier<PIPE_V>(); x = tileHigh[first * r8]; y = tileLow[first * r8];
-                    ResidualEliminate(rows * r8);
+                    BatchEliminate(rows * r8, true, true);
                 }
             }
         }
@@ -763,36 +763,6 @@ class StablePinv {
             Muls(x, x, 1.0f / scale, r8); PipeBarrier<PIPE_V>(); SaveRow(x, i);
         }
         SyncAll();
-    }
-    __aicore__ inline void ResidualEliminate(uint32_t count) {
-        auto qh = batchCalc[0], ql = batchCalc[1], bh = batchCalc[2], bl = batchCalc[3];
-        auto e = batchCalc[4], part = batchCalc[5], product = batchCalc[6], aux = batchCalc[7];
-        SetMaskCount();
-        SetVectorMask<float, MaskMode::COUNTER>(count);
-        Muls<float, false>(bh, batchH, 4097.0f, MASK_PLACEHOLDER, 1, {1, 1, 8, 8}); PipeBarrier<PIPE_V>();
-        Sub<float, false>(bl, bh, batchH, MASK_PLACEHOLDER, 1, {1, 1, 1, 8, 8, 8}); PipeBarrier<PIPE_V>();
-        Sub<float, false>(bh, bh, bl, MASK_PLACEHOLDER, 1, {1, 1, 1, 8, 8, 8}); PipeBarrier<PIPE_V>();
-        Sub<float, false>(bl, batchH, bh, MASK_PLACEHOLDER, 1, {1, 1, 1, 8, 8, 8});
-        Mul<float, false>(product, batchU, batchH, MASK_PLACEHOLDER, 1, {1, 1, 1, 8, 8, 8}); PipeBarrier<PIPE_V>();
-        Mul<float, false>(e, qh, bh, MASK_PLACEHOLDER, 1, {1, 1, 1, 8, 8, 8}); PipeBarrier<PIPE_V>();
-        Sub<float, false>(e, e, product, MASK_PLACEHOLDER, 1, {1, 1, 1, 8, 8, 8}); PipeBarrier<PIPE_V>();
-        Mul<float, false>(part, ql, bh, MASK_PLACEHOLDER, 1, {1, 1, 1, 8, 8, 8}); PipeBarrier<PIPE_V>();
-        Add<float, false>(e, e, part, MASK_PLACEHOLDER, 1, {1, 1, 1, 8, 8, 8}); PipeBarrier<PIPE_V>();
-        Mul<float, false>(part, qh, bl, MASK_PLACEHOLDER, 1, {1, 1, 1, 8, 8, 8}); PipeBarrier<PIPE_V>();
-        Add<float, false>(e, e, part, MASK_PLACEHOLDER, 1, {1, 1, 1, 8, 8, 8}); PipeBarrier<PIPE_V>();
-        Sub<float, false>(bh, x, product, MASK_PLACEHOLDER, 1, {1, 1, 1, 8, 8, 8}); PipeBarrier<PIPE_V>();
-        Sub<float, false>(bl, bh, x, MASK_PLACEHOLDER, 1, {1, 1, 1, 8, 8, 8}); PipeBarrier<PIPE_V>();
-        Sub<float, false>(qh, bh, bl, MASK_PLACEHOLDER, 1, {1, 1, 1, 8, 8, 8}); PipeBarrier<PIPE_V>();
-        Sub<float, false>(qh, x, qh, MASK_PLACEHOLDER, 1, {1, 1, 1, 8, 8, 8});
-        Add<float, false>(part, product, bl, MASK_PLACEHOLDER, 1, {1, 1, 1, 8, 8, 8}); PipeBarrier<PIPE_V>();
-        Sub<float, false>(qh, qh, part, MASK_PLACEHOLDER, 1, {1, 1, 1, 8, 8, 8}); PipeBarrier<PIPE_V>();
-        Add<float, false>(qh, qh, y, MASK_PLACEHOLDER, 1, {1, 1, 1, 8, 8, 8}); PipeBarrier<PIPE_V>();
-        Sub<float, false>(qh, qh, e, MASK_PLACEHOLDER, 1, {1, 1, 1, 8, 8, 8}); PipeBarrier<PIPE_V>();
-        Add<float, false>(x, bh, qh, MASK_PLACEHOLDER, 1, {1, 1, 1, 8, 8, 8}); PipeBarrier<PIPE_V>();
-        Sub<float, false>(aux, x, bh, MASK_PLACEHOLDER, 1, {1, 1, 1, 8, 8, 8}); PipeBarrier<PIPE_V>();
-        Sub<float, false>(y, qh, aux, MASK_PLACEHOLDER, 1, {1, 1, 1, 8, 8, 8}); PipeBarrier<PIPE_V>();
-        SetMaskNorm();
-        ResetMask();
     }
     __aicore__ inline void BatchEliminate(uint32_t count, bool cached = false, bool zeroLow = false) {
         auto qh = batchCalc[0], ql = batchCalc[1], bh = batchCalc[2], bl = batchCalc[3], e = batchCalc[4], part = batchCalc[5], product = batchCalc[6], aux = batchCalc[7];
