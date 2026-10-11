@@ -290,6 +290,15 @@ class StablePinv {
         if (span > 8) span = 8;
         auto block = span > 1 ? cache[cacheSpan] : u;
         if (span < 1) span = 1;
+        // The factor column is gathered and expanded on the vector pipe. Reading those
+        // factors with the scalar unit cost one UB access per owned row per column plus
+        // the pipeline flush that made the access legal, which profiling showed to be a
+        // third of this kernel's time.
+        auto rowIndex = prod.ReinterpretCast<uint32_t>();
+        VS();
+        for (uint32_t row = 0; row < t.inverseTile; ++row) rowIndex.SetValue(row, row * r8 * sizeof(float));
+        SV();
+        Duplicate(tmp, 1.0f, r8); PipeBarrier<PIPE_V>();
         for (uint32_t base = 0; base < t.cols; base += span) {
             uint32_t chunk = t.cols - base < span ? t.cols - base : span;
             SetFlag<HardEvent::V_MTE2>(0); WaitFlag<HardEvent::V_MTE2>(0);
@@ -298,7 +307,6 @@ class StablePinv {
                             DataCopyExtParams{static_cast<uint16_t>(chunk), t.m * 4, 0, 0, 0},
                             DataCopyPadExtParams<float>{true, 0, static_cast<uint8_t>((8 - t.m % 8) % 8), 0});
                 SetFlag<HardEvent::MTE2_V>(0); WaitFlag<HardEvent::MTE2_V>(0);
-                SetFlag<HardEvent::MTE2_S>(0); WaitFlag<HardEvent::MTE2_S>(0);
             } else Load(block, result[offset + base * t.m], t.m);
             for (uint32_t j = 0; j < chunk; ++j) {
                 uint32_t k = base + j;
@@ -311,10 +319,15 @@ class StablePinv {
                 Sub(batchCalc[1], batchU, batchCalc[0], packedCount); PipeBarrier<PIPE_V>();
                 for (uint32_t first = 0; first < owned; first += t.inverseTile) {
                     uint32_t rows = owned - first < t.inverseTile ? owned - first : t.inverseTile;
-                    for (uint32_t row = 0; row < rows; ++row)
-                        Duplicate(batchH[row * r8], cache.GetValue((first + row) * r8 + k), r8);
+                    Gather(v, cache, rowIndex, (first * r8 + k) * sizeof(float), rows); PipeBarrier<PIPE_V>();
+                    Brcb(output, v, (rows + 7) / 8, {1, 8}); PipeBarrier<PIPE_V>();
+                    for (uint32_t col = 0; col < r8; col += 64) {
+                        uint32_t mask = r8 - col < 64 ? r8 - col : 64;
+                        Mul(batchH[col], tmp[col], output, static_cast<uint64_t>(mask), static_cast<uint8_t>(rows),
+                            {1, 1, 0, static_cast<uint8_t>(r8 / 8), 0, 1});
+                    }
                     PipeBarrier<PIPE_V>(); x = tileHigh[first * r8]; y = tileLow[first * r8];
-                    BatchEliminate(rows * r8, true, true); VS();
+                    BatchEliminate(rows * r8, true, true);
                 }
             }
         }
@@ -348,6 +361,9 @@ class StablePinv {
         Muls(gather, gather, 1.001f, r8); Muls(v, v, 1.001f, r8); PipeBarrier<PIPE_V>();
         Muls(output, v, gd * af, r8); Muls(prod, gather, unit, r8); PipeBarrier<PIPE_V>(); Add(output, output, prod, r8); PipeBarrier<PIPE_V>();
         Duplicate(tileLow, 0.0f, owned * r8); PipeBarrier<PIPE_V>();
+        VS();
+        for (uint32_t row = 0; row < t.inverseTile; ++row) rowIndex.SetValue(row, row * r8 * sizeof(float));
+        SV();
         for (uint32_t base = 0; base < t.cols; base += span) {
             uint32_t chunk = t.cols - base < span ? t.cols - base : span;
             SetFlag<HardEvent::V_MTE2>(0); WaitFlag<HardEvent::V_MTE2>(0);
@@ -356,12 +372,12 @@ class StablePinv {
                             DataCopyExtParams{static_cast<uint16_t>(chunk), t.n * 4, 0, 0, 0},
                             DataCopyPadExtParams<float>{true, 0, static_cast<uint8_t>((8 - t.n % 8) % 8), 0});
                 SetFlag<HardEvent::MTE2_V>(0); WaitFlag<HardEvent::MTE2_V>(0);
-                SetFlag<HardEvent::MTE2_S>(0); WaitFlag<HardEvent::MTE2_S>(0);
             } else Load(block, residual[base * r8], t.n);
             for (uint32_t j = 0; j < chunk; ++j) {
                 uint32_t k = base + j;
                 auto source = block[j * r8];
-                for (uint32_t row = 0; row < owned; ++row) Duplicate(batchCalc[0][row * 8], cache.GetValue(row * r8 + k), 8);
+                Gather(v, cache, rowIndex, k * sizeof(float), owned); PipeBarrier<PIPE_V>();
+                Brcb(batchCalc[0], v, (owned + 7) / 8, {1, 8});
                 PipeBarrier<PIPE_V>();
                 for (uint32_t col = 0; col < r8; col += 64) {
                     uint32_t mask = r8 - col < 64 ? r8 - col : 64;
@@ -1315,7 +1331,9 @@ class StablePinv {
             Muls(output, tileHigh[row * stride + r8], valid ? 1.0f / power : 1.0f, r8); PipeBarrier<PIPE_V>(); Store(result[offset + target * t.m], output, t.m);
         }
         if (core == 0) {
-            red.SetValue(0, total); red.SetValue(1, inverseTotal); red.SetValue(2, power); Store(meta[1032], red, 3);
+            if (prepared) {
+                red.SetValue(0, total); red.SetValue(1, inverseTotal); red.SetValue(2, power); Store(meta[1032], red, 3);
+            }
             red.SetValue(0, valid ? 1.0f : (prepared ? 2.0f : 0.0f)); Store(meta[1024], red, 1);
         }
         SyncAll();
