@@ -4101,7 +4101,7 @@ class Pinv {
             if (!(best > 0.0f)) return false;
             available &= ~(uint64_t(1) << pivot);
             order[pivot] = column;
-            Muls(matrix[pivot * pitch], matrix[pivot * pitch], 1.0f / values[pivot * pitch + column], width); PipeBarrier<PIPE_V>();
+            Muls(matrix[pivot * pitch], matrix[pivot * pitch], 1.0f / values[pivot * pitch + column], width);
             norms.SetValue(pivot, 0.0f); SV();
             Muls(norms, norms, -1.0f, PAD); PipeBarrier<PIPE_V>();
             Brcb(lowMatrix, norms, PAD / 8, {static_cast<uint8_t>(pitch / 8), static_cast<uint8_t>(pitch)}); PipeBarrier<PIPE_V>();
@@ -5123,7 +5123,7 @@ class Pinv<false, PAD> {
             if (!(best > 0.0f)) return false;
             available &= ~(uint64_t(1) << pivot);
             order[pivot] = column;
-            Muls(matrix[pivot * pitch], matrix[pivot * pitch], 1.0f / values[pivot * pitch + column], width); PipeBarrier<PIPE_V>();
+            Muls(matrix[pivot * pitch], matrix[pivot * pitch], 1.0f / values[pivot * pitch + column], width);
             norms.SetValue(pivot, 0.0f); SV();
             Muls(norms, norms, -1.0f, n); PipeBarrier<PIPE_V>();
             Brcb(lowMatrix, norms, n / 8, {static_cast<uint8_t>(pitch / 8), static_cast<uint8_t>(pitch)}); PipeBarrier<PIPE_V>();
