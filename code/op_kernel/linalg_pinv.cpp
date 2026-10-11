@@ -238,12 +238,21 @@ class StablePinv {
         Duplicate(tileHigh, 0.0f, owned * r8); Duplicate(tileLow, 0.0f, owned * r8); PipeBarrier<PIPE_V>(); VS();
         for (uint32_t row = 0; row < owned; ++row) tileHigh.SetValue(row * r8 + core + row * cores, 1.0f);
         SV();
+        bool cachedInputSplit = false;
+        if constexpr (WAVE && GROUP) cachedInputSplit = owned * r8 <= t.inverseTile * stride;
+        if (cachedInputSplit) {
+            uint32_t inputCount = owned * r8;
+            Muls(batchV, cache, 4097.0f, inputCount); PipeBarrier<PIPE_V>();
+            Sub(batchL, batchV, cache, inputCount); PipeBarrier<PIPE_V>();
+            Sub(batchV, batchV, batchL, inputCount); PipeBarrier<PIPE_V>();
+            Sub(batchL, cache, batchV, inputCount); PipeBarrier<PIPE_V>();
+        }
         uint32_t packedCount = refinementTile * r8;
         for (uint32_t k = 0; k < t.cols; ++k) {
             SetFlag<HardEvent::V_MTE2>(0); WaitFlag<HardEvent::V_MTE2>(0);
             Load(u, result[offset + k * t.m], t.m);
             for (uint32_t row = 0; row < refinementTile; ++row) {
-                DataCopy(batchU[row * r8], u, r8); Duplicate(batchV[row * r8], 0.0f, r8);
+                DataCopy(batchU[row * r8], u, r8); if (!cachedInputSplit) Duplicate(batchV[row * r8], 0.0f, r8);
             }
             PipeBarrier<PIPE_V>();
             Muls(batchCalc[0], batchU, 4097.0f, packedCount); PipeBarrier<PIPE_V>();
@@ -254,10 +263,16 @@ class StablePinv {
                 uint32_t rows = owned - first < refinementTile ? owned - first : refinementTile;
                 for (uint32_t row = 0; row < rows; ++row) {
                     float factor = cache.GetValue((first + row) * r8 + k);
-                    Duplicate(batchH[row * r8], factor, r8); Duplicate(batchL[row * r8], 0.0f, r8);
+                    Duplicate(batchH[row * r8], factor, r8);
+                    if (cachedInputSplit) {
+                        Duplicate(batchCalc[2][row * r8], batchV.GetValue((first + row) * r8 + k), r8);
+                        Duplicate(batchCalc[3][row * r8], batchL.GetValue((first + row) * r8 + k), r8);
+                    } else Duplicate(batchL[row * r8], 0.0f, r8);
                 }
                 PipeBarrier<PIPE_V>(); x = tileHigh[first * r8]; y = tileLow[first * r8];
-                BatchEliminate(rows * r8, true); VS();
+                if (cachedInputSplit) BatchEliminate<true, true>(rows * r8, true);
+                else BatchEliminate(rows * r8, true);
+                VS();
             }
         }
         x = bx; y = by; u = bu; v = bv;
@@ -675,11 +690,14 @@ class StablePinv {
         }
         SyncAll();
     }
+    template <bool PURE = false, bool FACTOR_SPLIT = false>
     __aicore__ inline void BatchEliminate(uint32_t count, bool cached = false) {
         auto qh = batchCalc[0], ql = batchCalc[1], bh = batchCalc[2], bl = batchCalc[3], e = batchCalc[4], part = batchCalc[5], product = batchCalc[6], aux = batchCalc[7];
-        Muls(bh, batchH, 4097.0f, count); PipeBarrier<PIPE_V>();
-        Sub(bl, bh, batchH, count); PipeBarrier<PIPE_V>(); Sub(bh, bh, bl, count); PipeBarrier<PIPE_V>();
-        Sub(bl, batchH, bh, count);
+        if constexpr (!FACTOR_SPLIT) {
+            Muls(bh, batchH, 4097.0f, count); PipeBarrier<PIPE_V>();
+            Sub(bl, bh, batchH, count); PipeBarrier<PIPE_V>(); Sub(bh, bh, bl, count); PipeBarrier<PIPE_V>();
+            Sub(bl, batchH, bh, count);
+        }
         if (!cached) {
             Muls(qh, batchU, 4097.0f, count); PipeBarrier<PIPE_V>();
             Sub(ql, qh, batchU, count); PipeBarrier<PIPE_V>(); Sub(qh, qh, ql, count); PipeBarrier<PIPE_V>();
@@ -690,8 +708,10 @@ class StablePinv {
         Mul(part, ql, bh, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
         Mul(part, qh, bl, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
         Mul(part, ql, bl, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
-        Mul(part, batchV, batchH, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
-        Mul(part, batchU, batchL, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
+        if constexpr (!PURE) {
+            Mul(part, batchV, batchH, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
+            Mul(part, batchU, batchL, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
+        }
         auto ph = cached ? aux : qh, pl = cached ? product : ql;
         Add(ph, product, e, count); PipeBarrier<PIPE_V>(); Sub(part, ph, product, count); PipeBarrier<PIPE_V>(); Sub(pl, e, part, count); PipeBarrier<PIPE_V>();
         Sub(bh, x, ph, count); PipeBarrier<PIPE_V>(); Sub(bl, bh, x, count); PipeBarrier<PIPE_V>();
@@ -1250,9 +1270,12 @@ class StablePinv {
         uint32_t accepted = 0;
         for (uint32_t peer = 0; peer < groups; ++peer) {
             meta.SetGlobalBuffer(workBase + uint64_t(2) * t.batch * t.cols * stride + uint64_t(peer) * 8192);
-            Load(gather, meta[1024], 1); float state = gather.GetValue(0);
-            if (state > 1.5f) accepted |= uint32_t(1) << (peer + 4);
-            else if (state > 0.5f) accepted |= uint32_t(1) << peer;
+            Load(gather, meta[1024], 1);
+            if constexpr (WAVE) {
+                float state = gather.GetValue(0);
+                if (state > 1.5f) accepted |= uint32_t(1) << (peer + 4);
+                else if (state > 0.5f) accepted |= uint32_t(1) << peer;
+            } else if (gather.GetValue(0) > 0.5f) accepted |= uint32_t(1) << peer;
         }
         t.resident = (t.cols + allCores - 1) / allCores;
         return accepted;
