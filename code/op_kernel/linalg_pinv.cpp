@@ -778,7 +778,7 @@ class StablePinv {
         Mul(e, qh, bh, count); PipeBarrier<PIPE_V>(); Sub(e, e, product, count); PipeBarrier<PIPE_V>();
         Mul(part, ql, bh, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
         Mul(part, qh, bl, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
-        Mul(part, ql, bl, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
+        if (!zeroLow) { Mul(part, ql, bl, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>(); }
         if (!zeroLow) {
             Mul(part, batchV, batchH, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
             Mul(part, batchU, batchL, count); PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
@@ -793,8 +793,8 @@ class StablePinv {
             Add(ph, product, e, count); PipeBarrier<PIPE_V>(); Sub(part, ph, product, count); PipeBarrier<PIPE_V>(); Sub(pl, e, part, count); PipeBarrier<PIPE_V>();
         }
         Sub(bh, x, ph, count); PipeBarrier<PIPE_V>(); Sub(bl, bh, x, count); PipeBarrier<PIPE_V>();
-        Sub(err, bh, bl, count); PipeBarrier<PIPE_V>(); Sub(err, x, err, count); Muls(part, ph, -1.0f, count); PipeBarrier<PIPE_V>();
-        Sub(part, part, bl, count); PipeBarrier<PIPE_V>(); Add(err, err, part, count); PipeBarrier<PIPE_V>();
+        Sub(err, bh, bl, count); PipeBarrier<PIPE_V>(); Sub(err, x, err, count); Add(part, ph, bl, count); PipeBarrier<PIPE_V>();
+        Sub(err, err, part, count); PipeBarrier<PIPE_V>();
         Add(err, err, y, count); PipeBarrier<PIPE_V>(); Sub(err, err, pl, count); PipeBarrier<PIPE_V>();
         Add(x, bh, err, count); PipeBarrier<PIPE_V>(); Sub(aux, x, bh, count); PipeBarrier<PIPE_V>(); Sub(y, err, aux, count); PipeBarrier<PIPE_V>();
     }
