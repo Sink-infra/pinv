@@ -244,7 +244,7 @@ class StablePinv {
         }
         if (candidate <= t.inverseTile) return 0;
         uint32_t span = candidate * r8;
-        if (r8 % 64 == 0) {
+        if (span % 128 == 0) {
             uint32_t separatedSpan = span + 64, available = 0;
             for (uint32_t region = 0; region < regionCount; ++region) available += widths[region] / separatedSpan;
             if (available >= 12) span = separatedSpan;
@@ -254,6 +254,31 @@ class StablePinv {
             for (uint32_t off = 0; off + span <= widths[region] && count < 12; off += span)
                 slots[count++] = regions[region][off];
         if (count < 12) return 0;
+        if (span != candidate * r8) {
+            uint32_t baseGroup = static_cast<uint32_t>(tileHigh.GetPhyAddr() >> 5) & 15;
+            uint32_t lowGroup = static_cast<uint32_t>(tileLow.GetPhyAddr() >> 5) & 15;
+            if (baseGroup == lowGroup) {
+                uint32_t opposite[12] = {1, 0, 1, 0, 0, 1, 1, 0, 1, 1, 0, 0};
+                uint32_t permutation[12], used = 0;
+                bool separated = true;
+                for (uint32_t logical = 0; logical < 12; ++logical) {
+                    uint32_t wanted = (baseGroup + 8 * opposite[logical]) & 15;
+                    uint32_t physical = 0;
+                    for (; physical < 12; ++physical) {
+                        uint32_t group = static_cast<uint32_t>(slots[physical].GetPhyAddr() >> 5) & 15;
+                        if (!(used & (uint32_t(1) << physical)) && group == wanted) break;
+                    }
+                    if (physical == 12) { separated = false; break; }
+                    permutation[logical] = physical;
+                    used |= uint32_t(1) << physical;
+                }
+                if (separated) {
+                    LocalTensor<float> ordered[12];
+                    for (uint32_t i = 0; i < 12; ++i) ordered[i] = slots[permutation[i]];
+                    for (uint32_t i = 0; i < 12; ++i) slots[i] = ordered[i];
+                }
+            }
+        }
         for (uint32_t i = 0; i < 8; ++i) batchCalc[i] = slots[i];
         batchU = slots[8]; batchV = slots[9]; batchH = slots[10]; batchL = slots[11];
         return candidate;
