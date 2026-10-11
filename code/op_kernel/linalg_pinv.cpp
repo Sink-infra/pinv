@@ -283,6 +283,42 @@ class StablePinv {
         batchU = slots[8]; batchV = slots[9]; batchH = slots[10]; batchL = slots[11];
         return candidate;
     }
+    __aicore__ inline void RefineBroadcastEliminate(uint32_t rows, LocalTensor<float> source) {
+        uint32_t count = rows * r8, factors = (rows + 7) / 8 * 8;
+        auto err = batchCalc[0], lowFactor = batchCalc[1], bh = batchCalc[2], bl = batchCalc[3];
+        auto e = batchCalc[4], part = batchCalc[5], product = batchCalc[6], aux = batchCalc[7];
+        Muls(bh, v, 4097.0f, factors); PipeBarrier<PIPE_V>();
+        Sub(bl, bh, v, factors); PipeBarrier<PIPE_V>();
+        Sub(bh, bh, bl, factors); PipeBarrier<PIPE_V>();
+        Sub(bl, v, bh, factors); PipeBarrier<PIPE_V>();
+        Brcb(batchH, v, factors / 8, {1, 8});
+        Brcb(batchL, bh, factors / 8, {1, 8});
+        Brcb(lowFactor, bl, factors / 8, {1, 8}); PipeBarrier<PIPE_V>();
+        BinaryRepeatParams repeat{1, 1, 0, static_cast<uint8_t>(r8 / 8), 0, 1};
+        for (uint32_t col = 0; col < r8; col += 64) {
+            uint32_t mask = r8 - col < 64 ? r8 - col : 64;
+            Mul(product[col], source[col], batchH, static_cast<uint64_t>(mask), static_cast<uint8_t>(rows), repeat);
+            Mul(e[col], batchU[col], batchL, static_cast<uint64_t>(mask), static_cast<uint8_t>(rows), repeat);
+        }
+        PipeBarrier<PIPE_V>(); Sub(e, e, product, count); PipeBarrier<PIPE_V>();
+        for (uint32_t col = 0; col < r8; col += 64) {
+            uint32_t mask = r8 - col < 64 ? r8 - col : 64;
+            Mul(part[col], batchV[col], batchL, static_cast<uint64_t>(mask), static_cast<uint8_t>(rows), repeat);
+        }
+        PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
+        for (uint32_t col = 0; col < r8; col += 64) {
+            uint32_t mask = r8 - col < 64 ? r8 - col : 64;
+            Mul(part[col], batchU[col], lowFactor, static_cast<uint64_t>(mask), static_cast<uint8_t>(rows), repeat);
+        }
+        PipeBarrier<PIPE_V>(); Add(e, e, part, count); PipeBarrier<PIPE_V>();
+        Sub(bh, x, product, count); PipeBarrier<PIPE_V>(); Sub(bl, bh, x, count); PipeBarrier<PIPE_V>();
+        Sub(err, bh, bl, count); PipeBarrier<PIPE_V>(); Sub(err, x, err, count);
+        Add(part, product, bl, count); PipeBarrier<PIPE_V>();
+        Sub(err, err, part, count); PipeBarrier<PIPE_V>();
+        Add(err, err, y, count); PipeBarrier<PIPE_V>(); Sub(err, err, e, count); PipeBarrier<PIPE_V>();
+        Add(x, bh, err, count); PipeBarrier<PIPE_V>(); Sub(aux, x, bh, count); PipeBarrier<PIPE_V>();
+        Sub(y, err, aux, count); PipeBarrier<PIPE_V>();
+    }
     __aicore__ inline bool RefineResident(uint32_t b, uint32_t offset, float power,
                                           float total, float inverseTotal, GlobalTensor<float> meta,
                                           bool certify, float cutoff) {
@@ -311,7 +347,6 @@ class StablePinv {
         Duplicate(tileHigh, 0.0f, owned * r8); Duplicate(tileLow, 0.0f, owned * r8); PipeBarrier<PIPE_V>(); VS();
         for (uint32_t row = 0; row < owned; ++row) tileHigh.SetValue(row * r8 + core + row * cores, 1.0f);
         SV();
-        uint32_t packedCount = t.inverseTile * r8;
         // The inverse rows are read once per column; batching the reads turns t.cols
         // single-row transfers (each with its own pipeline flush) into t.cols/span of them.
         uint32_t active = (t.cols + cores - 1) / cores;
@@ -328,7 +363,6 @@ class StablePinv {
         VS();
         for (uint32_t row = 0; row < t.inverseTile; ++row) rowIndex.SetValue(row, row * r8 * sizeof(float));
         SV();
-        Duplicate(tmp, 1.0f, r8); PipeBarrier<PIPE_V>();
         for (uint32_t base = 0; base < t.cols; base += span) {
             uint32_t chunk = t.cols - base < span ? t.cols - base : span;
             SetFlag<HardEvent::V_MTE2>(0); WaitFlag<HardEvent::V_MTE2>(0);
@@ -341,23 +375,15 @@ class StablePinv {
             for (uint32_t j = 0; j < chunk; ++j) {
                 uint32_t k = base + j;
                 auto source = block[j * r8];
-                for (uint32_t row = 0; row < t.inverseTile; ++row) DataCopy(batchU[row * r8], source, r8);
-                PipeBarrier<PIPE_V>();
-                Muls(batchCalc[0], batchU, 4097.0f, packedCount); PipeBarrier<PIPE_V>();
-                Sub(batchCalc[1], batchCalc[0], batchU, packedCount); PipeBarrier<PIPE_V>();
-                Sub(batchCalc[0], batchCalc[0], batchCalc[1], packedCount); PipeBarrier<PIPE_V>();
-                Sub(batchCalc[1], batchU, batchCalc[0], packedCount); PipeBarrier<PIPE_V>();
+                Muls(batchU, source, 4097.0f, r8); PipeBarrier<PIPE_V>();
+                Sub(batchV, batchU, source, r8); PipeBarrier<PIPE_V>();
+                Sub(batchU, batchU, batchV, r8); PipeBarrier<PIPE_V>();
+                Sub(batchV, source, batchU, r8); PipeBarrier<PIPE_V>();
                 for (uint32_t first = 0; first < owned; first += t.inverseTile) {
                     uint32_t rows = owned - first < t.inverseTile ? owned - first : t.inverseTile;
                     Gather(v, cache, rowIndex, (first * r8 + k) * sizeof(float), rows); PipeBarrier<PIPE_V>();
-                    Brcb(output, v, (rows + 7) / 8, {1, 8}); PipeBarrier<PIPE_V>();
-                    for (uint32_t col = 0; col < r8; col += 64) {
-                        uint32_t mask = r8 - col < 64 ? r8 - col : 64;
-                        Mul(batchH[col], tmp[col], output, static_cast<uint64_t>(mask), static_cast<uint8_t>(rows),
-                            {1, 1, 0, static_cast<uint8_t>(r8 / 8), 0, 1});
-                    }
-                    PipeBarrier<PIPE_V>(); x = tileHigh[first * r8]; y = tileLow[first * r8];
-                    BatchEliminate(rows * r8, true, true);
+                    x = tileHigh[first * r8]; y = tileLow[first * r8];
+                    RefineBroadcastEliminate(rows, source);
                 }
             }
         }
