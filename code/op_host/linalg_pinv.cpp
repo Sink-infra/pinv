@@ -119,6 +119,21 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
             t->inverseTile = std::min<uint64_t>((t->cols + launchCores - 1) / launchCores, capacity);
         }
     }
+    bool wavePanel = false;
+    if (t->parallel && t->singleResident && t->groupCount == t->batch) {
+        uint64_t baseBytes = (4 * uint64_t(t->stride) + 4 * r8 + 8 * t->rows + k8 + 32 + 8 * (r8 + k8)) * sizeof(float);
+        uint64_t residentBytes = 2 * uint64_t(t->resident) * t->stride * sizeof(float);
+        uint64_t capacity = ubSize > baseBytes + residentBytes ? (ubSize - baseBytes - residentBytes) / (12 * t->stride * sizeof(float)) : 0;
+        uint32_t factors = (t->resident + 7) / 8 * 8;
+        if (capacity && t->resident >= 16
+            && t->resident * t->stride >= (t->cols + k8) * 16
+            && (t->cols + t->stride) * 16 <= t->cols * t->stride
+            && capacity * t->stride >= factors * 8) {
+            t->singleResident = 0;
+            t->inverseTile = std::min<uint64_t>(t->inverseTile, capacity);
+            wavePanel = true;
+        }
+    }
     uint64_t localBytes = (uint64_t(t->cols) * t->stride + 4 * t->stride + 4 * r8 + 8 * t->rows + k8 + 32) * 4;
     if (t->rows <= 32) localBytes += 4 * k8 * k8 * sizeof(float);
     t->local = uint64_t(t->cols) * t->stride * 4 <= 160 * 1024 && localBytes <= ubSize;
@@ -136,11 +151,11 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     if (COMPACT) context->SetBlockDim(std::min<uint64_t>((batch + 1) / 2 * 2, platform.GetCoreNumAiv()));
     if (!COMPACT && ws[0] == 0) ws[0] = 32;
     uint32_t TAIL = COMPACT && t->cols % 8 != 0;
-    uint32_t WAVE = t->groupCount > 0 && (t->groupCount < t->batch || t->singleResident);
+    uint32_t WAVE = wavePanel || t->groupCount > 0 && (t->groupCount < t->batch || t->singleResident);
     uint32_t LOCAL = !COMPACT && t->localInverse && !t->parallel;
     if (LOCAL) context->SetBlockDim(std::min<uint64_t>((batch + 1) / 2 * 2, platform.GetCoreNumAiv()));
     uint32_t factorRows = (t->resident + 7) / 8 * 8;
-    uint32_t GROUP = !COMPACT && !LOCAL && !WAVE && t->groupCount
+    uint32_t GROUP = wavePanel || !COMPACT && !LOCAL && !WAVE && t->groupCount
         && t->resident * t->stride >= 16 * t->stride
         && t->resident * t->stride >= (t->cols + k8) * 16
         && (t->cols + t->stride) * 16 <= t->cols * t->stride

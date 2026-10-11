@@ -1230,17 +1230,29 @@ class StablePinv {
         if (valid) for (uint32_t row = 0; row < owned; ++row) inverseTotal += Dot(tileHigh[row * stride + r8], tileHigh[row * stride + r8]);
         red.SetValue(0, inverseTotal); Store(meta[core * 8], red, 1); SyncAll(); Load(gather, meta, cores * 8); inverseTotal = 0.0f;
         for (uint32_t peer = 0; peer < cores; ++peer) inverseTotal += gather.GetValue(peer * 8);
-        valid = valid && inverseTotal > 0.0f && total * inverseTotal < 3.6e9f && inverseTotal * cutoff * cutoff < 0.81f;
-        if (valid) for (uint32_t row = 0; row < owned; ++row) {
+        bool prepared = false;
+        if constexpr (WAVE) {
+            valid = valid && inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < 81.0f;
+            uint32_t normOwned = (t.cols + allCores - 1) / allCores;
+            prepared = valid && total * inverseTotal >= 3.6e9f && total * inverseTotal < 4.0e11f &&
+                normOwned * r8 <= 8 * s && t.inverseTile * stride >= normOwned * 8 && 2 * allCores * r8 <= t.cols * stride;
+            valid = valid && total * inverseTotal < 3.6e9f;
+        } else valid = valid && inverseTotal > 0.0f && total * inverseTotal < 3.6e9f && inverseTotal * cutoff * cutoff < 0.81f;
+        if (valid || prepared) for (uint32_t row = 0; row < owned; ++row) {
             VS(); uint32_t target = static_cast<uint32_t>(static_cast<int32_t>(-norms.GetValue(core + row * cores))) - 1;
-            Muls(output, tileHigh[row * stride + r8], 1.0f / power, r8); PipeBarrier<PIPE_V>(); Store(result[offset + target * t.m], output, t.m);
+            Muls(output, tileHigh[row * stride + r8], valid ? 1.0f / power : 1.0f, r8); PipeBarrier<PIPE_V>(); Store(result[offset + target * t.m], output, t.m);
         }
-        if (core == 0) { red.SetValue(0, valid ? 1.0f : 0.0f); Store(meta[1024], red, 1); }
+        if (core == 0) {
+            if constexpr (WAVE) { red.SetValue(0, total); red.SetValue(1, inverseTotal); red.SetValue(2, power); Store(meta[1032], red, 3); }
+            red.SetValue(0, valid ? 1.0f : (prepared ? 2.0f : 0.0f)); Store(meta[1024], red, 1);
+        }
         SyncAll();
         uint32_t accepted = 0;
         for (uint32_t peer = 0; peer < groups; ++peer) {
             meta.SetGlobalBuffer(workBase + uint64_t(2) * t.batch * t.cols * stride + uint64_t(peer) * 8192);
-            Load(gather, meta[1024], 1); if (gather.GetValue(0) > 0.5f) accepted |= uint32_t(1) << peer;
+            Load(gather, meta[1024], 1); float state = gather.GetValue(0);
+            if (state > 1.5f) accepted |= uint32_t(1) << (peer + 4);
+            else if (state > 0.5f) accepted |= uint32_t(1) << peer;
         }
         t.resident = (t.cols + allCores - 1) / allCores;
         return accepted;
@@ -1448,7 +1460,13 @@ class StablePinv {
         uint32_t core = GetBlockIdx(), cores = GetBlockNum();
         uint32_t accepted = 0, prepared = 0;
         if constexpr (WAVE) {
-            uint32_t grouped = WaveGroupedResident(); accepted = grouped & 15; prepared = grouped >> 4;
+            uint32_t grouped;
+            if constexpr (GROUP) {
+                uint32_t reserved = t.resident;
+                grouped = GroupedResidentPanels<16>();
+                t.resident = reserved; RebudgetWaveScratch();
+            } else grouped = WaveGroupedResident();
+            accepted = grouped & 15; prepared = grouped >> 4;
         } else if (t.groupCount) accepted = GroupedResident();
         uint32_t roundCols = (t.cols + 1) / 2 * 2;
         for (uint32_t b = 0; b < t.batch; ++b) {
