@@ -1374,7 +1374,7 @@ class StablePinv {
     }
     __aicore__ inline uint32_t GroupedResident() {
         if constexpr (GROUP) {
-        constexpr uint32_t widePanel = 16;
+        constexpr uint32_t widePanel = 8;
         uint32_t wideFactors = (t.resident + 7) / 8 * 8;
         if (t.resident * stride >= widePanel * stride
             && t.resident * stride >= t.cols * widePanel + k8 * widePanel
