@@ -1279,7 +1279,8 @@ class StablePinv {
                 auto columns = tileLow[t.cols * PANEL];
                 for (uint32_t column = 0; column < PANEL; ++column) Gather(columns[column * k8], tileLow, compactIndices, column * sizeof(float), t.cols);
                 for (uint32_t column = 0; column < rows; ++column) {
-                    DataCopy(v, columns[column * k8], k8);
+                    if constexpr (PAD_MAX) Muls(v, columns[column * k8], -1.0f, k8);
+                    else DataCopy(v, columns[column * k8], k8);
                     Abs(x, v, t.cols);
                     if constexpr (PAD_MAX) Mul(x, norms, x, t.cols);
                     else Mul(prod, norms, x, t.cols);
@@ -1312,12 +1313,13 @@ class StablePinv {
                     }
                     if (!(best > 1.0e-6f)) { valid = false; break; }
                     float divisor = v.GetValue(selected);
+                    if constexpr (PAD_MAX) divisor = -divisor;
                     norms.SetValue(selected, -static_cast<float>(static_cast<int32_t>(first + column + 1)));
                     output.SetValue(column, static_cast<float>(static_cast<int32_t>(selected)));
                     Gather(u, columns, compactColumnIndices, selected * sizeof(float), PANEL);
                     Muls(u, u, 1.0f / divisor, PANEL);
-                    v.SetValue(selected, 0.0f); SV();
-                    Muls(v, v, -1.0f, k8);
+                    v.SetValue(selected, PAD_MAX ? -0.0f : 0.0f); SV();
+                    if constexpr (!PAD_MAX) Muls(v, v, -1.0f, k8);
                     Brcb(batchH, u, (PANEL + 7) / 8, {1, 8});
                     if constexpr (GROUP) {
                         if (column + 1 < rows) {
