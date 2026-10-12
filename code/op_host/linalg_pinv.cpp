@@ -40,9 +40,10 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     inverseBytes += 12 * t->inverseTile * t->stride * sizeof(float);
     t->localInverse = m == n && inverseBytes <= ubSize;
     if (t->localInverse) t->parallel = 0;
+    uint32_t parallelPadding = r8 % 64 ? 8 : 0;
     if (t->parallel) {
-        uint32_t narrowStride = (t->stride + 63) / 64 * 64;
-        t->stride = (t->stride + 127) / 128 * 128;
+        uint32_t narrowStride = (t->stride + 63) / 64 * 64 + parallelPadding;
+        t->stride = (t->stride + 127) / 128 * 128 + parallelPadding;
         if (m == n && narrowStride != t->stride) {
             uint32_t cores = std::min<uint32_t>(platform.GetCoreNumAic(), (t->cols + 1) / 2);
             uint32_t owned = (t->cols + cores - 1) / cores;
@@ -109,7 +110,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     if (t->parallel && m == n && batch > 1 && t->groupCount > 0 && (t->groupCount < t->batch || t->singleResident)) {
         uint32_t vectorCores = std::min<uint32_t>(platform.GetCoreNumAiv(), (t->cols + 1) / 2);
         uint32_t groupCores = vectorCores / batch;
-        uint32_t narrow = (r8 + k8 + 8 + 63) / 64 * 64;
+        uint32_t narrow = (r8 + k8 + 8 + 63) / 64 * 64 + parallelPadding;
         uint32_t candidates[2] = {t->stride, narrow};
         for (uint32_t c = 0; c < 2 && groupCores > 0; ++c) {
             uint64_t pitch = candidates[c];
@@ -162,7 +163,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     ws[0] = t->local ? 0 : platform.GetLibApiWorkSpaceSize() + batch * (t->cols * t->stride * (t->parallel ? 2 : 1) + (t->parallel ? 8192 : 0)) * sizeof(float);
     uint32_t DT_A = static_cast<uint32_t>(ge::DT_FLOAT);
     uint32_t COMPACT = t->localInverse && t->stride <= 64;
-    if (COMPACT) context->SetBlockDim(std::min<uint64_t>((batch + 1) / 2 * 2, platform.GetCoreNumAiv()));
+    if (COMPACT) context->SetBlockDim(t->cols % 8 == 0 ? platform.GetCoreNumAiv() : std::min<uint64_t>((batch + 1) / 2 * 2, platform.GetCoreNumAiv()));
     if (!COMPACT && ws[0] == 0) ws[0] = 32;
     uint32_t TAIL = COMPACT && t->cols % 8 != 0;
     uint32_t WAVE = t->groupCount > 0 && (t->groupCount < t->batch || t->singleResident);
