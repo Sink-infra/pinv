@@ -1534,7 +1534,7 @@ class StablePinv {
             SyncAll();
             if (valid) {
                 Load(tileLow, work[t.cols * PANEL], rows * stride);
-                uint32_t liveStart = first / 64 * 64;
+                uint32_t liveStart = first;
                 for (uint32_t column = 0; column < rows; ++column) {
                     Gather(prod, tileLow, panelIndices, (first + column) * sizeof(float), rows);
                     VS(); float divisor = prod.GetValue(column);
@@ -1560,7 +1560,7 @@ class StablePinv {
                     if (selected % cores == core) { VS(); v.SetValue(selected / cores, 0.0f); SV(); }
                     Muls(v, v, -1.0f, factorRows);
                     Brcb(batchH, v, factorRows / 8, {1, 8});
-                    for (uint32_t col = (first + column + 1) / 64 * 64; col < s; col += 64) {
+                    for (uint32_t col = (first + column + 1) / 8 * 8; col < s; col += 64) {
                         uint32_t mask = s - col < 64 ? s - col : 64;
                         MulAddDst(tileHigh[col], tileLow[column * stride + col], batchH, static_cast<uint64_t>(mask), static_cast<uint8_t>(owned), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, 1});
                     }
