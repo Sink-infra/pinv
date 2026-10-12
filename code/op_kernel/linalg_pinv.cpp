@@ -1218,7 +1218,7 @@ class StablePinv {
         t.resident = (t.cols + allCores - 1) / allCores;
         return accepted;
     }
-    template <uint32_t PANEL>
+    template <uint32_t PANEL, bool PAD_MAX = false>
     __aicore__ inline uint32_t GroupedResidentPanels() {
         uint32_t physical = GetBlockIdx(), allCores = GetBlockNum(), groups = t.groupCount;
         uint32_t base = allCores / groups, extra = allCores % groups;
@@ -1265,6 +1265,7 @@ class StablePinv {
         for (uint32_t row = 0; row < factorRows; ++row) rowIndices.SetValue(row, row < owned ? row * stride * sizeof(float) : 0);
         for (uint32_t row = 0; row < PANEL; ++row) panelIndices.SetValue(row, row * stride * sizeof(float));
         Duplicate(u, 0.0f, rowLength); SV();
+        if constexpr (PAD_MAX) Duplicate(x, 0.0f, (t.cols + 63) / 64 * 64);
         for (uint32_t first = 0; first < t.cols; first += PANEL) {
             uint32_t rows = t.cols - first < PANEL ? t.cols - first : PANEL;
             if (valid) {
@@ -1278,15 +1279,21 @@ class StablePinv {
                 auto columns = tileLow[t.cols * PANEL];
                 for (uint32_t column = 0; column < PANEL; ++column) Gather(columns[column * k8], tileLow, compactIndices, column * sizeof(float), t.cols);
                 for (uint32_t column = 0; column < rows; ++column) {
-                    DataCopy(v, columns[column * k8], k8);
+                    if constexpr (PAD_MAX) Muls(v, columns[column * k8], -1.0f, k8);
+                    else DataCopy(v, columns[column * k8], k8);
                     Abs(x, v, t.cols);
-                    Mul(prod, norms, x, t.cols);
+                    if constexpr (PAD_MAX) Mul(x, norms, x, t.cols);
+                    else Mul(prod, norms, x, t.cols);
                     float best; uint32_t selected;
                     if constexpr (GROUP) {
                     uint32_t chunks = t.cols / 64, tail = t.cols % 64;
+                    if constexpr (PAD_MAX) {
+                        WholeReduceMax(red, x, uint64_t(64), static_cast<uint8_t>((t.cols + 63) / 64), 1, 1, 8);
+                    } else {
                     WholeReduceMax(red, prod, uint64_t(64), static_cast<uint8_t>(chunks), 1, 1, 8);
                     if (tail) {
                         WholeReduceMax(red[chunks * 2], prod[chunks * 64], static_cast<uint64_t>(tail), 1, 1, 1, 8);
+                    }
                     }
                     WholeReduceMax(prod, red, summaryMask, 1, 1, 1, 8); VS();
                     best = prod.GetValue(0);
@@ -1306,12 +1313,13 @@ class StablePinv {
                     }
                     if (!(best > 1.0e-6f)) { valid = false; break; }
                     float divisor = v.GetValue(selected);
+                    if constexpr (PAD_MAX) divisor = -divisor;
                     norms.SetValue(selected, -static_cast<float>(static_cast<int32_t>(first + column + 1)));
                     output.SetValue(column, static_cast<float>(static_cast<int32_t>(selected)));
                     Gather(u, columns, compactColumnIndices, selected * sizeof(float), PANEL);
                     Muls(u, u, 1.0f / divisor, PANEL);
-                    v.SetValue(selected, 0.0f); SV();
-                    Muls(v, v, -1.0f, k8);
+                    v.SetValue(selected, PAD_MAX ? -0.0f : 0.0f); SV();
+                    if constexpr (!PAD_MAX) Muls(v, v, -1.0f, k8);
                     Brcb(batchH, u, (PANEL + 7) / 8, {1, 8});
                     if constexpr (GROUP) {
                         if (column + 1 < rows) {
@@ -1415,7 +1423,10 @@ class StablePinv {
         if (t.resident * stride >= widePanel * stride
             && t.resident * stride >= t.cols * widePanel + k8 * widePanel
             && t.cols * widePanel + widePanel * stride <= t.cols * stride
-            && t.inverseTile * stride >= wideFactors * 8) return GroupedResidentPanels<widePanel>();
+            && t.inverseTile * stride >= wideFactors * 8) {
+            if (t.cols % 64) return GroupedResidentPanels<widePanel, true>();
+            return GroupedResidentPanels<widePanel>();
+        }
         }
         constexpr uint32_t panelRows = 8;
         uint32_t factorRows = (t.resident + 7) / 8 * 8;
