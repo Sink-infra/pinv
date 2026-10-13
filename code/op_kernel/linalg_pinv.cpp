@@ -5669,6 +5669,7 @@ __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR worksp
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIV_1_0);
     REGISTER_TILING_DEFAULT(LinalgPinvTilingData);
     GET_TILING_DATA_WITH_STRUCT(LinalgPinvTilingData, data, tiling);
+    if constexpr (COMPACT || LOCAL) if (GetBlockIdx() >= data.batch) return;
     TPipe pipe;
     if constexpr (COMPACT) {
         data.parallel = 0; data.local = 1; data.localInverse = 1;
