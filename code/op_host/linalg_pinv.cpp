@@ -168,7 +168,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     uint32_t TAIL = COMPACT && t->cols % 8 != 0;
     uint32_t WAVE = t->groupCount > 0 && (t->groupCount < t->batch || t->singleResident);
     uint32_t LOCAL = !COMPACT && t->localInverse && !t->parallel;
-    if (LOCAL) context->SetBlockDim(std::min<uint64_t>((batch + 1) / 2 * 2, platform.GetCoreNumAiv()));
+    if (LOCAL) context->SetBlockDim(platform.GetCoreNumAiv());
     uint32_t factorRows = (t->resident + 7) / 8 * 8;
     uint32_t GROUP = !COMPACT && !LOCAL && !WAVE && t->groupCount
         && t->resident * t->stride >= 16 * t->stride
