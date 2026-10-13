@@ -2935,6 +2935,7 @@ class LocalPinv {
         uint64_t available = n < 64 ? (uint64_t(1) << n) - 1 : ~uint64_t(0);
         for (uint32_t i = 0; i < k8; ++i) indices.SetValue(i, i < n ? i * stride * sizeof(float) : 0);
         Duplicate(norms, 0.0f, k8); PipeBarrier<PIPE_V>(); SV();
+#pragma unroll 4
         for (uint32_t p = 0; p < n; ++p) {
             Gather(norms, matrix, indices, p * sizeof(float), n); PipeBarrier<PIPE_V>();
             Abs(prod, norms, k8); PipeBarrier<PIPE_V>();
@@ -4377,9 +4378,12 @@ class Pinv {
             DataCopy(lowMatrix[target * pitch], matrix[row * pitch], pitch);
         }
         PipeBarrier<PIPE_V>();
+        uint64_t kept = 0;
+        GatherMask(matrix, lowMatrix[PAD], uint8_t(7), true, n, {1, static_cast<uint8_t>(n), static_cast<uint16_t>(pitch / 8), 0}, kept);
+        PipeBarrier<PIPE_V>();
         SetFlag<HardEvent::V_MTE3>(0); WaitFlag<HardEvent::V_MTE3>(0);
         SetFlag<HardEvent::S_MTE3>(0); WaitFlag<HardEvent::S_MTE3>(0);
-        DataCopyPad(result[offset], lowMatrix[PAD], DataCopyExtParams{static_cast<uint16_t>(n), n * 4, (pitch - PAD) / 8, 0, 0});
+        DataCopyPad(result[offset], matrix, DataCopyExtParams{1, n * n * 4, 0, 0, 0});
         SetFlag<HardEvent::MTE3_V>(0); WaitFlag<HardEvent::MTE3_V>(0);
         SetFlag<HardEvent::MTE3_MTE2>(0); WaitFlag<HardEvent::MTE3_MTE2>(0);
         return true;
