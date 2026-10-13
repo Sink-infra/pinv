@@ -2949,16 +2949,24 @@ class LocalPinv {
             pivotOrder[pivot] = p; pivotRow[p] = pivot;
             constexpr uint32_t live = r8 + 8;
             uint32_t base = p / 8 * 8;
+            bool consumed = false;
+            if constexpr (live > 64) { consumed = (p & 7) == 7 || p + 1 == n; if (consumed) base += 8; }
             norms.SetValue(pivot, 0.0f);
             data[pivot * stride + r8 + p] = 1.0f;
             SV();
-            Muls(matrix[pivot * stride + base], matrix[pivot * stride + base], -1.0f / data[pivot * stride + p], live);
+            Muls(matrix[pivot * stride + base], matrix[pivot * stride + base], -1.0f / data[pivot * stride + p], consumed ? live - 8 : live);
             if constexpr (PACKED) Brcb(batchH, norms, k8 / 8, {ALIGNED ? uint8_t(1) : uint8_t(2), ALIGNED ? uint8_t(8) : uint8_t(16)});
             else Brcb(lowMatrix, norms, k8 / 8, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)});
             PipeBarrier<PIPE_V>();
             MulAddDst(matrix[base], matrix[pivot * stride + base], PACKED ? batchH : lowMatrix, static_cast<uint64_t>(live < 64 ? live : 64), static_cast<uint8_t>(n), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, PACKED ? (ALIGNED ? uint8_t(1) : uint8_t(2)) : static_cast<uint8_t>(stride / 8)});
-            if constexpr (live > 64)
-                MulAddDst(matrix[base + 64], matrix[pivot * stride + base + 64], PACKED ? batchH : lowMatrix, static_cast<uint64_t>(live - 64), static_cast<uint8_t>(n), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, PACKED ? (ALIGNED ? uint8_t(1) : uint8_t(2)) : static_cast<uint8_t>(stride / 8)});
+            if constexpr (live > 64) if (!consumed) {
+                if constexpr (PACKED) {
+                    constexpr uint8_t factorStride = ALIGNED ? 1 : 2;
+                    uint32_t groups = n / 8, rest = n % 8;
+                    if (groups) MulAddDst(matrix[base + 64], matrix[pivot * stride + base + 64], batchH, uint64_t(64), static_cast<uint8_t>(groups), {static_cast<uint8_t>(stride / 8), 0, factorStride, static_cast<uint8_t>(stride), 0, static_cast<uint8_t>(8 * factorStride)});
+                    if (rest) MulAddDst(matrix[groups * 8 * stride + base + 64], matrix[pivot * stride + base + 64], batchH[groups * 64 * factorStride], uint64_t(8), static_cast<uint8_t>(rest), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, factorStride});
+                } else MulAddDst(matrix[base + 64], matrix[pivot * stride + base + 64], lowMatrix, uint64_t(8), static_cast<uint8_t>(n), {1, 1, 0, static_cast<uint8_t>(stride / 8), 0, static_cast<uint8_t>(stride / 8)});
+            }
             PipeBarrier<PIPE_V>();
         }
         Duplicate(lowMatrix, 0.0f, count); PipeBarrier<PIPE_V>();
