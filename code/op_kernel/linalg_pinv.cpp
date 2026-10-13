@@ -4350,8 +4350,8 @@ class Pinv {
         uint64_t available = (uint64_t(1) << n) - 1;
         SV();
         for (uint32_t column = 0; column < n; ++column) {
-            Gather(norms, matrix, indices, column * sizeof(float), n); PipeBarrier<PIPE_V>();
-            Abs(prod, norms, PAD); PipeBarrier<PIPE_V>();
+            Gather(norms, matrix, indices, column * sizeof(float), static_cast<uint64_t>(n), 1, 0); PipeBarrier<PIPE_V>();
+            Abs(prod, norms, static_cast<uint64_t>(PAD), 1, {1, 1, 8, 8}); PipeBarrier<PIPE_V>();
             uint64_t mask[2] = {available, 0};
             WholeReduceMax(red, prod, mask, 1, 1, 1, 8); VS();
             float best = red.GetValue(0);
@@ -4359,7 +4359,7 @@ class Pinv {
             if (!(best > 0.0f)) return false;
             available &= ~(uint64_t(1) << pivot);
             order[pivot] = column;
-            Muls(matrix[pivot * pitch], matrix[pivot * pitch], -1.0f / values[pivot * pitch + column], width); PipeBarrier<PIPE_V>();
+            Muls(matrix[pivot * pitch], matrix[pivot * pitch], -1.0f / values[pivot * pitch + column], static_cast<uint64_t>(width), 1, {1, 1, 8, 8}); PipeBarrier<PIPE_V>();
             DataCopy(u, matrix[pivot * pitch], pitch); PipeBarrier<PIPE_V>();
             norms.SetValue(pivot, 0.0f); SV();
             Brcb(lowMatrix, norms, PAD / 8, {static_cast<uint8_t>(pitch / 8), static_cast<uint8_t>(pitch)}); PipeBarrier<PIPE_V>();
@@ -5375,8 +5375,8 @@ class Pinv<false, PAD> {
         uint64_t available = (uint64_t(1) << n) - 1;
         SV();
         for (uint32_t column = 0; column < n; ++column) {
-            Gather(norms, matrix, indices, column * sizeof(float), n); PipeBarrier<PIPE_V>();
-            Abs(prod, norms, n); PipeBarrier<PIPE_V>();
+            Gather(norms, matrix, indices, column * sizeof(float), static_cast<uint64_t>(n), 1, 0); PipeBarrier<PIPE_V>();
+            Abs(prod, norms, static_cast<uint64_t>(n), 1, {1, 1, 8, 8}); PipeBarrier<PIPE_V>();
             uint64_t mask[2] = {available, 0};
             WholeReduceMax(red, prod, mask, 1, 1, 1, 8); VS();
             float best = red.GetValue(0);
@@ -5384,7 +5384,7 @@ class Pinv<false, PAD> {
             if (!(best > 0.0f)) return false;
             available &= ~(uint64_t(1) << pivot);
             order[pivot] = column;
-            Muls(matrix[pivot * pitch], matrix[pivot * pitch], -1.0f / values[pivot * pitch + column], width); PipeBarrier<PIPE_V>();
+            Muls(matrix[pivot * pitch], matrix[pivot * pitch], -1.0f / values[pivot * pitch + column], static_cast<uint64_t>(width), 1, {1, 1, 8, 8}); PipeBarrier<PIPE_V>();
             norms.SetValue(pivot, 0.0f); SV();
             Brcb(lowMatrix, norms, n / 8, {static_cast<uint8_t>(pitch / 8), static_cast<uint8_t>(pitch)}); PipeBarrier<PIPE_V>();
             MulAddDst(matrix, matrix[pivot * pitch], lowMatrix, static_cast<uint64_t>(width), static_cast<uint8_t>(n), {1, 1, 0, static_cast<uint8_t>(pitch / 8), 0, static_cast<uint8_t>(pitch / 8)});
