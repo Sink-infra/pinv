@@ -175,6 +175,22 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
         && t->resident * t->stride >= (t->cols + k8) * 16
         && (t->cols + t->stride) * 16 <= t->cols * t->stride
         && t->inverseTile * t->stride >= factorRows * 8;
+    if (GROUP && r8 % 64 != 0) {
+        uint32_t target = (3 * platform.GetCoreNumAic() + platform.GetCoreNumAiv()) / 4;
+        uint32_t candidate = target / t->groupCount * t->groupCount;
+        if (candidate > launchCores && candidate <= platform.GetCoreNumAiv()) {
+            uint32_t groupCores = candidate / t->groupCount;
+            uint32_t owned = (t->cols + groupCores - 1) / groupCores;
+            uint32_t factors = (owned + 7) / 8 * 8;
+            uint64_t baseBytes = (4 * uint64_t(t->stride) + 4 * r8 + 8 * t->rows + k8 + 32 + 8 * (r8 + k8)) * sizeof(float);
+            uint64_t totalBytes = baseBytes + 2 * uint64_t(owned) * t->stride * sizeof(float) + 12 * uint64_t(t->inverseTile) * t->stride * sizeof(float);
+            if (owned <= 64 && owned >= 16 && uint64_t(owned) * t->stride >= uint64_t(t->cols + k8) * 16
+                && totalBytes <= ubSize && t->inverseTile * t->stride >= factors * 8) {
+                t->resident = owned;
+                context->SetBlockDim(candidate);
+            }
+        }
+    }
     ASCENDC_TPL_SEL_PARAM(context, DT_A, COMPACT, TAIL, WAVE, LOCAL, GROUP);
     return ge::GRAPH_SUCCESS;
 }
