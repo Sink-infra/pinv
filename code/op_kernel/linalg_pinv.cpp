@@ -3083,8 +3083,16 @@ class LocalPinv {
             uint64_t active[2] = {available, 0};
             WholeReduceMax(red, prod, active, 1, 1, 1, 8);
             VS();
-            float best = red.GetValue(0);
-            uint32_t pivot = red.ReinterpretCast<uint32_t>().GetValue(1);
+            float best;
+            uint32_t pivot;
+            if constexpr (ALIGNED) {
+                float pivotBits;
+                GetReduceRepeatMaxMinSpr<float>(best, pivotBits);
+                pivot = *reinterpret_cast<uint32_t *>(&pivotBits);
+            } else {
+                best = red.GetValue(0);
+                pivot = red.ReinterpretCast<uint32_t>().GetValue(1);
+            }
             if (!(best > 0.0f)) return false;
             available &= ~(uint64_t(1) << pivot);
             pivotOrder[pivot] = p; pivotRow[p] = pivot;
