@@ -283,7 +283,7 @@ class StablePinv {
         batchU = slots[8]; batchV = slots[9]; batchH = slots[10]; batchL = slots[11];
         return candidate;
     }
-    __aicore__ inline void RefineBroadcastEliminate(uint32_t rows, LocalTensor<float> source) {
+    __aicore__ inline void RefineBroadcastEliminateGeneral(uint32_t rows, LocalTensor<float> source) {
         uint32_t count = rows * r8, factors = (rows + 7) / 8 * 8;
         auto err = batchCalc[0], lowFactor = batchCalc[1], bh = batchCalc[2], bl = batchCalc[3];
         auto e = batchCalc[4], part = batchCalc[5], product = batchCalc[6], aux = batchCalc[7];
@@ -318,6 +318,48 @@ class StablePinv {
         Add(err, err, y, count); PipeBarrier<PIPE_V>(); Sub(err, err, e, count); PipeBarrier<PIPE_V>();
         Add(x, bh, err, count); PipeBarrier<PIPE_V>(); Sub(aux, x, bh, count); PipeBarrier<PIPE_V>();
         Sub(y, err, aux, count); PipeBarrier<PIPE_V>();
+    }
+    __aicore__ inline void RefineBroadcastEliminateFixed(uint32_t rows, LocalTensor<float> source) {
+        uint32_t count = rows * r8, factors = (rows + 7) / 8 * 8;
+        auto err = batchCalc[0], lowFactor = batchCalc[1], bh = batchCalc[2], bl = batchCalc[3];
+        auto e = batchCalc[4], part = batchCalc[5], product = batchCalc[6], aux = batchCalc[7];
+        Muls(bh, v, 4097.0f, factors); PipeBarrier<PIPE_V>();
+        Sub(bl, bh, v, factors); PipeBarrier<PIPE_V>();
+        Sub(bh, bh, bl, factors); PipeBarrier<PIPE_V>();
+        Sub(bl, v, bh, factors); PipeBarrier<PIPE_V>();
+        Brcb(batchH, v, factors / 8, {1, 8});
+        Brcb(batchL, bh, factors / 8, {1, 8});
+        Brcb(lowFactor, bl, factors / 8, {1, 8}); PipeBarrier<PIPE_V>();
+        SetVectorMask<float>(uint64_t(64));
+        BinaryRepeatParams repeat{1, 1, 0, static_cast<uint8_t>(r8 / 8), 0, 1};
+        for (uint32_t col = 0; col < r8; col += 64) {
+            uint32_t mask = r8 - col < 64 ? r8 - col : 64;
+            Mul<float, false>(product[col], source[col], batchH, MASK_PLACEHOLDER, static_cast<uint8_t>(rows), repeat);
+            Mul<float, false>(e[col], batchU[col], batchL, MASK_PLACEHOLDER, static_cast<uint8_t>(rows), repeat);
+        }
+        PipeBarrier<PIPE_V>(); Sub<float, false>(e, e, product, MASK_PLACEHOLDER, static_cast<uint8_t>(count / 64), {1, 1, 1, 8, 8, 8}); PipeBarrier<PIPE_V>();
+        for (uint32_t col = 0; col < r8; col += 64) {
+            uint32_t mask = r8 - col < 64 ? r8 - col : 64;
+            Mul<float, false>(part[col], batchV[col], batchL, MASK_PLACEHOLDER, static_cast<uint8_t>(rows), repeat);
+        }
+        PipeBarrier<PIPE_V>(); Add<float, false>(e, e, part, MASK_PLACEHOLDER, static_cast<uint8_t>(count / 64), {1, 1, 1, 8, 8, 8}); PipeBarrier<PIPE_V>();
+        for (uint32_t col = 0; col < r8; col += 64) {
+            uint32_t mask = r8 - col < 64 ? r8 - col : 64;
+            Mul<float, false>(part[col], batchU[col], lowFactor, MASK_PLACEHOLDER, static_cast<uint8_t>(rows), repeat);
+        }
+        PipeBarrier<PIPE_V>(); Add<float, false>(e, e, part, MASK_PLACEHOLDER, static_cast<uint8_t>(count / 64), {1, 1, 1, 8, 8, 8}); PipeBarrier<PIPE_V>();
+        Sub<float, false>(err, y, e, MASK_PLACEHOLDER, static_cast<uint8_t>(count / 64), {1,1,1,8,8,8}); PipeBarrier<PIPE_V>();
+        Sub<float, false>(part, product, err, MASK_PLACEHOLDER, static_cast<uint8_t>(count / 64), {1,1,1,8,8,8}); PipeBarrier<PIPE_V>();
+        Sub<float, false>(bh, x, part, MASK_PLACEHOLDER, static_cast<uint8_t>(count / 64), {1,1,1,8,8,8}); PipeBarrier<PIPE_V>();
+        Sub<float, false>(bl, x, bh, MASK_PLACEHOLDER, static_cast<uint8_t>(count / 64), {1,1,1,8,8,8}); PipeBarrier<PIPE_V>();
+        Sub<float, false>(y, bl, part, MASK_PLACEHOLDER, static_cast<uint8_t>(count / 64), {1,1,1,8,8,8}); PipeBarrier<PIPE_V>();
+        DataCopy(x, bh, count); PipeBarrier<PIPE_V>();
+    }
+    __aicore__ inline void RefineBroadcastEliminate(uint32_t rows, LocalTensor<float> source) {
+        if (r8 % 64 == 0 && rows * r8 / 64 <= 255) {
+            RefineBroadcastEliminateFixed(rows, source); return;
+        }
+        RefineBroadcastEliminateGeneral(rows, source);
     }
     __aicore__ inline bool RefineResident(uint32_t b, uint32_t offset, float power,
                                           float total, float inverseTotal, GlobalTensor<float> meta,
@@ -411,7 +453,7 @@ class StablePinv {
         constexpr float unit = 5.9604644775390625e-8f;
         float gd = 32.0f * t.cols * unit * unit;
         float gamma = (2.0f * t.cols * unit) / (1.0f - 2.0f * t.cols * unit);
-        float er = gd * af * yf + unit * rf, denominator = 1.0f - rf - er;
+        float er = gd * af * yf + 4.0f * unit * rf, denominator = 1.0f - rf - er;
         if (!(denominator > 0.0f)) { RestoreScratch(savedCalc, savedU, savedV, savedH, savedL, savedTile); return false; }
         Sqrt(gather, gather, r8); Sqrt(v, v, r8); PipeBarrier<PIPE_V>();
         Muls(gather, gather, 1.001f, r8); Muls(v, v, 1.001f, r8); PipeBarrier<PIPE_V>();
