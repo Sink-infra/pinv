@@ -4511,8 +4511,9 @@ class Pinv {
             Abs(prod, norms, PAD); PipeBarrier<PIPE_V>();
             uint64_t mask[2] = {available, 0};
             WholeReduceMax(red, prod, mask, 1, 1, 1, 8); VS();
-            float best = red.GetValue(0);
-            uint32_t pivot = red.ReinterpretCast<uint32_t>().GetValue(1);
+            float best, pivotBits;
+            GetReduceRepeatMaxMinSpr<float>(best, pivotBits);
+            uint32_t pivot = *reinterpret_cast<uint32_t *>(&pivotBits);
             if (!(best > 0.0f)) return false;
             available &= ~(uint64_t(1) << pivot);
             order[pivot] = column;
@@ -5536,8 +5537,9 @@ class Pinv<false, PAD> {
             Abs(prod, norms, n); PipeBarrier<PIPE_V>();
             uint64_t mask[2] = {available, 0};
             WholeReduceMax(red, prod, mask, 1, 1, 1, 8); VS();
-            float best = red.GetValue(0);
-            uint32_t pivot = red.ReinterpretCast<uint32_t>().GetValue(1);
+            float best, pivotBits;
+            GetReduceRepeatMaxMinSpr<float>(best, pivotBits);
+            uint32_t pivot = *reinterpret_cast<uint32_t *>(&pivotBits);
             if (!(best > 0.0f)) return false;
             available &= ~(uint64_t(1) << pivot);
             order[pivot] = column;
