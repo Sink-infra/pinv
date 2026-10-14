@@ -1988,6 +1988,7 @@ class StablePinv {
                         if (cached) {
                             float na = Dot(u, u), nd = Dot(y, y);
                             u.SetValue(s, na); y.SetValue(s, nd);
+                            if (t.local) SV();
                         }
                         SaveRow(u, p); SaveRow(y, q); ++changed;
                     }
