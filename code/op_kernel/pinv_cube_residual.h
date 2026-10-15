@@ -5,6 +5,8 @@ using namespace AscendC;
 #if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & 32768UL)
 #define ASCENDC_CUBE_ONLY
 #include "lib/matmul_intf.h"
+#endif
+#if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & 32768UL) && (TILING_KEY_VAR & 16384UL)
 __aicore__ inline __gm__ float *PinvCubeArea(GM_ADDR ws,const LinalgPinvTilingData &t){
     uint64_t count=(uint64_t(2)*t.batch*t.cols*t.stride+uint64_t(t.batch)*8192+127)/128*128;
     return reinterpret_cast<__gm__ float*>(ws)+count;
@@ -144,7 +146,7 @@ public:
         if constexpr(ENABLE){ws=workspace;data=t;}
     }
     __aicore__ inline ~PinvCubeGuard(){
-#if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & 32768UL)
+#if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & 32768UL) && (TILING_KEY_VAR & 16384UL)
         if constexpr(ENABLE)PinvCubeStop(ws,data);
 #endif
     }

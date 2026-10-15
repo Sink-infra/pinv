@@ -247,6 +247,23 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
         uint64_t cubeOffset=(uint64_t(2)*t->batch*t->cols*t->stride+uint64_t(t->batch)*8192+127)/128*128;
         ws[0]=platform.GetLibApiWorkSpaceSize()+cubeOffset*4+2048+uint64_t(110)*t->cols*t->cols;
     }
+    if(PIPELINE && !WINDOW && GROUP && !WAVE){
+        uint32_t pairedVectors=std::min<uint32_t>(platform.GetCoreNumAiv(),2*platform.GetCoreNumAic());
+        uint32_t pairedGroup=pairedVectors/t->batch/2*2,pairedTotal=pairedGroup*t->batch;
+        if(pairedGroup>=4 && pairedTotal>=launchCores){
+            uint64_t pairedWorkers=pairedGroup-2,pairedK=(t->cols+7)/8*8,pairedWide=(pairedK+63)/64*64;
+            uint64_t pairedOwned=(t->cols+pairedWorkers-1)/pairedWorkers,pairedFactors=(pairedOwned+7)/8*8;
+            uint64_t pairedRows=(pairedOwned*t->stride+16*(pairedK+16)+std::max<uint64_t>(pairedOwned*pairedK,512)+8*std::max<uint64_t>(pairedFactors,16)+64+5*pairedWide+32+pairedFactors+16+pairedK)*4;
+            uint64_t left=(t->cols+31)/32*16,right=(t->cols-left+7)/8*8;
+            uint64_t pairedCapacity=t->cols*(16+std::max<uint64_t>(left,right));
+            uint64_t pairedProducer=(pairedCapacity+4096+10*pairedK+2*pairedWide+64+(t->cols+15)/16*64)*4;
+            if(left<t->cols && pairedRows<=ubSize && pairedProducer<=ubSize && t->cols*16<=8192-3072){
+                LinalgPinvTilingData saved=*t;auto ext=context->GetTilingData<LinalgPinvCubeTilingData>();
+                *ext=LinalgPinvCubeTilingData{};ext->base=saved;
+                CUBE=1;context->SetBlockDim(pairedTotal/2);
+            }
+        }
+    }
     ASCENDC_TPL_SEL_PARAM(context, DT_A, COMPACT, TAIL, WAVE, LOCAL, GROUP, PIPELINE, WINDOW, CUBE);
     return ge::GRAPH_SUCCESS;
 }
