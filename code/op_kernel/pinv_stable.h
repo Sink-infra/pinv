@@ -1825,7 +1825,7 @@ class StablePinv {
                 float cachedTotal = gather.GetValue(0), cachedInverse = gather.GetValue(1), power = gather.GetValue(2);
                 float cutoff = power * Root(cachedTotal) * t.rtol;
                 cutoff = cutoff > t.atol ? cutoff : t.atol;
-#if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & 32768UL)
+#if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & 32768UL) && (TILING_KEY_VAR & 16384UL)
                 if constexpr(READY){
                     if(RefineResident(b,offset,power,cachedTotal,cachedInverse,meta,true,cutoff,true))continue;
                 }else{

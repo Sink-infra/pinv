@@ -1,5 +1,5 @@
 #pragma once
-#if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & 32768UL)
+#if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & 32768UL) && (TILING_KEY_VAR & 16384UL)
 #include "pinv_refinement_certificate.h"
     __aicore__ inline bool RefineResident(uint32_t b, uint32_t offset, float power,
                                           float total, float inverseTotal, GlobalTensor<float> meta,
@@ -65,7 +65,7 @@
         }
         float cubeQuantizationBound=0.0f;
         bool cubeResidual=false;
-#if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & 32768UL)
+#if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & 32768UL) && (TILING_KEY_VAR & 16384UL)
         if constexpr(true){
             if(t.cols==r8 && r8%32==0 && owned>0 && owned<=8 && t.inverseTile>=owned
                 && total>0.0f && total<1.0e20f && inverseTotal>0.0f && inverseTotal<1.0e20f){
