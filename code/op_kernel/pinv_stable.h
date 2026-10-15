@@ -1825,10 +1825,21 @@ class StablePinv {
                 float cachedTotal = gather.GetValue(0), cachedInverse = gather.GetValue(1), power = gather.GetValue(2);
                 float cutoff = power * Root(cachedTotal) * t.rtol;
                 cutoff = cutoff > t.atol ? cutoff : t.atol;
+#if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & 32768UL)
+                if constexpr(READY){
+                    if(RefineResident(b,offset,power,cachedTotal,cachedInverse,meta,true,cutoff,true))continue;
+                }else{
                 VS(); for (uint32_t i = 0; i < t.cols; ++i) norms.SetValue(i, static_cast<float>(static_cast<int32_t>(i + 1))); SV();
                 uint32_t owned = (t.cols + cores - 1 - core) / cores;
                 for (uint32_t row = 0; row < owned; ++row) Load(tileHigh[row * stride + r8], result[offset + (core + row * cores) * t.m], t.m);
                 if (RefineResident(b, offset, power, cachedTotal, cachedInverse, meta, true, cutoff)) continue;
+                }
+#else
+                VS(); for (uint32_t i = 0; i < t.cols; ++i) norms.SetValue(i, static_cast<float>(static_cast<int32_t>(i + 1))); SV();
+                uint32_t owned = (t.cols + cores - 1 - core) / cores;
+                for (uint32_t row = 0; row < owned; ++row) Load(tileHigh[row * stride + r8], result[offset + (core + row * cores) * t.m], t.m);
+                if (RefineResident(b, offset, power, cachedTotal, cachedInverse, meta, true, cutoff)) continue;
+#endif
             }
             float scale = 0;
             for (uint32_t i = core; i < t.cols; i += cores) {
