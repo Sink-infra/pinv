@@ -865,8 +865,13 @@ class LocalPinv {
                 GetReduceRepeatMaxMinSpr<float>(best, pivotBits);
                 pivot = *reinterpret_cast<uint32_t *>(&pivotBits);
             } else {
+#if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & 512UL)
+                float pivotBits;GetReduceRepeatMaxMinSpr<float>(best,pivotBits);
+                pivot=*reinterpret_cast<uint32_t*>(&pivotBits);
+#else
                 best = red.GetValue(0);
                 pivot = red.ReinterpretCast<uint32_t>().GetValue(1);
+#endif
             }
             if (!(best > 0.0f)) return false;
             available &= ~(uint64_t(1) << pivot);
@@ -875,10 +880,17 @@ class LocalPinv {
             uint32_t base = p / 8 * 8;
             bool consumed = false;
             if constexpr (live > 64) { consumed = (p & 7) == 7 || p + 1 == n; if (consumed) base += 8; }
+#if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & 512UL)
+            float pivotDivisor=norms.GetValue(pivot);
+#endif
             norms.SetValue(pivot, 0.0f);
             data[pivot * stride + r8 + p] = 1.0f;
             SV();
+#if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & 512UL)
+            Muls(matrix[pivot*stride+base],matrix[pivot*stride+base],-1.0f/pivotDivisor,consumed?live-8:live);
+#else
             Muls(matrix[pivot * stride + base], matrix[pivot * stride + base], -1.0f / data[pivot * stride + p], consumed ? live - 8 : live);
+#endif
             if constexpr (PACKED) Brcb(batchH, norms, k8 / 8, {ALIGNED ? uint8_t(1) : uint8_t(2), ALIGNED ? uint8_t(8) : uint8_t(16)});
             else Brcb(lowMatrix, norms, k8 / 8, {static_cast<uint8_t>(stride / 8), static_cast<uint8_t>(stride)});
             PipeBarrier<PIPE_V>();
