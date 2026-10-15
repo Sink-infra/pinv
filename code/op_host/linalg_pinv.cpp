@@ -1,3 +1,4 @@
+#include "tiling/tiling_api.h"
 #include "register/op_def_registry.h"
 #include "tiling/platform/platform_ascendc.h"
 #include "../op_kernel/linalg_pinv_tiling.h"
@@ -168,11 +169,8 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     uint32_t TAIL = COMPACT && t->cols % 8 != 0;
     uint32_t WAVE = t->groupCount > 0 && (t->groupCount < t->batch || t->singleResident);
     uint32_t LOCAL = !COMPACT && t->localInverse && !t->parallel;
-    if (LOCAL) {
-        uint32_t localCores = t->cols % 64 == 0 ? platform.GetCoreNumAiv()
-            : std::min<uint64_t>(platform.GetCoreNumAiv(), std::max<uint64_t>(batch, platform.GetCoreNumAic()));
-        context->SetBlockDim(localCores);
-    }
+    if (LOCAL) context->SetBlockDim(std::min<uint64_t>(platform.GetCoreNumAiv(),
+        std::max<uint64_t>(batch, platform.GetCoreNumAic())));
     uint32_t factorRows = (t->resident + 7) / 8 * 8;
     uint32_t GROUP = !COMPACT && !LOCAL && !WAVE && t->groupCount
         && t->resident * t->stride >= 16 * t->stride
@@ -223,7 +221,23 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
             }
         }
     }
-    ASCENDC_TPL_SEL_PARAM(context, DT_A, COMPACT, TAIL, WAVE, LOCAL, GROUP, PIPELINE, WINDOW);
+    uint32_t CUBE=WINDOW && t->cols%32==0 && (t->cols+context->GetBlockDim()-1)/context->GetBlockDim()<=8 && context->GetBlockDim()%2==0;
+    if(CUBE){
+        context->SetBlockDim(context->GetBlockDim()/2);
+        matmul_tiling::MatmulApiTiling mt(platform);
+        using P=matmul_tiling::TPosition;using F=matmul_tiling::CubeFormat;using D=matmul_tiling::DataType;
+        mt.SetAType(P::GM,F::ND,D::DT_INT8,false);mt.SetBType(P::GM,F::ND,D::DT_INT8,false);
+        mt.SetCType(P::GM,F::ND,D::DT_INT32);mt.SetShape(16,t->cols,t->cols);
+        mt.SetOrgShape(t->cols,t->cols,t->cols);mt.SetBias(false);mt.SetFixSplit(16,64,-1);
+        mt.SetMatmulConfigParams(1,false);mt.SetBufferSpace(-1,-1,-1);
+        AscendC::tiling::TCubeTiling ct;
+        if(mt.GetTiling(ct)!=0)return ge::GRAPH_FAILED;
+        LinalgPinvTilingData saved=*t;
+        auto ext=context->GetTilingData<LinalgPinvCubeTilingData>();ext->base=saved;ext->cube=ct;
+        uint64_t cubeOffset=(uint64_t(2)*t->batch*t->cols*t->stride+uint64_t(t->batch)*8192+127)/128*128;
+        ws[0]=platform.GetLibApiWorkSpaceSize()+cubeOffset*4+2048+uint64_t(156)*t->cols*t->cols;
+    }
+    ASCENDC_TPL_SEL_PARAM(context, DT_A, COMPACT, TAIL, WAVE, LOCAL, GROUP, PIPELINE, WINDOW, CUBE);
     return ge::GRAPH_SUCCESS;
 }
 }
