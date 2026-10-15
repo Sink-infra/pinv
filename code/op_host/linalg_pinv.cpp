@@ -164,6 +164,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     ws[0] = t->local ? 0 : platform.GetLibApiWorkSpaceSize() + batch * (t->cols * t->stride * (t->parallel ? 2 : 1) + (t->parallel ? 8192 : 0)) * sizeof(float);
     uint32_t DT_A = static_cast<uint32_t>(ge::DT_FLOAT);
     uint32_t COMPACT = t->localInverse && t->stride <= 64;
+    if(COMPACT && batch>platform.GetCoreNumAiv())COMPACT=0;
     if (COMPACT) context->SetBlockDim(platform.GetCoreNumAiv());
     if (!COMPACT && ws[0] == 0) ws[0] = 32;
     uint32_t TAIL = COMPACT && t->cols % 8 != 0;
@@ -229,7 +230,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
         using P=matmul_tiling::TPosition;using F=matmul_tiling::CubeFormat;using D=matmul_tiling::DataType;
         mt.SetAType(P::GM,F::ND,D::DT_INT8,false);mt.SetBType(P::GM,F::ND,D::DT_INT8,false);
         mt.SetCType(P::GM,F::ND,D::DT_INT32);
-        uint32_t extent=6*t->cols,tile=((extent+context->GetBlockDim()-1)/context->GetBlockDim()+15)/16*16;
+        uint32_t extent=5*t->cols,tile=((extent+context->GetBlockDim()-1)/context->GetBlockDim()+15)/16*16;
         mt.SetShape(tile,extent,t->cols);mt.SetOrgShape(extent,extent,t->cols);mt.SetBias(false);mt.SetFixSplit(32,128,-1);
         mt.SetMatmulConfigParams(1,false);mt.SetBufferSpace(-1,-1,-1);
         AscendC::tiling::TCubeTiling ct;
@@ -244,7 +245,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
         ft.SetBias(false);ft.SetFixSplit(16,64,-1);ft.SetMatmulConfigParams(1,false);ft.SetBufferSpace(-1,-1,-1);
         if(ft.GetTiling(ext->correction)!=0)return ge::GRAPH_FAILED;
         uint64_t cubeOffset=(uint64_t(2)*t->batch*t->cols*t->stride+uint64_t(t->batch)*8192+127)/128*128;
-        ws[0]=platform.GetLibApiWorkSpaceSize()+cubeOffset*4+2048+uint64_t(156)*t->cols*t->cols;
+        ws[0]=platform.GetLibApiWorkSpaceSize()+cubeOffset*4+2048+uint64_t(110)*t->cols*t->cols;
     }
     ASCENDC_TPL_SEL_PARAM(context, DT_A, COMPACT, TAIL, WAVE, LOCAL, GROUP, PIPELINE, WINDOW, CUBE);
     return ge::GRAPH_SUCCESS;
