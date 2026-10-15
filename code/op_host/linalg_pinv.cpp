@@ -188,10 +188,19 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
                 && totalBytes <= ubSize && t->inverseTile * t->stride >= factors * 8) {
                 t->resident = owned;
                 context->SetBlockDim(candidate);
+                launchCores = candidate;
             }
         }
     }
-    ASCENDC_TPL_SEL_PARAM(context, DT_A, COMPACT, TAIL, WAVE, LOCAL, GROUP);
+    uint64_t pipelineK=(t->cols+7)/8*8,pipelineWide=(pipelineK+63)/64*64;
+    uint64_t producerBytes=(uint64_t(t->cols)*pipelineK+4096+10*pipelineK+2*pipelineWide+64+(t->cols+15)/16*64)*sizeof(float);
+    uint32_t workers=launchCores/batch;
+    uint64_t owned=workers?(t->cols+workers-1)/workers:t->cols,factorRowsPipeline=(owned+7)/8*8;
+    uint64_t outputSize=std::max<uint64_t>(owned*pipelineK,512);
+    uint64_t workerBytes=(owned*t->stride+16*(pipelineK+16)+outputSize+8*std::max<uint64_t>(factorRowsPipeline,16)+64+5*pipelineWide+32+factorRowsPipeline+16+pipelineK)*sizeof(float);
+    uint32_t PIPELINE=GROUP && t->m==t->n && t->cols<=255 && t->groupCount==batch && launchCores%batch==0 && workers>=2 && launchCores+batch<=platform.GetCoreNumAiv() && producerBytes<=ubSize && workerBytes<=ubSize;
+    if(PIPELINE)context->SetBlockDim(launchCores+batch);
+    ASCENDC_TPL_SEL_PARAM(context, DT_A, COMPACT, TAIL, WAVE, LOCAL, GROUP, PIPELINE);
     return ge::GRAPH_SUCCESS;
 }
 }
