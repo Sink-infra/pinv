@@ -169,6 +169,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     uint32_t TAIL = COMPACT && t->cols % 8 != 0;
     uint32_t WAVE = t->groupCount > 0 && (t->groupCount < t->batch || t->singleResident);
     uint32_t LOCAL = !COMPACT && t->localInverse && !t->parallel;
+    if(LOCAL && t->cols%8!=0)TAIL=1;
     if (LOCAL) context->SetBlockDim(std::min<uint64_t>(platform.GetCoreNumAiv(),
         std::max<uint64_t>(batch, platform.GetCoreNumAic())));
     uint32_t factorRows = (t->resident + 7) / 8 * 8;
@@ -227,13 +228,21 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
         matmul_tiling::MatmulApiTiling mt(platform);
         using P=matmul_tiling::TPosition;using F=matmul_tiling::CubeFormat;using D=matmul_tiling::DataType;
         mt.SetAType(P::GM,F::ND,D::DT_INT8,false);mt.SetBType(P::GM,F::ND,D::DT_INT8,false);
-        mt.SetCType(P::GM,F::ND,D::DT_INT32);mt.SetShape(16,t->cols,t->cols);
-        mt.SetOrgShape(t->cols,t->cols,t->cols);mt.SetBias(false);mt.SetFixSplit(16,64,-1);
+        mt.SetCType(P::GM,F::ND,D::DT_INT32);
+        uint32_t extent=6*t->cols,tile=((extent+context->GetBlockDim()-1)/context->GetBlockDim()+15)/16*16;
+        mt.SetShape(tile,extent,t->cols);mt.SetOrgShape(extent,extent,t->cols);mt.SetBias(false);mt.SetFixSplit(32,128,-1);
         mt.SetMatmulConfigParams(1,false);mt.SetBufferSpace(-1,-1,-1);
         AscendC::tiling::TCubeTiling ct;
         if(mt.GetTiling(ct)!=0)return ge::GRAPH_FAILED;
         LinalgPinvTilingData saved=*t;
         auto ext=context->GetTilingData<LinalgPinvCubeTilingData>();ext->base=saved;ext->cube=ct;
+        matmul_tiling::MatmulApiTiling ft(platform);
+        ft.SetAType(P::GM,F::ND,D::DT_FLOAT,false);ft.SetBType(P::GM,F::ND,D::DT_FLOAT,false);
+        ft.SetCType(P::GM,F::ND,D::DT_FLOAT);
+        uint32_t rowTile=((saved.cols+context->GetBlockDim()-1)/context->GetBlockDim()+15)/16*16;
+        ft.SetShape(rowTile,saved.cols,saved.cols);ft.SetOrgShape(saved.cols,saved.cols,saved.cols);
+        ft.SetBias(false);ft.SetFixSplit(16,64,-1);ft.SetMatmulConfigParams(1,false);ft.SetBufferSpace(-1,-1,-1);
+        if(ft.GetTiling(ext->correction)!=0)return ge::GRAPH_FAILED;
         uint64_t cubeOffset=(uint64_t(2)*t->batch*t->cols*t->stride+uint64_t(t->batch)*8192+127)/128*128;
         ws[0]=platform.GetLibApiWorkSpaceSize()+cubeOffset*4+2048+uint64_t(156)*t->cols*t->cols;
     }

@@ -25,7 +25,7 @@ __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR worksp
     if constexpr(CUBE){
 #if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & 32768UL)
         GET_TILING_DATA_WITH_STRUCT(LinalgPinvCubeTilingData,cubeData,tiling);
-        if ASCEND_IS_AIC { PinvCubeService(GetUserWorkspace(workspace),cubeData);return; }
+        if ASCEND_IS_AIC { PinvCubeService(GetUserWorkspace(workspace),A_pinv,cubeData);return; }
 #endif
     }
     PinvCubeGuard<CUBE> cubeGuard(CUBE ? GetUserWorkspace(workspace) : nullptr,data);

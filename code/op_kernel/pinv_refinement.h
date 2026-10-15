@@ -1,5 +1,6 @@
 #pragma once
 #if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & 32768UL)
+#include "pinv_refinement_certificate.h"
     __aicore__ inline bool RefineResident(uint32_t b, uint32_t offset, float power,
                                           float total, float inverseTotal, GlobalTensor<float> meta,
                                           bool certify, float cutoff) {
@@ -149,11 +150,31 @@
         }
         Store(normWork[core * r8], x, r8); Store(normWork[(cores + core) * r8], y, r8); SyncAll();
         Duplicate(gather, 0.0f, r8); Duplicate(v, 0.0f, r8); PipeBarrier<PIPE_V>();
+        uint32_t normWidth=(r8+cores*8-1)/(cores*8)*8;
+        if(cubeResidual && normWidth*cores<=t.inverseTile*r8 && (2*cores+2)*r8<=t.cols*stride){
+            auto normScratch=batchCalc[0];uint32_t first=core*normWidth;
+            uint32_t width=first<r8?(r8-first<normWidth?r8-first:normWidth):0;
+            if(width){
+                SetFlag<HardEvent::V_MTE2>(0);WaitFlag<HardEvent::V_MTE2>(0);
+                DataCopyPad(normScratch,normWork[first],DataCopyExtParams{static_cast<uint16_t>(cores),width*4,(r8-width)*4,0,0},DataCopyPadExtParams<float>{false,0,0,0});
+                SetFlag<HardEvent::MTE2_V>(0);WaitFlag<HardEvent::MTE2_V>(0);
+                for(uint32_t rows=cores;rows>1;rows=(rows+1)/2){uint32_t upper=(rows+1)/2,lower=rows-upper;Add(normScratch,normScratch,normScratch[upper*width],lower*width);PipeBarrier<PIPE_V>();}
+                Store(normWork[2*cores*r8+first],normScratch,width);
+                SetFlag<HardEvent::V_MTE2>(0);WaitFlag<HardEvent::V_MTE2>(0);
+                DataCopyPad(normScratch,normWork[cores*r8+first],DataCopyExtParams{static_cast<uint16_t>(cores),width*4,(r8-width)*4,0,0},DataCopyPadExtParams<float>{false,0,0,0});
+                SetFlag<HardEvent::MTE2_V>(0);WaitFlag<HardEvent::MTE2_V>(0);
+                for(uint32_t rows=cores;rows>1;rows=(rows+1)/2){uint32_t upper=(rows+1)/2,lower=rows-upper;Add(normScratch,normScratch,normScratch[upper*width],lower*width);PipeBarrier<PIPE_V>();}
+                Store(normWork[(2*cores+1)*r8+first],normScratch,width);
+            }
+            PipeBarrier<PIPE_ALL>();SyncAll();
+            LoadVector(gather,normWork[2*cores*r8],r8);LoadVector(v,normWork[(2*cores+1)*r8],r8);
+        }else{
         for (uint32_t peer = 0; peer < cores; ++peer) {
             SetFlag<HardEvent::V_MTE2>(0); WaitFlag<HardEvent::V_MTE2>(0); Load(output, normWork[peer * r8], r8);
             Add(gather, gather, output, r8); PipeBarrier<PIPE_V>();
             SetFlag<HardEvent::V_MTE2>(0); WaitFlag<HardEvent::V_MTE2>(0); Load(output, normWork[(cores + peer) * r8], r8);
             Add(v, v, output, r8); PipeBarrier<PIPE_V>();
+        }
         }
         ReduceSum(red, gather, tmp, r8); VS(); float rf = Root(red.GetValue(0)) * 1.001f;
         float af = Root(total) * 1.001f, yf = Root(inverseTotal) * 1.001f;
@@ -170,6 +191,8 @@
         VS();
         for (uint32_t row = 0; row < t.inverseTile; ++row) rowIndex.SetValue(row, row * r8 * sizeof(float));
         SV();
+        if(cubeResidual)PinvCubeCorrect(reinterpret_cast<GM_ADDR>(workBase),t,b,tileLow,owned,core,cores);
+        else{
         for (uint32_t base = 0; base < t.cols; base += span) {
             uint32_t chunk = t.cols - base < span ? t.cols - base : span;
             SetFlag<HardEvent::V_MTE2>(0); WaitFlag<HardEvent::V_MTE2>(0);
@@ -192,7 +215,11 @@
                 }
             }
         }
+        }
         bool valid = true; float correctedTotal = 0.0f;
+        if(cubeResidual && r8%64==0 && owned<=8){
+            valid=CertifyCubeRefinement(cache,owned,gamma,rf,er,denominator,power,correctedTotal);
+        }else{
         for (uint32_t row = 0; row < owned; ++row) {
             Add(tileHigh[row * r8], cache[row * r8], tileLow[row * r8], r8); PipeBarrier<PIPE_V>();
             float cn = Root(Dot(tileLow[row * r8], tileLow[row * r8])) * 1.001f;
@@ -203,6 +230,7 @@
             Abs(y, cache[row * r8], r8); Abs(prod, tileLow[row * r8], r8); PipeBarrier<PIPE_V>(); Add(y, y, prod, r8); PipeBarrier<PIPE_V>(); Muls(y, y, unit, r8); PipeBarrier<PIPE_V>(); Add(x, x, y, r8); PipeBarrier<PIPE_V>(); Muls(x, x, 1.002f, r8); PipeBarrier<PIPE_V>();
             Abs(y, tileHigh[row * r8], r8); PipeBarrier<PIPE_V>(); Muls(y, y, 1.0e-4f, r8); PipeBarrier<PIPE_V>(); Adds(y, y, 1.0e-4f * power, r8); PipeBarrier<PIPE_V>(); Sub(x, x, y, r8); PipeBarrier<PIPE_V>();
             ReduceMax(red, x, tmp, r8, false); VS(); if (!(red.GetValue(0) <= 0.0f)) valid = false;
+        }
         }
         red.SetValue(0, correctedTotal); red.SetValue(1, valid ? 1.0f : 0.0f); Store(meta[core * 8], red, 2); SyncAll();
         Load(gather, meta, cores * 8); correctedTotal = 0.0f;
