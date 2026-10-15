@@ -3,5 +3,4 @@
 struct LinalgPinvTilingData {
     uint32_t m, n, batch, rows, cols, stride, local, parallel, localInverse, inverseTile, resident, groupCount, singleResident;
     float atol, rtol;
-    uint32_t dbgFlags;
 };

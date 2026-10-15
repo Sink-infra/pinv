@@ -1723,8 +1723,6 @@ class StablePinv {
         bool prepared = sound && total * inverseTotal >= 3.6e9f && total * inverseTotal < 4.0e11f &&
             normOwned * r8 <= 8 * s && t.inverseTile * stride >= normOwned * 8 && 2 * allCores * r8 <= t.cols * stride;
         valid = sound && total * inverseTotal < 3.6e9f;
-        if (t.dbgFlags & 4) { valid = true; prepared = false; }
-
         if (valid || prepared) {
             if constexpr (LOGICAL) {
                 auto inverseColumns = gather.ReinterpretCast<uint32_t>();
@@ -1988,10 +1986,7 @@ class StablePinv {
             work.SetGlobalBuffer(workBase + uint64_t(b) * t.cols * stride);
             GlobalTensor<float> meta;
             meta.SetGlobalBuffer(workBase + uint64_t(2) * t.batch * t.cols * stride + uint64_t(b) * 8192);
-            if (t.dbgFlags & 1) { SyncAll(); continue; }
-
             if (prepared & (uint32_t(1) << b)) {
-                if (t.dbgFlags & 2) continue;
                 Load(gather, meta[1032], 3);
                 float cachedTotal = gather.GetValue(0), cachedInverse = gather.GetValue(1), power = gather.GetValue(2);
                 float cutoff = power * Root(cachedTotal) * t.rtol;
@@ -1999,8 +1994,7 @@ class StablePinv {
                 VS(); for (uint32_t i = 0; i < t.cols; ++i) norms.SetValue(i, static_cast<float>(static_cast<int32_t>(i + 1))); SV();
                 uint32_t owned = (t.cols + cores - 1 - core) / cores;
                 for (uint32_t row = 0; row < owned; ++row) Load(tileHigh[row * stride + r8], result[offset + (core + row * cores) * t.m], t.m);
-                if ((t.dbgFlags & 8) == 0
-                    && RefineResident(b, offset, power, cachedTotal, cachedInverse, meta, true, cutoff, false)) continue;
+                if (RefineResident(b, offset, power, cachedTotal, cachedInverse, meta, true, cutoff, false)) continue;
                 for (uint32_t row = 0; row < owned; ++row) Load(tileHigh[row * stride + r8], result[offset + (core + row * cores) * t.m], t.m);
                 if (RefineResident(b, offset, power, cachedTotal, cachedInverse, meta, true, cutoff, true)) continue;
             }
