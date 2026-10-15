@@ -168,7 +168,11 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     uint32_t TAIL = COMPACT && t->cols % 8 != 0;
     uint32_t WAVE = t->groupCount > 0 && (t->groupCount < t->batch || t->singleResident);
     uint32_t LOCAL = !COMPACT && t->localInverse && !t->parallel;
-    if (LOCAL) context->SetBlockDim(std::min<uint64_t>(platform.GetCoreNumAiv(), std::max<uint64_t>(batch, platform.GetCoreNumAic())));
+    if (LOCAL) {
+        uint32_t localCores = t->cols % 64 == 0 ? platform.GetCoreNumAiv()
+            : std::min<uint64_t>(platform.GetCoreNumAiv(), std::max<uint64_t>(batch, platform.GetCoreNumAic()));
+        context->SetBlockDim(localCores);
+    }
     uint32_t factorRows = (t->resident + 7) / 8 * 8;
     uint32_t GROUP = !COMPACT && !LOCAL && !WAVE && t->groupCount
         && t->resident * t->stride >= 16 * t->stride
@@ -192,15 +196,34 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
             }
         }
     }
-    uint64_t pipelineK=(t->cols+7)/8*8,pipelineWide=(pipelineK+63)/64*64;
-    uint64_t producerBytes=(uint64_t(t->cols)*pipelineK+4096+10*pipelineK+2*pipelineWide+64+(t->cols+15)/16*64)*sizeof(float);
-    uint32_t workers=launchCores/batch;
-    uint64_t owned=workers?(t->cols+workers-1)/workers:t->cols,factorRowsPipeline=(owned+7)/8*8;
-    uint64_t outputSize=std::max<uint64_t>(owned*pipelineK,512);
-    uint64_t workerBytes=(owned*t->stride+16*(pipelineK+16)+outputSize+8*std::max<uint64_t>(factorRowsPipeline,16)+64+5*pipelineWide+32+factorRowsPipeline+16+pipelineK)*sizeof(float);
-    uint32_t PIPELINE=GROUP && t->m==t->n && t->cols<=255 && t->groupCount==batch && launchCores%batch==0 && workers>=2 && launchCores+batch<=platform.GetCoreNumAiv() && producerBytes<=ubSize && workerBytes<=ubSize;
-    if(PIPELINE)context->SetBlockDim(launchCores+batch);
-    ASCENDC_TPL_SEL_PARAM(context, DT_A, COMPACT, TAIL, WAVE, LOCAL, GROUP, PIPELINE);
+    uint32_t PIPELINE = 0, WINDOW = 0;
+    if (GROUP) {
+        uint64_t pipelineK=(t->cols+7)/8*8,pipelineWide=(pipelineK+63)/64*64;
+        uint64_t producerBytes=(uint64_t(t->cols)*pipelineK+4096+10*pipelineK+2*pipelineWide+64+(t->cols+15)/16*64)*sizeof(float);
+        uint32_t workers=launchCores/batch;
+        uint64_t owned=workers?(t->cols+workers-1)/workers:t->cols,factorRowsPipeline=(owned+7)/8*8;
+        uint64_t outputSize=std::max<uint64_t>(owned*pipelineK,512);
+        uint64_t workerBytes=(owned*t->stride+16*(pipelineK+16)+outputSize+8*std::max<uint64_t>(factorRowsPipeline,16)+64+5*pipelineWide+32+factorRowsPipeline+16+pipelineK)*sizeof(float);
+        PIPELINE = t->m==t->n && t->cols<=255 && t->groupCount==batch && launchCores%batch==0 && workers>=2 && launchCores+batch<=platform.GetCoreNumAiv() && producerBytes<=ubSize && workerBytes<=ubSize;
+        if (PIPELINE) context->SetBlockDim(launchCores + batch);
+        if(!PIPELINE && t->m==t->n && t->groupCount==batch && launchCores%batch==0){
+            uint32_t available=platform.GetCoreNumAiv()/batch;
+            uint32_t windowWorkers=available>1?std::min<uint32_t>(workers,available-1):0;
+            uint32_t window=((t->cols*3/8+15)/16)*16;
+            uint32_t trailing=t->cols-window,trailingPitch=(trailing+7)/8*8;
+            uint64_t capacity=std::max<uint64_t>(uint64_t(t->cols)*window,uint64_t(trailing)*trailingPitch);
+            uint64_t windowProducer=(capacity+4096+10*pipelineK+2*pipelineWide+64+(t->cols+15)/16*64)*sizeof(float);
+            uint64_t windowOwned=windowWorkers?(t->cols+windowWorkers-1)/windowWorkers:t->cols;
+            uint64_t windowFactors=(windowOwned+7)/8*8;
+            uint64_t windowOutput=std::max<uint64_t>(windowOwned*pipelineK,512);
+            uint64_t windowWorker=(windowOwned*t->stride+16*(pipelineK+16)+windowOutput+8*std::max<uint64_t>(windowFactors,16)+64+5*pipelineWide+32+windowFactors+16+pipelineK)*sizeof(float);
+            if(window>0 && window<t->cols && windowWorkers>=2 && windowProducer<=ubSize && windowWorker<=ubSize){
+                WINDOW=1;PIPELINE=1;t->local=window;
+                context->SetBlockDim((windowWorkers+1)*batch);
+            }
+        }
+    }
+    ASCENDC_TPL_SEL_PARAM(context, DT_A, COMPACT, TAIL, WAVE, LOCAL, GROUP, PIPELINE, WINDOW);
     return ge::GRAPH_SUCCESS;
 }
 }
