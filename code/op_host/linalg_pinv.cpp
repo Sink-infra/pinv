@@ -164,6 +164,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     ws[0] = t->local ? 0 : platform.GetLibApiWorkSpaceSize() + batch * (t->cols * t->stride * (t->parallel ? 2 : 1) + (t->parallel ? 8192 : 0)) * sizeof(float);
     uint32_t DT_A = static_cast<uint32_t>(ge::DT_FLOAT);
     uint32_t COMPACT = t->localInverse && t->stride <= 64;
+    if(COMPACT && batch>platform.GetCoreNumAiv())COMPACT=0;
     if (COMPACT) context->SetBlockDim(platform.GetCoreNumAiv());
     if (!COMPACT && ws[0] == 0) ws[0] = 32;
     uint32_t TAIL = COMPACT && t->cols % 8 != 0;
@@ -229,7 +230,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
         using P=matmul_tiling::TPosition;using F=matmul_tiling::CubeFormat;using D=matmul_tiling::DataType;
         mt.SetAType(P::GM,F::ND,D::DT_INT8,false);mt.SetBType(P::GM,F::ND,D::DT_INT8,false);
         mt.SetCType(P::GM,F::ND,D::DT_INT32);
-        uint32_t extent=6*t->cols,tile=((extent+context->GetBlockDim()-1)/context->GetBlockDim()+15)/16*16;
+        uint32_t extent=5*t->cols,tile=((extent+context->GetBlockDim()-1)/context->GetBlockDim()+15)/16*16;
         mt.SetShape(tile,extent,t->cols);mt.SetOrgShape(extent,extent,t->cols);mt.SetBias(false);mt.SetFixSplit(32,128,-1);
         mt.SetMatmulConfigParams(1,false);mt.SetBufferSpace(-1,-1,-1);
         AscendC::tiling::TCubeTiling ct;
@@ -244,7 +245,24 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
         ft.SetBias(false);ft.SetFixSplit(16,64,-1);ft.SetMatmulConfigParams(1,false);ft.SetBufferSpace(-1,-1,-1);
         if(ft.GetTiling(ext->correction)!=0)return ge::GRAPH_FAILED;
         uint64_t cubeOffset=(uint64_t(2)*t->batch*t->cols*t->stride+uint64_t(t->batch)*8192+127)/128*128;
-        ws[0]=platform.GetLibApiWorkSpaceSize()+cubeOffset*4+2048+uint64_t(156)*t->cols*t->cols;
+        ws[0]=platform.GetLibApiWorkSpaceSize()+cubeOffset*4+2048+uint64_t(110)*t->cols*t->cols;
+    }
+    if(PIPELINE && !WINDOW && GROUP && !WAVE){
+        uint32_t pairedVectors=std::min<uint32_t>(platform.GetCoreNumAiv(),2*platform.GetCoreNumAic());
+        uint32_t pairedGroup=pairedVectors/t->batch/2*2,pairedTotal=pairedGroup*t->batch;
+        if(pairedGroup>=4 && pairedTotal>=launchCores){
+            uint64_t pairedWorkers=pairedGroup-2,pairedK=(t->cols+7)/8*8,pairedWide=(pairedK+63)/64*64;
+            uint64_t pairedOwned=(t->cols+pairedWorkers-1)/pairedWorkers,pairedFactors=(pairedOwned+7)/8*8;
+            uint64_t pairedRows=(pairedOwned*t->stride+16*(pairedK+16)+std::max<uint64_t>(pairedOwned*pairedK,512)+8*std::max<uint64_t>(pairedFactors,16)+64+5*pairedWide+32+pairedFactors+16+pairedK)*4;
+            uint64_t left=(t->cols+31)/32*16,right=(t->cols-left+7)/8*8;
+            uint64_t pairedCapacity=t->cols*(16+std::max<uint64_t>(left,right));
+            uint64_t pairedProducer=(pairedCapacity+4096+10*pairedK+2*pairedWide+64+(t->cols+15)/16*64)*4;
+            if(left<t->cols && pairedRows<=ubSize && pairedProducer<=ubSize && t->cols*16<=8192-3072){
+                LinalgPinvTilingData saved=*t;auto ext=context->GetTilingData<LinalgPinvCubeTilingData>();
+                *ext=LinalgPinvCubeTilingData{};ext->base=saved;
+                CUBE=1;context->SetBlockDim(pairedTotal/2);
+            }
+        }
     }
     ASCENDC_TPL_SEL_PARAM(context, DT_A, COMPACT, TAIL, WAVE, LOCAL, GROUP, PIPELINE, WINDOW, CUBE);
     return ge::GRAPH_SUCCESS;
