@@ -3,7 +3,7 @@
 #include "pinv_refinement_certificate.h"
     __aicore__ inline bool RefineResident(uint32_t b, uint32_t offset, float power,
                                           float total, float inverseTotal, GlobalTensor<float> meta,
-                                          bool certify, float cutoff) {
+                                          bool certify, float cutoff,bool inResult=false) {
         uint32_t core = GetBlockIdx(), cores = GetBlockNum();
         if constexpr (WAVE) if ((t.cols + cores - 1) / cores * r8 > lowElements) return false;
         uint32_t owned = (t.cols + cores - 1 - core) / cores;
@@ -17,11 +17,13 @@
         GlobalTensor<float> residual, normWork;
         residual.SetGlobalBuffer(workBase + uint64_t(t.batch + b) * t.cols * stride);
         normWork.SetGlobalBuffer(workBase + uint64_t(b) * t.cols * stride);
+        if(!inResult){
         for (uint32_t row = 0; row < owned; ++row) {
             VS(); uint32_t target = static_cast<uint32_t>(static_cast<int32_t>(norms.GetValue(core + row * cores))) - 1;
             Store(result[offset + target * t.m], tileHigh[row * stride + r8], t.m);
         }
         SyncAll();
+        }
         for (uint32_t row = 0; row < owned; ++row) {
             Load(cache[row * r8], input[offset + (core + row * cores) * t.n], t.n);
             Muls(cache[row * r8], cache[row * r8], 1.0f / power, r8); PipeBarrier<PIPE_V>();
@@ -69,12 +71,12 @@
                 && total>0.0f && total<1.0e20f && inverseTotal>0.0f && inverseTotal<1.0e20f){
                 float inverseNorm=Root(inverseTotal)*1.001f;
                 float inputNorm=Root(total)*1.001f,inverseScale=1.0f;
-                while(inverseScale<2.0f*inverseNorm)inverseScale*=2.0f;
+                while(inverseScale<4.0f*inverseNorm)inverseScale*=2.0f;
                 float sumErrorA,sumErrorX;
                 PinvCubeBuildResidual(reinterpret_cast<GM_ADDR>(workBase),t,result,offset,cache,
                     tileHigh,tileLow,batchCalc,owned,core,cores,inverseScale,sumErrorA,sumErrorX);
-                float deltaA=Root(sumErrorA)*4.0f*1.7763568394002505e-15f*1.002f;
-                float deltaX=Root(sumErrorX)*inverseScale*1.7763568394002505e-15f*1.002f;
+                float deltaA=Root(sumErrorA)*8.0f*3.552713678800501e-15f*1.002f;
+                float deltaX=Root(sumErrorX)*inverseScale*3.552713678800501e-15f*1.002f;
                 cubeQuantizationBound=deltaA*inverseNorm+deltaX*inputNorm+deltaA*deltaX;
                 cubeResidual=true;
             }
