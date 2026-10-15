@@ -27,12 +27,13 @@ __aicore__ inline void PinvCubeService(GM_ADDR ws,const LinalgPinvCubeTilingData
         if(control.GetValue(0)==0){
             PipeBarrier<PIPE_ALL>();CrossCoreSetFlag<2,PIPE_FIX>(10);return;
         }
-        for(uint32_t row=GetBlockIdx()*16;row<n;row+=GetBlockNum()*16){
-            mm.SetOrgShape(n,n,n);mm.SetSingleShape(n-row<16?n-row:16,n,n);
-            for(uint32_t i=0;i<6;++i)for(uint32_t j=0;j<6;++j){
-                mm.SetTensorA(a[i*n*n+row*n]);mm.SetTensorB(b[j*n*n]);
-                mm.IterateAll(c[(i*6+j)*n*n+row*n]);mm.End();
-            }
+        uint32_t extent=6*n,tile=((extent+GetBlockNum()-1)/GetBlockNum()+15)/16*16;
+        uint32_t row=GetBlockIdx()*tile;
+        if(row<extent){
+            mm.SetOrgShape(extent,extent,n);
+            mm.SetSingleShape(extent-row<tile?extent-row:tile,extent,n);
+            mm.SetTensorA(a[row*n]);mm.SetTensorB(b);
+            mm.IterateAll(c[row*extent]);mm.End();
         }
         PipeBarrier<PIPE_ALL>();CrossCoreSetFlag<2,PIPE_FIX>(10);
     }
@@ -45,6 +46,7 @@ __aicore__ inline void PinvCubeStop(GM_ADDR ws,const LinalgPinvTilingData &data)
     }
     SyncAll();PipeBarrier<PIPE_ALL>();CrossCoreSetFlag<2,PIPE_MTE3>(8);CrossCoreWaitFlag<2>(10);
 }
+template<bool RIGHT>
 __aicore__ inline float PinvCubeQuantize(LocalTensor<float> values,LocalTensor<float> scratch[],
     GlobalTensor<int8_t> digits,uint32_t n,uint32_t owned,uint32_t core,uint32_t cores,float scale){
     uint32_t count=owned*n;
@@ -57,8 +59,10 @@ __aicore__ inline float PinvCubeQuantize(LocalTensor<float> values,LocalTensor<f
         Cast(halfValues,rounded,RoundMode::CAST_NONE,count);PipeBarrier<PIPE_V>();
         Cast(small,halfValues,RoundMode::CAST_RINT,count);
         SetFlag<HardEvent::V_MTE3>(0);WaitFlag<HardEvent::V_MTE3>(0);
-        DataCopyPad(digits[limb*n*n+core*n],small,
-            DataCopyExtParams{static_cast<uint16_t>(owned),n,0,(cores-1)*n,0});
+        uint32_t destination=RIGHT?core*6*n+limb*n:limb*n*n+core*n;
+        uint32_t step=RIGHT?(cores*6-1)*n:(cores-1)*n;
+        DataCopyPad(digits[destination],small,
+            DataCopyExtParams{static_cast<uint16_t>(owned),n,0,step,0});
         SetFlag<HardEvent::MTE3_V>(0);WaitFlag<HardEvent::MTE3_V>(0);
         Sub(values,values,rounded,count);PipeBarrier<PIPE_V>();
         Muls(values,values,128.0f,count);PipeBarrier<PIPE_V>();
@@ -78,13 +82,13 @@ __aicore__ inline void PinvCubeBuildResidual(GM_ADDR ws,const LinalgPinvTilingDa
     b.SetGlobalBuffer(reinterpret_cast<__gm__ int8_t*>(base+512)+6*n*n);
     c.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(base+512)+3*n*n);
     control.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(base));
-    float localErrorA=PinvCubeQuantize(cache,scratch,a,n,owned,core,cores,4.0f);
+    float localErrorA=PinvCubeQuantize<false>(cache,scratch,a,n,owned,core,cores,4.0f);
     SetFlag<HardEvent::V_MTE2>(0);WaitFlag<HardEvent::V_MTE2>(0);
     DataCopyPad(cache,inverse[offset+core*n],
         DataCopyExtParams{static_cast<uint16_t>(owned),n*4,(cores-1)*n*4,0,0},
         DataCopyPadExtParams<float>{false,0,0,0});
     SetFlag<HardEvent::MTE2_V>(0);WaitFlag<HardEvent::MTE2_V>(0);
-    float localErrorX=PinvCubeQuantize(cache,scratch,b,n,owned,core,cores,inverseScale);
+    float localErrorX=PinvCubeQuantize<true>(cache,scratch,b,n,owned,core,cores,inverseScale);
     auto statistic=scratch[7];statistic.SetValue(0,localErrorA);statistic.SetValue(1,localErrorX);
     GlobalTensor<float> statistics;statistics.SetGlobalBuffer(base);
     SetFlag<HardEvent::S_MTE3>(0);WaitFlag<HardEvent::S_MTE3>(0);
@@ -107,8 +111,8 @@ __aicore__ inline void PinvCubeBuildResidual(GM_ADDR ws,const LinalgPinvTilingDa
         float weight=rowWeight;
         for(uint32_t j=0;j<6;++j){
             SetFlag<HardEvent::V_MTE2>(0);WaitFlag<HardEvent::V_MTE2>(0);
-            DataCopyPad(raw,c[(i*6+j)*n*n+core*n],
-                DataCopyExtParams{static_cast<uint16_t>(owned),n*4,(cores-1)*n*4,0,0},
+            DataCopyPad(raw,c[(i*n+core)*6*n+j*n],
+                DataCopyExtParams{static_cast<uint16_t>(owned),n*4,(cores*6-1)*n*4,0,0},
                 DataCopyPadExtParams<int32_t>{false,0,0,0});
             SetFlag<HardEvent::MTE2_V>(0);WaitFlag<HardEvent::MTE2_V>(0);
             Cast(part,raw,RoundMode::CAST_RINT,count);PipeBarrier<PIPE_V>();
