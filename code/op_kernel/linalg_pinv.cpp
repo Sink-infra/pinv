@@ -1,3 +1,6 @@
+#if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & 4096UL)
+#define K_MAX_SHAPE_DIM 0
+#endif
 #include "kernel_operator.h"
 #include "linalg_pinv_tiling.h"
 using namespace AscendC;
@@ -65,22 +68,21 @@ public:
                 if(!(best>1.0e-6f)){valid=false;break;}
                 float divisor=v.GetValue(selected-p);
                 if(selected!=p){
-                    DataCopy(scratch,a[p*pitch],pitch);PipeBarrier<PIPE_V>();
-                    DataCopy(a[p*pitch],a[selected*pitch],pitch);PipeBarrier<PIPE_V>();
-                    DataCopy(a[selected*pitch],scratch,pitch);PipeBarrier<PIPE_V>();
                     uint32_t old=perm.GetValue(p);perm.SetValue(p,perm.GetValue(selected));perm.SetValue(selected,old);
                 }
                 metaData.SetValue(first/16*64+p,static_cast<float>(static_cast<int32_t>(perm.GetValue(p))));
                 metaData.SetValue(first/16*64+16+p,1.0f/divisor);
-                uint32_t rows=size-p-1;if(!rows)continue;
-                Gather(v,a,indices,((p+1)*pitch+p)*4,rows);PipeBarrier<PIPE_V>();
-                Muls(v,v,-1.0f,rows);PipeBarrier<PIPE_V>();Brcb(factors,v,(rows+7)/8,{1,8});PipeBarrier<PIPE_V>();
-                Muls(a[p*pitch],a[p*pitch],1.0f/divisor,pitch);PipeBarrier<PIPE_V>();
-                for(uint32_t col=0;col<pitch;col+=64){
+                if(remaining<=1)continue;
+                v.SetValue(selected-p,0.0f);
+                DataCopy(scratch,a[selected*pitch],pitch);PipeBarrier<PIPE_V>();
+                Muls(scratch,scratch,-(1.0f/divisor),pitch);PipeBarrier<PIPE_V>();
+                SV();Brcb(factors,v,(remaining+7)/8,{1,8});PipeBarrier<PIPE_V>();
+                for(uint32_t col=(p/8)*8;col<pitch;col+=64){
                     uint32_t count=pitch-col<64?pitch-col:64;
-                    MulAddDst(a[(p+1)*pitch+col],a[p*pitch+col],factors,static_cast<uint64_t>(count),static_cast<uint8_t>(rows),{1,1,0,static_cast<uint8_t>(pitch/8),0,1});
+                    MulAddDst(a[p*pitch+col],scratch[col],factors,static_cast<uint64_t>(count),static_cast<uint8_t>(remaining),{1,1,0,static_cast<uint8_t>(pitch/8),0,1});
                 }
                 PipeBarrier<PIPE_V>();
+                if(selected!=p){DataCopy(a[selected*pitch],a[p*pitch],pitch);PipeBarrier<PIPE_V>();}
             }
             uint32_t remaining=size-block,newPitch=(remaining+7)/8*8;
             VS();
@@ -135,6 +137,7 @@ public:
         input.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(in));result.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(dst));
         work.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(workspace)+uint64_t(batch)*n*stride);
         Duplicate(a,0.0f,owned*stride);PipeBarrier<PIPE_V>();
+        SetFlag<HardEvent::V_MTE2>(0);WaitFlag<HardEvent::V_MTE2>(0);
         DataCopyPad(a,input[batch*n*n+core*n],DataCopyExtParams{static_cast<uint16_t>(owned),n*4,(cores-1)*n*4,(stride-k)/8,0},DataCopyPadExtParams<float>{true,0,static_cast<uint8_t>(k-n),0});
         SetFlag<HardEvent::MTE2_V>(0);WaitFlag<HardEvent::MTE2_V>(0);
         Duplicate(norms,1.0f,k);VS();
@@ -234,6 +237,322 @@ __aicore__ inline bool TryPipelinePinv(GM_ADDR in,GM_ADDR dst,GM_ADDR workspace,
         if(!(inverseTotal>0 && inverseTotal*cutoff*cutoff<81.0f && total*inverseTotal<3.6e9f))valid=false;
     }
     PipeBarrier<PIPE_ALL>();pipe.Destroy();return valid;
+}
+
+class WindowPivotProducer {
+    TBuf<TPosition::VECCALC> mem;
+    LocalTensor<float> metaData, a, scratch, factors, v, prod, tmp, red;
+    LocalTensor<uint32_t> indices, perm;
+    GlobalTensor<float> input, stage;
+    uint32_t n,k,wide,window;
+    __aicore__ inline void VS(){SetFlag<HardEvent::V_S>(0);WaitFlag<HardEvent::V_S>(0);}
+    __aicore__ inline void SV(){SetFlag<HardEvent::S_V>(0);WaitFlag<HardEvent::S_V>(0);}
+public:
+    __aicore__ inline LocalTensor<float> Flags(){return scratch;}
+    __aicore__ inline void Init(GM_ADDR in,GM_ADDR workspace,const LinalgPinvTilingData &data,TPipe &pipe,uint32_t batch){
+        n=data.cols;k=(n+7)/8*8;wide=(k+63)/64*64;
+        window=data.local;
+        uint32_t trailing=n-window,trailingPitch=(trailing+7)/8*8;
+        uint32_t capacity=n*window>trailing*trailingPitch?n*window:trailing*trailingPitch;
+        uint32_t count=capacity+4096+10*k+2*wide+64+(n+15)/16*64;
+        pipe.InitBuffer(mem,count*4);auto all=mem.Get<float>();uint32_t off=0;
+        a=all;off+=capacity;scratch=all[off];off+=4096;factors=all[off];off+=8*k;
+        v=all[off];off+=wide;prod=all[off];off+=wide;tmp=all[off];off+=32;red=all[off];off+=32;
+        indices=all[off].ReinterpretCast<uint32_t>();off+=k;perm=all[off].ReinterpretCast<uint32_t>();off+=k;metaData=all[off];
+        input.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(in));
+        stage.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(workspace)+uint64_t(batch)*n*data.stride);
+    }
+    __aicore__ inline bool Run(uint32_t batch,GlobalTensor<float> metadata){
+
+        uint32_t offset=batch*n*n;
+        float scale=0.0f;
+        constexpr uint32_t chunkSize=4096;
+        for(uint32_t begin=0;begin<n*n;begin+=chunkSize){
+            uint32_t count=n*n-begin<chunkSize?n*n-begin:chunkSize;
+            SetFlag<HardEvent::V_MTE2>(0);WaitFlag<HardEvent::V_MTE2>(0);
+            DataCopyPad(scratch,input[offset+begin],DataCopyExtParams{1,count*4,0,0,0},DataCopyPadExtParams<float>{false,0,0,0});
+            SetFlag<HardEvent::MTE2_V>(0);WaitFlag<HardEvent::MTE2_V>(0);
+            Abs(scratch,scratch,count);PipeBarrier<PIPE_V>();
+            ReduceMax(red,scratch,prod,count,false);VS();
+            float value=red.GetValue(0);scale=value>scale?value:scale;
+        }
+        bool valid=scale>=0.1f && scale<1.7014118e38f;
+        float power=1.0f;if(valid){while(power<scale)power*=2;while(power*0.5f>=scale)power*=0.5f;}
+        float total=0.0f;
+        for(uint32_t begin=0;begin<n*n;begin+=chunkSize){
+            uint32_t count=n*n-begin<chunkSize?n*n-begin:chunkSize;
+            SetFlag<HardEvent::V_MTE2>(0);WaitFlag<HardEvent::V_MTE2>(0);
+            DataCopyPad(scratch,input[offset+begin],DataCopyExtParams{1,count*4,0,0,0},DataCopyPadExtParams<float>{false,0,0,0});
+            SetFlag<HardEvent::MTE2_V>(0);WaitFlag<HardEvent::MTE2_V>(0);
+            Muls(scratch,scratch,1.0f/power,count);PipeBarrier<PIPE_V>();
+            Mul(scratch,scratch,scratch,count);PipeBarrier<PIPE_V>();
+            ReduceSum(red,scratch,prod,count);VS();total+=red.GetValue(0);
+        }
+        DataCopyPad(a,input[offset],DataCopyExtParams{static_cast<uint16_t>(n),window*4,(n-window)*4,0,0},
+            DataCopyPadExtParams<float>{false,0,0,0});
+        SetFlag<HardEvent::MTE2_V>(0);WaitFlag<HardEvent::MTE2_V>(0);
+        for(uint32_t begin=0;begin<n*window;begin+=16320){
+            uint32_t count=n*window-begin<16320?n*window-begin:16320;
+            Muls(a[begin],a[begin],1.0f/power,count);
+        }
+        PipeBarrier<PIPE_V>();
+        for(uint32_t row=0;row<k;++row){indices.SetValue(row,row*k*4);perm.SetValue(row,row);}SV();
+
+
+        uint32_t size=n,pitch=window;
+        for(uint32_t first=0;first<n;first+=16){
+            if(first==window){
+                PipeBarrier<PIPE_ALL>();CrossCoreSetFlag<0,PIPE_MTE3>(3);CrossCoreWaitFlag(3);
+                CrossCoreSetFlag<0,PIPE_MTE3>(2);CrossCoreWaitFlag(2);
+                if(valid){
+                    for(uint32_t row=0;row<size;++row){
+                        uint32_t original=perm.GetValue(row);
+                        DataCopyPad(a[row*pitch],stage[original*k+window],
+                            DataCopyExtParams{1,size*4,0,0,0},
+                            DataCopyPadExtParams<float>{true,0,static_cast<uint8_t>(pitch-size),0});
+                    }
+                    SetFlag<HardEvent::MTE2_V>(0);WaitFlag<HardEvent::MTE2_V>(0);
+                }
+                PipeBarrier<PIPE_ALL>();CrossCoreSetFlag<0,PIPE_MTE3>(4);CrossCoreWaitFlag(4);
+            }
+            if(valid){
+            auto offsets=indices.ReinterpretCast<int32_t>();CreateVecIndex(offsets,int32_t(0),size);PipeBarrier<PIPE_V>();Muls(offsets,offsets,static_cast<int32_t>(pitch*4),size);PipeBarrier<PIPE_V>();
+            uint32_t block=size<16?size:16;
+            for(uint32_t p=0;p<block;++p){
+                uint32_t remaining=size-p;
+                Gather(v,a,indices,(p*pitch+p)*4,remaining);PipeBarrier<PIPE_V>();
+                Abs(prod,v,remaining);PipeBarrier<PIPE_V>();
+                uint32_t full=remaining/64,tail=remaining%64,chunks=full+(tail!=0);
+                if(full)WholeReduceMax(red,prod,uint64_t(64),static_cast<uint8_t>(full),1,1,8);
+                if(tail)WholeReduceMax(red[full*2],prod[full*64],static_cast<uint64_t>(tail),1,1,1,8);
+                uint64_t summary[2]={uint64_t(0x5555)&((uint64_t(1)<<(chunks*2))-1),0};
+                PipeBarrier<PIPE_V>();WholeReduceMax(tmp,red,summary,1,1,1,8);VS();
+                float best,bits;GetReduceRepeatMaxMinSpr<float>(best,bits);
+                uint32_t chunk=(*reinterpret_cast<uint32_t *>(&bits))/2;
+                uint32_t selected=p+chunk*64+red.ReinterpretCast<uint32_t>().GetValue(chunk*2+1);
+                if(!(best>1.0e-6f)){valid=false;break;}
+                float divisor=v.GetValue(selected-p);
+                if(selected!=p){
+                    uint32_t old=perm.GetValue(p);perm.SetValue(p,perm.GetValue(selected));perm.SetValue(selected,old);
+                }
+                metaData.SetValue(first/16*64+p,static_cast<float>(static_cast<int32_t>(perm.GetValue(p))));
+                metaData.SetValue(first/16*64+16+p,1.0f/divisor);
+                if(remaining<=1)continue;
+                v.SetValue(selected-p,0.0f);
+                DataCopy(scratch,a[selected*pitch],pitch);PipeBarrier<PIPE_V>();
+                Muls(scratch,scratch,-(1.0f/divisor),pitch);PipeBarrier<PIPE_V>();
+                SV();Brcb(factors,v,(remaining+7)/8,{1,8});PipeBarrier<PIPE_V>();
+                for(uint32_t col=(p/8)*8;col<pitch;col+=64){
+                    uint32_t count=pitch-col<64?pitch-col:64;
+                    for(uint32_t row=0;row<remaining;row+=255){
+                        uint32_t repeats=remaining-row<255?remaining-row:255;
+                        MulAddDst(a[(p+row)*pitch+col],scratch[col],factors[row*8],static_cast<uint64_t>(count),static_cast<uint8_t>(repeats),{1,1,0,static_cast<uint8_t>(pitch/8),0,1});
+                    }
+                }
+                PipeBarrier<PIPE_V>();
+                if(selected!=p){DataCopy(a[selected*pitch],a[p*pitch],pitch);PipeBarrier<PIPE_V>();}
+            }
+            uint32_t remaining=size-block;
+            uint32_t columns=first+block<window?window-first-block:n-first-block;
+            uint32_t newPitch=(columns+7)/8*8;
+            VS();
+            if(first+block!=window)for(uint32_t row=0;row<remaining;row+=16){
+                uint32_t count=remaining-row<16?remaining-row:16;
+                DataCopy(a[row*newPitch],a[(row+block)*pitch+block],DataCopyParams{static_cast<uint16_t>(count),static_cast<uint16_t>(newPitch/8),static_cast<uint16_t>((pitch-newPitch)/8),0});
+                PipeBarrier<PIPE_V>();
+            }
+            if(remaining){
+                auto order=perm.ReinterpretCast<int32_t>();auto temporary=scratch.ReinterpretCast<int32_t>();
+                uint32_t count=(remaining+7)/8*8;SV();DataCopy(temporary,order[block],count);PipeBarrier<PIPE_V>();
+                DataCopy(order,temporary,count);VS();
+            }
+            SV();size=remaining;pitch=newPitch;
+            }
+            // 两个标记分别保护主元元数据和主元数据包；延后等待以重叠下一面板。
+            if(first){CrossCoreWaitFlag(0);CrossCoreWaitFlag(1);}
+            auto record=metaData[first/16*64];
+            record.SetValue(32,power);record.SetValue(33,total);record.SetValue(34,valid?1.0f:0.0f);
+            SetFlag<HardEvent::S_MTE3>(0);WaitFlag<HardEvent::S_MTE3>(0);
+            DataCopy(metadata[first/16*64],record,64);
+            CrossCoreSetFlag<0,PIPE_MTE3>(0);CrossCoreSetFlag<0,PIPE_MTE3>(1);
+        }
+        CrossCoreWaitFlag(0);CrossCoreWaitFlag(1);
+
+
+        return valid;
+    }
+};
+class WindowPipelineRows {
+    TBuf<TPosition::VECCALC> mem;
+    LocalTensor<float> a, packets, out, factors, meta, norms, v, prod, acc, tmp, red;
+    LocalTensor<uint32_t> rowIndices, packetIndices, mapping;
+    GlobalTensor<float> input, result, work;
+    uint32_t n,k,stride,owned,core,cores,packetStride,wide,factorRows,window;
+    __aicore__ inline void VS(){SetFlag<HardEvent::V_S>(0);WaitFlag<HardEvent::V_S>(0);}
+    __aicore__ inline void SV(){SetFlag<HardEvent::S_V>(0);WaitFlag<HardEvent::S_V>(0);}
+public:
+    float inverseTotal=0;
+    __aicore__ inline LocalTensor<float> Flags(){return out;}
+    __aicore__ inline void Init(GM_ADDR in,GM_ADDR dst,GM_ADDR workspace,const LinalgPinvTilingData &t,TPipe &pipe,uint32_t batch,uint32_t c,uint32_t count){
+        window=t.local;n=t.cols;k=(n+7)/8*8;stride=t.stride;core=c;cores=count;owned=(n+cores-1-core)/cores;
+        wide=(k+63)/64*64;factorRows=(owned+7)/8*8;packetStride=k+16;
+        uint32_t outSize=owned*k>512?owned*k:512;
+        uint32_t size=owned*stride+16*packetStride+outSize+8*(factorRows>16?factorRows:16)+64+5*wide+32+factorRows+16+k;
+        pipe.InitBuffer(mem,size*4);auto all=mem.Get<float>();uint32_t off=0;
+        a=all;off+=owned*stride;packets=all[off];off+=16*packetStride;out=all[off];off+=outSize;
+        factors=all[off];off+=8*(factorRows>16?factorRows:16);meta=all[off];off+=64;
+        norms=all[off];off+=wide;v=all[off];off+=wide;prod=all[off];off+=wide;acc=all[off];off+=wide;tmp=all[off];off+=wide;
+        red=all[off];off+=32;rowIndices=all[off].ReinterpretCast<uint32_t>();off+=factorRows;
+        packetIndices=all[off].ReinterpretCast<uint32_t>();off+=16;mapping=all[off].ReinterpretCast<uint32_t>();
+        input.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(in));result.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(dst));
+        work.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(workspace)+uint64_t(batch)*n*stride);
+        Duplicate(a,0.0f,owned*stride);PipeBarrier<PIPE_V>();
+        SetFlag<HardEvent::V_MTE2>(0);WaitFlag<HardEvent::V_MTE2>(0);
+        DataCopyPad(a,input[batch*n*n+core*n],DataCopyExtParams{static_cast<uint16_t>(owned),n*4,(cores-1)*n*4,(stride-k)/8,0},DataCopyPadExtParams<float>{true,0,static_cast<uint8_t>(k-n),0});
+        SetFlag<HardEvent::MTE2_V>(0);WaitFlag<HardEvent::MTE2_V>(0);
+        Duplicate(norms,1.0f,k);VS();
+        for(uint32_t row=0;row<factorRows;++row)rowIndices.SetValue(row,row<owned?row*stride*4:0);
+        for(uint32_t row=0;row<16;++row)packetIndices.SetValue(row,row*packetStride*4);SV();
+    }
+    __aicore__ inline bool Run(uint32_t batch,GlobalTensor<float> metadata){
+        bool valid=true;float power=1;
+        for(uint32_t first=0;first<n;first+=16){
+            uint32_t rows=n-first<16?n-first:16;
+            PipeBarrier<PIPE_ALL>();CrossCoreSetFlag<0,PIPE_MTE3>(0);CrossCoreWaitFlag(0);
+            DataCopy(meta,metadata[first/16*64],64);
+            SetFlag<HardEvent::MTE2_S>(0);WaitFlag<HardEvent::MTE2_S>(0);
+            SetFlag<HardEvent::MTE2_V>(0);WaitFlag<HardEvent::MTE2_V>(0);
+            valid=valid && meta.GetValue(34)>0.5f;power=meta.GetValue(32);
+            if(valid){
+                if(first==0){
+                    for(uint32_t begin=0;begin<owned*stride;begin+=16320){uint32_t count=owned*stride-begin<16320?owned*stride-begin:16320;Muls(a[begin],a[begin],1.0f/power,count);}PipeBarrier<PIPE_V>();
+                }
+                SetFlag<HardEvent::V_MTE3>(0);WaitFlag<HardEvent::V_MTE3>(0);
+                for(uint32_t column=0;column<rows;++column){
+                    uint32_t selected=static_cast<uint32_t>(static_cast<int32_t>(meta.GetValue(column)));
+                    norms.SetValue(selected,-static_cast<float>(static_cast<int32_t>(first+column+1)));
+                    if(selected%cores==core){
+                        a.SetValue((selected/cores)*stride+k+first+column,1.0f);
+                        SetFlag<HardEvent::S_MTE3>(0);WaitFlag<HardEvent::S_MTE3>(0);
+                        DataCopyPad(work[(first+column)*packetStride],a[(selected/cores)*stride+first],DataCopyExtParams{1,packetStride*4,0,0,0});
+                        SetFlag<HardEvent::MTE3_V>(0);WaitFlag<HardEvent::MTE3_V>(0);
+                    }
+                }
+            }
+            CrossCoreSetFlag<0,PIPE_MTE3>(1);CrossCoreWaitFlag(1);
+            if(valid){
+                DataCopy(packets,work[first*packetStride],rows*packetStride);
+                SetFlag<HardEvent::MTE2_V>(0);WaitFlag<HardEvent::MTE2_V>(0);
+                for(uint32_t column=0;column<rows;++column){
+                    Gather(prod,packets,packetIndices,column*4,rows);PipeBarrier<PIPE_V>();
+                    float reciprocal=meta.GetValue(16+column);
+                    Muls(packets[column*packetStride],packets[column*packetStride],reciprocal,packetStride);PipeBarrier<PIPE_V>();
+                    if(column+1<rows){
+                        Muls(prod,prod,-1.0f,16);PipeBarrier<PIPE_V>();Brcb(factors,prod,2,{1,8});PipeBarrier<PIPE_V>();
+                        for(uint32_t col=0;col<packetStride;col+=64){uint32_t count=packetStride-col<64?packetStride-col:64;
+                            MulAddDst(packets[(column+1)*packetStride+col],packets[column*packetStride+col],factors[(column+1)*8],static_cast<uint64_t>(count),static_cast<uint8_t>(rows-column-1),{1,1,0,static_cast<uint8_t>(packetStride/8),0,1});
+                        }
+                        PipeBarrier<PIPE_V>();
+                    }
+                }
+                for(uint32_t column=0;column<rows;++column){
+                    uint32_t selected=static_cast<uint32_t>(static_cast<int32_t>(meta.GetValue(column)));
+                    if(selected%cores==core)DataCopy(a[(selected/cores)*stride+first],packets[column*packetStride],packetStride);
+                    PipeBarrier<PIPE_V>();
+                    Gather(v,a,rowIndices,(first+column)*4,factorRows);PipeBarrier<PIPE_V>();
+                    if(selected%cores==core){VS();v.SetValue(selected/cores,0.0f);SV();}
+                    Muls(v,v,-1.0f,factorRows);PipeBarrier<PIPE_V>();Brcb(factors,v,factorRows/8,{1,8});PipeBarrier<PIPE_V>();
+                    uint32_t pivotColumn=first+column;bool consumed=(pivotColumn&7)==7 || pivotColumn+1==n;
+                    uint32_t liveBegin=pivotColumn/8*8+(consumed?8:0),liveLimit=liveBegin+k+(consumed?0:8);
+                    for(uint32_t col=liveBegin;col<liveLimit;col+=64){uint32_t count=liveLimit-col<64?liveLimit-col:64;
+                        MulAddDst(a[col],packets[column*packetStride+col-first],factors,static_cast<uint64_t>(count),static_cast<uint8_t>(owned),{1,1,0,static_cast<uint8_t>(stride/8),0,1});
+                    }
+                    PipeBarrier<PIPE_V>();
+                }
+            }
+            if(first+rows==window){
+                PipeBarrier<PIPE_ALL>();CrossCoreSetFlag<0,PIPE_MTE3>(3);CrossCoreWaitFlag(3);
+                if(valid){
+                    SetFlag<HardEvent::V_MTE3>(0);WaitFlag<HardEvent::V_MTE3>(0);
+                    for(uint32_t row=0;row<owned;++row){
+                        DataCopyPad(work[(core+row*cores)*k+window],a[row*stride+window],
+                            DataCopyExtParams{1,(n-window)*4,0,0,0});
+                    }
+                }
+                PipeBarrier<PIPE_ALL>();CrossCoreSetFlag<0,PIPE_MTE3>(2);CrossCoreWaitFlag(2);
+                CrossCoreSetFlag<0,PIPE_MTE3>(4);CrossCoreWaitFlag(4);
+            }
+        }
+        if(!valid)return false;
+        VS();for(uint32_t j=0;j<n;++j)mapping.SetValue(j,(static_cast<uint32_t>(static_cast<int32_t>(-norms.GetValue(j)))-1)*4);SV();
+        Duplicate(acc,0.0f,wide);PipeBarrier<PIPE_V>();
+        for(uint32_t row=0;row<owned;++row){
+            Gather(out[row*k],a[row*stride+k],mapping,0,n);PipeBarrier<PIPE_V>();
+            Mul(prod,out[row*k],out[row*k],n);PipeBarrier<PIPE_V>();Add(acc,acc,prod,n);PipeBarrier<PIPE_V>();
+        }
+        ReduceSum(red,acc,tmp,k);VS();inverseTotal=red.GetValue(0);
+        for(uint32_t row=0;row<owned;++row){
+            Muls(out[row*k],out[row*k],1.0f/power,k);PipeBarrier<PIPE_V>();
+            uint32_t target=static_cast<uint32_t>(static_cast<int32_t>(-norms.GetValue(core+row*cores)))-1;
+            SetFlag<HardEvent::V_MTE3>(0);WaitFlag<HardEvent::V_MTE3>(0);
+            DataCopyPad(result[batch*n*n+target*n],out[row*k],DataCopyExtParams{1,n*4,0,0,0});
+        }
+        PipeBarrier<PIPE_ALL>();return true;
+    }
+};
+__aicore__ inline uint32_t TryWindowPipelinePinv(GM_ADDR in,GM_ADDR dst,GM_ADDR workspace,const LinalgPinvTilingData &data){
+    uint32_t all=GetBlockNum(),physical=GetBlockIdx(),groupSize=all/data.batch,workers=groupSize-1,batch=physical/groupSize,core=physical%groupSize;
+    TPipe pipe;LocalTensor<float> local;bool valid;float inverse=0;
+    GlobalTensor<float> metadata,result;
+    metadata.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(workspace)+uint64_t(2)*data.batch*data.cols*data.stride+uint64_t(batch)*8192);
+    result.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(dst));
+    if(core==workers){WindowPivotProducer op;op.Init(in,workspace,data,pipe,batch);valid=op.Run(batch,metadata);local=op.Flags();}
+    else{WindowPipelineRows op;op.Init(in,dst,workspace,data,pipe,batch,core,workers);valid=op.Run(batch,metadata);inverse=op.inverseTotal;local=op.Flags();}
+    PipeBarrier<PIPE_ALL>();local.SetValue(0,valid?1.0f:0.0f);local.SetValue(1,inverse);
+    SetFlag<HardEvent::S_MTE3>(0);WaitFlag<HardEvent::S_MTE3>(0);
+    DataCopyPad(metadata[2048+core*8],local,DataCopyExtParams{1,8,0,0,0});SyncAll();
+    uint32_t accepted=0,prepared=0,k=(data.cols+7)/8*8,owned=(data.cols+all-1)/all;
+    for(uint32_t b=0;b<data.batch;++b){
+        metadata.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(workspace)+uint64_t(2)*data.batch*data.cols*data.stride+uint64_t(b)*8192);
+        DataCopy(local,metadata[2048],groupSize*8);
+        SetFlag<HardEvent::MTE2_S>(0);WaitFlag<HardEvent::MTE2_S>(0);
+        bool sound=true;float inverseTotal=0;
+        for(uint32_t c=0;c<groupSize;++c){if(local.GetValue(c*8)<0.5f)sound=false;inverseTotal+=local.GetValue(c*8+1);}
+        DataCopy(local,metadata,64);
+        SetFlag<HardEvent::MTE2_S>(0);WaitFlag<HardEvent::MTE2_S>(0);
+        float power=local.GetValue(32),total=local.GetValue(33);
+        local.SetValue(256,total);
+        SetFlag<HardEvent::S_V>(0);WaitFlag<HardEvent::S_V>(0);Sqrt(local[256],local[256],1);
+        SetFlag<HardEvent::V_S>(0);WaitFlag<HardEvent::V_S>(0);
+        float cutoff=local.GetValue(256)*data.rtol,absolute=data.atol/power;cutoff=cutoff>absolute?cutoff:absolute;
+        sound=sound && inverseTotal>0 && inverseTotal*cutoff*cutoff<81.0f;
+        if(sound && total*inverseTotal<3.6e9f)accepted|=uint32_t(1)<<b;
+        else if(sound && total*inverseTotal<4.0e11f && owned*k<=8*(k+k)
+                && data.inverseTile*data.stride>=owned*8 && 2*all*k<=data.cols*data.stride){
+            prepared|=uint32_t(1)<<b;
+            for(uint32_t row=physical;row<data.cols;row+=all){
+                SetFlag<HardEvent::V_MTE2>(0);WaitFlag<HardEvent::V_MTE2>(0);
+                DataCopyPad(local,result[b*data.cols*data.cols+row*data.cols],
+                    DataCopyExtParams{1,data.cols*4,0,0,0},
+                    DataCopyPadExtParams<float>{true,0,static_cast<uint8_t>(k-data.cols),0});
+                SetFlag<HardEvent::MTE2_V>(0);WaitFlag<HardEvent::MTE2_V>(0);
+                Muls(local,local,power,k);
+                SetFlag<HardEvent::V_MTE3>(0);WaitFlag<HardEvent::V_MTE3>(0);
+                DataCopyPad(result[b*data.cols*data.cols+row*data.cols],local,
+                    DataCopyExtParams{1,data.cols*4,0,0,0});
+                SetFlag<HardEvent::MTE3_V>(0);WaitFlag<HardEvent::MTE3_V>(0);
+            }
+            PipeBarrier<PIPE_ALL>();
+            if(physical==0){
+                local.SetValue(0,total);local.SetValue(1,inverseTotal);local.SetValue(2,power);
+                SetFlag<HardEvent::S_MTE3>(0);WaitFlag<HardEvent::S_MTE3>(0);
+                DataCopyPad(metadata[1032],local,DataCopyExtParams{1,12,0,0,0});
+                SetFlag<HardEvent::MTE3_S>(0);WaitFlag<HardEvent::MTE3_S>(0);
+            }
+        }
+    }
+    PipeBarrier<PIPE_ALL>();SyncAll();pipe.Destroy();
+    return accepted|(prepared<<4);
 }
 
 #include "tiling_key_linalg_pinv.h"
@@ -564,10 +883,11 @@ class StablePinv {
         Add(x, bh, err, count); PipeBarrier<PIPE_V>(); Sub(aux, x, bh, count); PipeBarrier<PIPE_V>();
         Sub(y, err, aux, count); PipeBarrier<PIPE_V>();
     }
-    __aicore__ inline void RefineBroadcastEliminateFixed(uint32_t rows, LocalTensor<float> source, bool normalize) {
+    __aicore__ inline void RefineBroadcastEliminateFixed(uint32_t rows, LocalTensor<float> source, bool normalize, bool prepared = false) {
         uint32_t count = rows * r8, factors = (rows + 7) / 8 * 8;
         auto err = batchCalc[0], lowFactor = batchCalc[1], bh = batchCalc[2], bl = batchCalc[3];
         auto e = batchCalc[4], part = batchCalc[5], product = batchCalc[6], aux = batchCalc[7];
+        if (!prepared) {
         Muls(bh, v, 4097.0f, factors); PipeBarrier<PIPE_V>();
         Sub(bl, bh, v, factors); PipeBarrier<PIPE_V>();
         Sub(bh, bh, bl, factors); PipeBarrier<PIPE_V>();
@@ -575,6 +895,7 @@ class StablePinv {
         Brcb(batchH, v, factors / 8, {1, 8});
         Brcb(batchL, bh, factors / 8, {1, 8});
         Brcb(lowFactor, bl, factors / 8, {1, 8}); PipeBarrier<PIPE_V>();
+        }
         SetVectorMask<float>(uint64_t(64));
         BinaryRepeatParams repeat{1, 1, 0, static_cast<uint8_t>(r8 / 8), 0, 1};
         for (uint32_t col = 0; col < r8; col += 64) {
@@ -655,8 +976,24 @@ class StablePinv {
         VS();
         for (uint32_t row = 0; row < t.inverseTile; ++row) rowIndex.SetValue(row, row * r8 * sizeof(float));
         SV();
-        for (uint32_t base = 0; base < t.cols; base += span) {
-            uint32_t chunk = t.cols - base < span ? t.cols - base : span;
+        bool batchedSplit = r8 % 64 == 0 && t.inverseTile > 1;
+        uint32_t sourceSpan = batchedSplit && span > t.inverseTile ? t.inverseTile : span;
+        auto sourceHigh = batchU, sourceLow = batchV;
+        uint32_t prepRows = (owned + 7) / 8 * 8;
+        bool cachedFactors = batchedSplit && t.inverseTile >= owned
+            && sourceSpan * prepRows <= r8 && sourceSpan * prepRows * 8 <= t.inverseTile * r8;
+        auto fullFactors = batchH, highFactors = batchL, lowFactors = batchCalc[1];
+        auto prepIndices = gather.ReinterpretCast<uint32_t>();
+        if (cachedFactors) {
+            VS();
+            for (uint32_t entry = 0; entry < sourceSpan * prepRows; ++entry) {
+                uint32_t row = entry % prepRows, column = entry / prepRows;
+                prepIndices.SetValue(entry, ((row < owned ? row : 0) * r8 + column) * sizeof(float));
+            }
+            SV();
+        }
+        for (uint32_t base = 0; base < t.cols; base += sourceSpan) {
+            uint32_t chunk = t.cols - base < sourceSpan ? t.cols - base : sourceSpan;
             SetFlag<HardEvent::V_MTE2>(0); WaitFlag<HardEvent::V_MTE2>(0);
             if (span > 1) {
                 DataCopyPad(block, result[offset + base * t.m],
@@ -664,21 +1001,52 @@ class StablePinv {
                             DataCopyPadExtParams<float>{true, 0, static_cast<uint8_t>((8 - t.m % 8) % 8), 0});
                 SetFlag<HardEvent::MTE2_V>(0); WaitFlag<HardEvent::MTE2_V>(0);
             } else Load(block, result[offset + base * t.m], t.m);
+            if (cachedFactors) {
+                uint32_t entries = chunk * prepRows;
+                Gather(v, cache, prepIndices, base * sizeof(float), entries); PipeBarrier<PIPE_V>();
+                Muls(prod, v, 4097.0f, entries); PipeBarrier<PIPE_V>();
+                Sub(tmp, prod, v, entries); PipeBarrier<PIPE_V>();
+                Sub(prod, prod, tmp, entries); PipeBarrier<PIPE_V>();
+                Sub(tmp, v, prod, entries); PipeBarrier<PIPE_V>();
+                Brcb(fullFactors, v, entries / 8, {1, 8});
+                Brcb(highFactors, prod, entries / 8, {1, 8});
+                Brcb(lowFactors, tmp, entries / 8, {1, 8}); PipeBarrier<PIPE_V>();
+            }
+            if (batchedSplit) {
+                uint32_t elements = chunk * r8;
+                Muls(sourceHigh, block, 4097.0f, elements); PipeBarrier<PIPE_V>();
+                Sub(sourceLow, sourceHigh, block, elements); PipeBarrier<PIPE_V>();
+                Sub(sourceHigh, sourceHigh, sourceLow, elements); PipeBarrier<PIPE_V>();
+                Sub(sourceLow, block, sourceHigh, elements); PipeBarrier<PIPE_V>();
+            }
             for (uint32_t j = 0; j < chunk; ++j) {
                 uint32_t k = base + j;
                 auto source = block[j * r8];
+                if (batchedSplit) { batchU = sourceHigh[j * r8]; batchV = sourceLow[j * r8]; }
+                else {
                 Muls(batchU, source, 4097.0f, r8); PipeBarrier<PIPE_V>();
                 Sub(batchV, batchU, source, r8); PipeBarrier<PIPE_V>();
                 Sub(batchU, batchU, batchV, r8); PipeBarrier<PIPE_V>();
                 Sub(batchV, source, batchU, r8); PipeBarrier<PIPE_V>();
+                }
+                if (cachedFactors) {
+                    batchH = fullFactors[j * prepRows * 8];
+                    batchL = highFactors[j * prepRows * 8];
+                    batchCalc[1] = lowFactors[j * prepRows * 8];
+                    x = tileHigh; y = tileLow;
+                    RefineBroadcastEliminateFixed(owned, source, (k & 7) == 7 || k + 1 == t.cols, true);
+                } else {
                 for (uint32_t first = 0; first < owned; first += t.inverseTile) {
                     uint32_t rows = owned - first < t.inverseTile ? owned - first : t.inverseTile;
                     Gather(v, cache, rowIndex, (first * r8 + k) * sizeof(float), rows); PipeBarrier<PIPE_V>();
                     x = tileHigh[first * r8]; y = tileLow[first * r8];
                     RefineBroadcastEliminate(rows, source, (k & 7) == 7 || k + 1 == t.cols);
                 }
+                }
             }
         }
+        batchU = sourceHigh; batchV = sourceLow;
+        batchH = fullFactors; batchL = highFactors; batchCalc[1] = lowFactors;
         x = bx; y = by; u = bu; v = bv;
         for (uint32_t row = 0; row < owned; ++row) {
             Add(tileHigh[row * r8], tileHigh[row * r8], tileLow[row * r8], r8); PipeBarrier<PIPE_V>();
@@ -2188,13 +2556,15 @@ class StablePinv {
         RebudgetWaveScratch();
         return accepted;
     }
-    __aicore__ inline void Parallel() {
+    template <bool READY = false>
+    __aicore__ inline void Parallel(uint32_t accepted = 0, uint32_t prepared = 0) {
         uint32_t core = GetBlockIdx(), cores = GetBlockNum();
-        uint32_t accepted = 0, prepared = 0;
+        if constexpr (!READY) {
         if constexpr (WAVE) {
             uint32_t grouped = WaveGroupedResident(); accepted = grouped & 15; prepared = grouped >> 4;
         } else if (t.groupCount) {
             uint32_t grouped = GroupedResident(); accepted = grouped & 15; prepared = grouped >> 4;
+        }
         }
         uint32_t roundCols = (t.cols + 1) / 2 * 2;
         for (uint32_t b = 0; b < t.batch; ++b) {
@@ -2325,6 +2695,10 @@ class StablePinv {
         }
     }
 public:
+    __aicore__ inline void ProcessPrepared(uint32_t state) {
+        RebudgetWaveScratch();
+        Parallel<true>(state&15,state>>4);
+    }
     __aicore__ inline void Init(GM_ADDR a, GM_ADDR out, GM_ADDR ws, const LinalgPinvTilingData &data, TPipe *pipe) {
         t = data; r8 = (t.rows + 7) / 8 * 8; k8 = (t.cols + 7) / 8 * 8; s = r8 + k8; stride = t.stride; rowLength = s + 8;
         lowElements = 0; residentElements = 0; scratchSpan = 0; freedRows = 0;
@@ -5773,9 +6147,8 @@ class Pinv<false, PAD> {
             Abs(prod, norms, n); PipeBarrier<PIPE_V>();
             uint64_t mask[2] = {available, 0};
             WholeReduceMax(red, prod, mask, 1, 1, 1, 8); VS();
-            float best, pivotBits;
-            GetReduceRepeatMaxMinSpr<float>(best, pivotBits);
-            uint32_t pivot = *reinterpret_cast<uint32_t *>(&pivotBits);
+            float best = red.GetValue(0);
+            uint32_t pivot = red.ReinterpretCast<uint32_t>().GetValue(1);
             if (!(best > 0.0f)) return false;
             available &= ~(uint64_t(1) << pivot);
             order[pivot] = column;
@@ -6063,12 +6436,19 @@ public:
         }
     }
 };
-template <typename DT_A, bool COMPACT, bool TAIL, bool WAVE, bool LOCAL, bool GROUP, bool PIPELINE>
+template <typename DT_A, bool COMPACT, bool TAIL, bool WAVE, bool LOCAL, bool GROUP, bool PIPELINE, bool WINDOW>
 __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR workspace, GM_ADDR tiling) {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIV_1_0);
     REGISTER_TILING_DEFAULT(LinalgPinvTilingData);
     GET_TILING_DATA_WITH_STRUCT(LinalgPinvTilingData, data, tiling);
-    if constexpr (PIPELINE) if (TryPipelinePinv(A, A_pinv, GetUserWorkspace(workspace), data)) return;
+    uint32_t windowState=0;
+    if constexpr (PIPELINE) {
+        if constexpr (WINDOW) {
+            windowState=TryWindowPipelinePinv(A,A_pinv,GetUserWorkspace(workspace),data);
+            if((windowState&15)==(uint32_t(1)<<data.batch)-1)return;
+            data.local=0;
+        } else if (TryPipelinePinv(A,A_pinv,GetUserWorkspace(workspace),data)) return;
+    }
     if constexpr (COMPACT || LOCAL) if (GetBlockIdx() >= data.batch) return;
     TPipe pipe;
     if constexpr (COMPACT) {
@@ -6092,7 +6472,9 @@ __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR worksp
         if constexpr (LOCAL) {
             LocalPinv<WAVE, LOCAL> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
         } else {
-            StablePinv<WAVE, LOCAL, GROUP> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
+            StablePinv<WAVE, LOCAL, GROUP> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe);
+            if constexpr (WINDOW) op.ProcessPrepared(windowState);
+            else op.Process();
         }
     }
 }
