@@ -229,7 +229,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
         mt.SetAType(P::GM,F::ND,D::DT_INT8,false);mt.SetBType(P::GM,F::ND,D::DT_INT8,false);
         mt.SetCType(P::GM,F::ND,D::DT_INT32);
         uint32_t extent=6*t->cols,tile=((extent+context->GetBlockDim()-1)/context->GetBlockDim()+15)/16*16;
-        mt.SetShape(tile,extent,t->cols);mt.SetOrgShape(extent,extent,t->cols);mt.SetBias(false);mt.SetFixSplit(16,64,-1);
+        mt.SetShape(tile,extent,t->cols);mt.SetOrgShape(extent,extent,t->cols);mt.SetBias(false);mt.SetFixSplit(32,128,-1);
         mt.SetMatmulConfigParams(1,false);mt.SetBufferSpace(-1,-1,-1);
         AscendC::tiling::TCubeTiling ct;
         if(mt.GetTiling(ct)!=0)return ge::GRAPH_FAILED;
