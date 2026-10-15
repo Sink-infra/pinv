@@ -170,6 +170,8 @@
         VS();
         for (uint32_t row = 0; row < t.inverseTile; ++row) rowIndex.SetValue(row, row * r8 * sizeof(float));
         SV();
+        if(cubeResidual)PinvCubeCorrect(reinterpret_cast<GM_ADDR>(workBase),t,b,tileLow,owned,core,cores);
+        else{
         for (uint32_t base = 0; base < t.cols; base += span) {
             uint32_t chunk = t.cols - base < span ? t.cols - base : span;
             SetFlag<HardEvent::V_MTE2>(0); WaitFlag<HardEvent::V_MTE2>(0);
@@ -191,6 +193,7 @@
                     PipeBarrier<PIPE_V>();
                 }
             }
+        }
         }
         bool valid = true; float correctedTotal = 0.0f;
         for (uint32_t row = 0; row < owned; ++row) {
