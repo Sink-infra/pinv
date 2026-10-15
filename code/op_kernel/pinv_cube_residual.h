@@ -20,14 +20,14 @@ __aicore__ inline void PinvCubeService(GM_ADDR ws,GM_ADDR inverse,const LinalgPi
         if(command==1){
             GlobalTensor<int8_t> a,b;GlobalTensor<int32_t> c;
             a.SetGlobalBuffer(reinterpret_cast<__gm__ int8_t*>(base+512));
-            b.SetGlobalBuffer(reinterpret_cast<__gm__ int8_t*>(base+512)+6*n*n);
-            c.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(base+512)+3*n*n);
+            b.SetGlobalBuffer(reinterpret_cast<__gm__ int8_t*>(base+512)+5*n*n);
+            c.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(base+512)+5*n*n/2);
             TPipe pipe;
             using A=matmul::MatmulType<TPosition::GM,CubeFormat::ND,int8_t>;
             using B=matmul::MatmulType<TPosition::GM,CubeFormat::ND,int8_t>;
             using C=matmul::MatmulType<TPosition::GM,CubeFormat::ND,int32_t>;
             matmul::Matmul<A,B,C,C,CFG_MDL> mm;mm.Init(&data.cube,&pipe);
-            uint32_t extent=6*n,tile=((extent+GetBlockNum()-1)/GetBlockNum()+15)/16*16;
+            uint32_t extent=5*n,tile=((extent+GetBlockNum()-1)/GetBlockNum()+15)/16*16;
             uint32_t row=GetBlockIdx()*tile;
             if(row<extent){
                 mm.SetOrgShape(extent,extent,n);mm.SetSingleShape(extent-row<tile?extent-row:tile,extent,n);
@@ -40,7 +40,7 @@ __aicore__ inline void PinvCubeService(GM_ADDR ws,GM_ADDR inverse,const LinalgPi
             GlobalTensor<float> a,b,c;
             a.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(inverse)+uint64_t(batch)*n*n);
             b.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(ws)+uint64_t(data.base.batch+batch)*n*data.base.stride);
-            c.SetGlobalBuffer(base+512+3*n*n);
+            c.SetGlobalBuffer(base+512+5*n*n/2);
             TPipe pipe;
             using A=matmul::MatmulType<TPosition::GM,CubeFormat::ND,float>;
             using B=matmul::MatmulType<TPosition::GM,CubeFormat::ND,float>;
@@ -59,7 +59,7 @@ __aicore__ inline void PinvCubeService(GM_ADDR ws,GM_ADDR inverse,const LinalgPi
 __aicore__ inline void PinvCubeCorrect(GM_ADDR ws,const LinalgPinvTilingData &t,uint32_t batch,
     LocalTensor<float> out,uint32_t owned,uint32_t core,uint32_t cores){
     auto base=PinvCubeArea(ws,t);uint32_t n=t.cols;GlobalTensor<int32_t> control;GlobalTensor<float> product;
-    control.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(base));product.SetGlobalBuffer(base+512+3*n*n);
+    control.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(base));product.SetGlobalBuffer(base+512+5*n*n/2);
     if(core==0){
         control.SetValue(0,2);control.SetValue(1,static_cast<int32_t>(batch));
         DataCacheCleanAndInvalid<int32_t,CacheLine::SINGLE_CACHE_LINE,DcciDst::CACHELINE_OUT>(control);
@@ -77,48 +77,24 @@ __aicore__ inline void PinvCubeStop(GM_ADDR ws,const LinalgPinvTilingData &data)
     }
     SyncAll();PipeBarrier<PIPE_ALL>();CrossCoreSetFlag<2,PIPE_MTE3>(8);CrossCoreWaitFlag<2>(10);
 }
-template<bool RIGHT>
-__aicore__ inline float PinvCubeQuantize(LocalTensor<float> values,LocalTensor<float> scratch[],
-    GlobalTensor<int8_t> digits,uint32_t n,uint32_t owned,uint32_t core,uint32_t cores,float scale){
-    uint32_t count=owned*n;
-    auto integers=scratch[0].ReinterpretCast<int32_t>();auto rounded=scratch[1];
-    auto halfValues=scratch[2].ReinterpretCast<half>();auto small=scratch[3].ReinterpretCast<int8_t>();
-    Muls(values,values,128.0f/scale,count);PipeBarrier<PIPE_V>();
-    for(uint32_t limb=0;limb<6;++limb){
-        Cast(integers,values,RoundMode::CAST_RINT,count);PipeBarrier<PIPE_V>();
-        Cast(rounded,integers,RoundMode::CAST_RINT,count);PipeBarrier<PIPE_V>();
-        Cast(halfValues,rounded,RoundMode::CAST_NONE,count);PipeBarrier<PIPE_V>();
-        Cast(small,halfValues,RoundMode::CAST_RINT,count);
-        SetFlag<HardEvent::V_MTE3>(0);WaitFlag<HardEvent::V_MTE3>(0);
-        uint32_t destination=RIGHT?core*6*n+limb*n:limb*n*n+core*n;
-        uint32_t step=RIGHT?(cores*6-1)*n:(cores-1)*n;
-        DataCopyPad(digits[destination],small,
-            DataCopyExtParams{static_cast<uint16_t>(owned),n,0,step,0});
-        SetFlag<HardEvent::MTE3_V>(0);WaitFlag<HardEvent::MTE3_V>(0);
-        Sub(values,values,rounded,count);PipeBarrier<PIPE_V>();
-        Muls(values,values,128.0f,count);PipeBarrier<PIPE_V>();
-    }
-    Mul(scratch[0],values,values,count);PipeBarrier<PIPE_V>();
-    ReduceSum(scratch[2],scratch[0],scratch[1],count);
-    SetFlag<HardEvent::V_S>(0);WaitFlag<HardEvent::V_S>(0);
-    return scratch[2].GetValue(0);
-}
+#include "pinv_cube_digits.h"
 __aicore__ inline void PinvCubeBuildResidual(GM_ADDR ws,const LinalgPinvTilingData &data,
     GlobalTensor<float> inverse,uint32_t offset,LocalTensor<float> cache,
     LocalTensor<float> high,LocalTensor<float> low,LocalTensor<float> scratch[],
-    uint32_t owned,uint32_t core,uint32_t cores,float inverseScale,float &sumErrorA,float &sumErrorX){
+    uint32_t owned,uint32_t core,uint32_t cores,float &inverseScale,float &sumErrorA,float &sumErrorX){
     uint32_t n=data.cols,count=owned*n;auto base=PinvCubeArea(ws,data);
     GlobalTensor<int8_t> a,b;GlobalTensor<int32_t> c,control;
     a.SetGlobalBuffer(reinterpret_cast<__gm__ int8_t*>(base+512));
-    b.SetGlobalBuffer(reinterpret_cast<__gm__ int8_t*>(base+512)+6*n*n);
-    c.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(base+512)+3*n*n);
+    b.SetGlobalBuffer(reinterpret_cast<__gm__ int8_t*>(base+512)+5*n*n);
+    c.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(base+512)+5*n*n/2);
     control.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(base));
-    float localErrorA=PinvCubeQuantize<false>(cache,scratch,a,n,owned,core,cores,4.0f);
+    float localErrorA=PinvCubeQuantize<false>(cache,scratch,a,n,owned,core,cores,8.0f);
     SetFlag<HardEvent::V_MTE2>(0);WaitFlag<HardEvent::V_MTE2>(0);
     DataCopyPad(cache,inverse[offset+core*n],
         DataCopyExtParams{static_cast<uint16_t>(owned),n*4,(cores-1)*n*4,0,0},
         DataCopyPadExtParams<float>{false,0,0,0});
     SetFlag<HardEvent::MTE2_V>(0);WaitFlag<HardEvent::MTE2_V>(0);
+    inverseScale=PinvCubePeakScale(base,cache,scratch,count,core,cores,inverseScale);
     float localErrorX=PinvCubeQuantize<true>(cache,scratch,b,n,owned,core,cores,inverseScale);
     auto statistic=scratch[7];statistic.SetValue(0,localErrorA);statistic.SetValue(1,localErrorX);
     GlobalTensor<float> statistics;statistics.SetGlobalBuffer(base);
@@ -137,13 +113,13 @@ __aicore__ inline void PinvCubeBuildResidual(GM_ADDR ws,const LinalgPinvTilingDa
     for(uint32_t peer=0;peer<cores;++peer){sumErrorA+=statistic.GetValue(peer*8);sumErrorX+=statistic.GetValue(peer*8+1);}
     auto raw=scratch[0].ReinterpretCast<int32_t>();auto part=scratch[1],sum=scratch[2],bv=scratch[3];
     auto av=scratch[4],err=scratch[5],alt=scratch[6];
-    float rowWeight=4.0f*inverseScale/16384.0f;
-    for(uint32_t i=0;i<6;++i){
+    float rowWeight=8.0f*inverseScale/65536.0f;
+    for(uint32_t i=0;i<5;++i){
         float weight=rowWeight;
-        for(uint32_t j=0;j<6;++j){
+        for(uint32_t j=0;j<5;++j){
             SetFlag<HardEvent::V_MTE2>(0);WaitFlag<HardEvent::V_MTE2>(0);
-            DataCopyPad(raw,c[(i*n+core)*6*n+j*n],
-                DataCopyExtParams{static_cast<uint16_t>(owned),n*4,(cores*6-1)*n*4,0,0},
+            DataCopyPad(raw,c[(i*n+core)*5*n+j*n],
+                DataCopyExtParams{static_cast<uint16_t>(owned),n*4,(cores*5-1)*n*4,0,0},
                 DataCopyPadExtParams<int32_t>{false,0,0,0});
             SetFlag<HardEvent::MTE2_V>(0);WaitFlag<HardEvent::MTE2_V>(0);
             Cast(part,raw,RoundMode::CAST_RINT,count);PipeBarrier<PIPE_V>();
@@ -154,9 +130,9 @@ __aicore__ inline void PinvCubeBuildResidual(GM_ADDR ws,const LinalgPinvTilingDa
             Sub(err,high,av,count);Sub(alt,part,bv,count);PipeBarrier<PIPE_V>();
             Add(err,err,alt,count);PipeBarrier<PIPE_V>();
             Add(low,low,err,count);DataCopy(high,sum,count);PipeBarrier<PIPE_V>();
-            weight*=0.0078125f;
+            weight*=0.00390625f;
         }
-        rowWeight*=0.0078125f;
+        rowWeight*=0.00390625f;
     }
 }
 #endif
