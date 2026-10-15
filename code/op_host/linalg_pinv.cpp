@@ -4,6 +4,8 @@
 #include "../op_kernel/tiling_key_linalg_pinv.h"
 #include <algorithm>
 #include <limits>
+#include <cstdlib>
+
 namespace optiling {
 static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     auto shape = context->GetInputShape(0);
@@ -37,6 +39,9 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     if (m == n && (t->stride <= 64 || (t->cols > 32 && t->cols <= 96))) inverseBytes += (k8 - t->cols) * t->stride * sizeof(float);
     t->inverseTile = 8;
     while (t->inverseTile > 1 && inverseBytes + 12 * t->inverseTile * t->stride * sizeof(float) > ubSize) t->inverseTile /= 2;
+    const char *dbgEnv = getenv("PINV_DBG");
+    t->dbgFlags = dbgEnv ? static_cast<uint32_t>(atoi(dbgEnv)) : 0u;
+
     inverseBytes += 12 * t->inverseTile * t->stride * sizeof(float);
     t->localInverse = m == n && inverseBytes <= ubSize;
     if (t->localInverse) t->parallel = 0;
