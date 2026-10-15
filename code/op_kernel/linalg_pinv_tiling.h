@@ -7,4 +7,4 @@ struct LinalgPinvTilingData {
 };
 
 #include "kernel_tiling/kernel_tiling.h"
-struct LinalgPinvCubeTilingData { LinalgPinvTilingData base; AscendC::tiling::TCubeTiling cube; };
+struct LinalgPinvCubeTilingData { LinalgPinvTilingData base; AscendC::tiling::TCubeTiling cube; AscendC::tiling::TCubeTiling correction; };
