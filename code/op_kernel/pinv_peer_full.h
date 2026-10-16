@@ -16,9 +16,7 @@ class PeerWindowProducer {
         Drain();uint32_t owner=first<half?0:1;
         if(role==owner){
             SetFlag<HardEvent::V_MTE3>(0);WaitFlag<HardEvent::V_MTE3>(0);
-            DataCopyPad(header,a[16],DataCopyExtParams{static_cast<uint16_t>(size),64,(pitch-16)/8,0,0});
-            DataCopy(a,a[16],DataCopyParams{static_cast<uint16_t>(size),2,static_cast<uint16_t>((pitch-16)/8),static_cast<uint16_t>((pitch-16)/8)});
-            PipeBarrier<PIPE_V>();
+            DataCopyPad(header,a,DataCopyExtParams{static_cast<uint16_t>(size),64,(pitch-16)/8,0,0});
             CrossCoreSetFlag<1,PIPE_MTE3>(7);
             SetFlag<HardEvent::MTE3_V>(0);WaitFlag<HardEvent::MTE3_V>(0);
             pendingReady=true;
@@ -36,7 +34,7 @@ public:
     __aicore__ inline void Init(GM_ADDR in,GM_ADDR workspace,const LinalgPinvTilingData &data,TPipe &pipe,uint32_t batch,uint32_t c){
         n=data.cols;k=(n+7)/8*8;wide=(k+63)/64*64;window=data.local;role=c;
         uint32_t trailing=n-window;frontHalf=(window+31)/32*16;trailHalf=(trailing+31)/32*16;
-        ownWidth=role?(window-frontHalf+7)/8*8:frontHalf;pitch=16+ownWidth;
+        ownWidth=role?(window-frontHalf+7)/8*8:frontHalf;pitch=ownWidth+(role?16:0);if(pitch<16)pitch=16;
         uint32_t laterWidth=role?trailing-trailHalf:trailHalf;
         uint32_t capacity=n*pitch>trailing*(16+laterWidth)?n*pitch:trailing*(16+laterWidth);
         uint32_t count=capacity+4096+10*k+2*wide+64+(n+15)/16*64;
@@ -49,32 +47,37 @@ public:
         header.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(workspace)+uint64_t(2)*data.batch*n*data.stride+uint64_t(batch)*8192+3072);
     }
     __aicore__ inline bool Run(uint32_t batch,GlobalTensor<float> metadata){
-        uint32_t offset=batch*n*n;float scale=0;constexpr uint32_t chunkSize=4096;
-        for(uint32_t begin=0;begin<n*n;begin+=chunkSize){
-            uint32_t count=n*n-begin<chunkSize?n*n-begin:chunkSize;
-            SetFlag<HardEvent::V_MTE2>(0);WaitFlag<HardEvent::V_MTE2>(0);
-            DataCopyPad(scratch,input[offset+begin],DataCopyExtParams{1,count*4,0,0,0},DataCopyPadExtParams<float>{false,0,0,0});
-            SetFlag<HardEvent::MTE2_V>(0);WaitFlag<HardEvent::MTE2_V>(0);
-            Abs(scratch,scratch,count);PipeBarrier<PIPE_V>();ReduceMax(red,scratch,prod,count,false);VS();
-            float value=red.GetValue(0);scale=value>scale?value:scale;
-        }
-        bool valid=scale>=.1f && scale<1.7014118e38f;float power=1;
-        if(valid){while(power<scale)power*=2;while(power*.5f>=scale)power*=.5f;}
-        float total=0;
-        for(uint32_t begin=0;begin<n*n;begin+=chunkSize){
-            uint32_t count=n*n-begin<chunkSize?n*n-begin:chunkSize;
-            SetFlag<HardEvent::V_MTE2>(0);WaitFlag<HardEvent::V_MTE2>(0);
-            DataCopyPad(scratch,input[offset+begin],DataCopyExtParams{1,count*4,0,0,0},DataCopyPadExtParams<float>{false,0,0,0});
-            SetFlag<HardEvent::MTE2_V>(0);WaitFlag<HardEvent::MTE2_V>(0);
-            Muls(scratch,scratch,1.0f/power,count);PipeBarrier<PIPE_V>();Mul(scratch,scratch,scratch,count);PipeBarrier<PIPE_V>();
-            ReduceSum(red,scratch,prod,count);VS();total+=red.GetValue(0);
-        }
+
+        uint32_t offset=batch*n*n,actualWidth=role?window-frontHalf:frontHalf;
         Duplicate(a,0.0f,n*pitch);PipeBarrier<PIPE_V>();
         SetFlag<HardEvent::V_MTE2>(0);WaitFlag<HardEvent::V_MTE2>(0);
-        uint32_t actualWidth=role?window-frontHalf:frontHalf;
-        DataCopyPad(a[16],input[offset+(role?frontHalf:0)],DataCopyExtParams{static_cast<uint16_t>(n),actualWidth*4,(n-actualWidth)*4,2,0},DataCopyPadExtParams<float>{true,0,static_cast<uint8_t>(ownWidth-actualWidth),0});
+        DataCopyPad(a[role?16:0],input[offset+(role?frontHalf:0)],DataCopyExtParams{static_cast<uint16_t>(n),actualWidth*4,(n-actualWidth)*4,role?2U:0U,0},DataCopyPadExtParams<float>{true,0,static_cast<uint8_t>(ownWidth-actualWidth),0});
         SetFlag<HardEvent::MTE2_V>(0);WaitFlag<HardEvent::MTE2_V>(0);
-        for(uint32_t begin=0;begin<n*pitch;begin+=16320){uint32_t count=n*pitch-begin<16320?n*pitch-begin:16320;Muls(a[begin],a[begin],1.0f/power,count);}
+        float localScale=0,localTotal=0,localPower=1;constexpr uint32_t chunkSize=4096;
+        for(uint32_t begin=0;begin<n*pitch;begin+=chunkSize){
+            uint32_t count=n*pitch-begin<chunkSize?n*pitch-begin:chunkSize;
+            Abs(scratch,a[begin],count);PipeBarrier<PIPE_V>();ReduceMax(red,scratch,prod,count,false);VS();
+            float value=red.GetValue(0);localScale=value>localScale?value:localScale;
+        }
+        if(localScale>0 && localScale<1.7014118e38f){while(localPower<localScale)localPower*=2;while(localPower*.5f>=localScale)localPower*=.5f;}
+        for(uint32_t begin=0;begin<n*pitch;begin+=16320){uint32_t count=n*pitch-begin<16320?n*pitch-begin:16320;Muls(a[begin],a[begin],1.0f/localPower,count);}
+        PipeBarrier<PIPE_V>();
+        for(uint32_t begin=0;begin<n*pitch;begin+=chunkSize){
+            uint32_t count=n*pitch-begin<chunkSize?n*pitch-begin:chunkSize;
+            Mul(scratch,a[begin],a[begin],count);PipeBarrier<PIPE_V>();ReduceSum(red,scratch,prod,count);VS();localTotal+=red.GetValue(0);
+        }
+        scratch.SetValue(0,localScale);scratch.SetValue(1,localTotal);scratch.SetValue(2,localPower);
+        SetFlag<HardEvent::S_MTE3>(0);WaitFlag<HardEvent::S_MTE3>(0);DataCopy(header[role*8],scratch,8);
+        CrossCoreSetFlag<1,PIPE_MTE3>(4);CrossCoreWaitFlag(4);
+        SetFlag<HardEvent::MTE3_MTE2>(0);WaitFlag<HardEvent::MTE3_MTE2>(0);
+        DataCopy(scratch,header,16);SetFlag<HardEvent::MTE2_S>(0);WaitFlag<HardEvent::MTE2_S>(0);
+        float scale0=scratch.GetValue(0),scale1=scratch.GetValue(8),scale=scale0>scale1?scale0:scale1;
+        float sum0=scratch.GetValue(1),sum1=scratch.GetValue(9),power0=scratch.GetValue(2),power1=scratch.GetValue(10);
+        CrossCoreSetFlag<1,PIPE_MTE3>(5);CrossCoreWaitFlag(5);
+        bool valid=scale>=.1f && scale<1.7014118e38f;float power=1;
+        if(valid){while(power<scale)power*=2;while(power*.5f>=scale)power*=.5f;}
+        float ratio0=power0/power,ratio1=power1/power,total=(sum0*ratio0*ratio0+sum1*ratio1*ratio1)*1.00001f;
+        for(uint32_t begin=0;begin<n*pitch;begin+=16320){uint32_t count=n*pitch-begin<16320?n*pitch-begin:16320;Muls(a[begin],a[begin],localPower/power,count);}
         PipeBarrier<PIPE_V>();for(uint32_t row=0;row<k;++row)perm.SetValue(row,row);SV();
         uint32_t size=n;
         for(uint32_t first=0;first<n;first+=16){
@@ -117,11 +120,12 @@ public:
                     }
                     PipeBarrier<PIPE_V>();if(selected!=p){DataCopy(a[selected*pitch],a[p*pitch],pitch);PipeBarrier<PIPE_V>();}
                 }
-                uint32_t remaining=size-block,owner=localFirst<half?0:1,drop=role==owner?block:0,newWidth=ownWidth-drop,newPitch=16+newWidth;
+                uint32_t remaining=size-block,owner=localFirst<half?0:1,drop=role==owner?block:0,newWidth=ownWidth-drop;
+                uint32_t oldPrefix=role==owner?0:16,nextOwner=localFirst+block<half?0:1,newPrefix=role==nextOwner?0:16,newPitch=newPrefix+newWidth;if(newPitch<16)newPitch=16;
                 VS();
                 if(remaining && newWidth && first+block!=window){
                     for(uint32_t row=0;row<remaining;row+=16){uint32_t count=remaining-row<16?remaining-row:16;
-                        DataCopy(a[row*newPitch+16],a[(row+block)*pitch+16+drop],DataCopyParams{static_cast<uint16_t>(count),static_cast<uint16_t>(newWidth/8),static_cast<uint16_t>((pitch-newWidth)/8),2});PipeBarrier<PIPE_V>();
+                        DataCopy(a[row*newPitch+newPrefix],a[(row+block)*pitch+oldPrefix+drop],DataCopyParams{static_cast<uint16_t>(count),static_cast<uint16_t>(newWidth/8),static_cast<uint16_t>((pitch-newWidth)/8),static_cast<uint16_t>((newPitch-newWidth)/8)});PipeBarrier<PIPE_V>();
                     }
                 }
                 if(remaining){auto order=perm.ReinterpretCast<int32_t>();auto temporary=scratch.ReinterpretCast<int32_t>();uint32_t count=(remaining+7)/8*8;SV();DataCopy(temporary,order[block],count);PipeBarrier<PIPE_V>();DataCopy(order,temporary,count);VS();}
