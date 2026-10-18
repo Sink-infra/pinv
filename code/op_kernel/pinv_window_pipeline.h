@@ -1,4 +1,5 @@
 #pragma once
+#include "pinv_execution.h"
 #include "kernel_operator.h"
 #include "linalg_pinv_tiling.h"
 using namespace AscendC;
@@ -39,7 +40,7 @@ public:
             ReduceMax(red,scratch,prod,count,false);VS();
             float value=red.GetValue(0);scale=value>scale?value:scale;
         }
-        bool valid=scale>=0.1f && scale<1.7014118e38f;
+        bool valid=scale>=0.1f && scale<pinv::kScaleLimit;
         float power=1.0f;if(valid){while(power<scale)power*=2;while(power*0.5f>=scale)power*=0.5f;}
         float total=0.0f;
         for(uint32_t begin=0;begin<n*n;begin+=chunkSize){
@@ -264,20 +265,20 @@ public:
     }
 };
 __aicore__ inline uint32_t TryWindowPipelinePinv(GM_ADDR in,GM_ADDR dst,GM_ADDR workspace,const LinalgPinvTilingData &data){
-    uint32_t all=GetBlockNum(),physical=GetBlockIdx(),groupSize=all/data.batch,workers=groupSize-1,batch=physical/groupSize,core=physical%groupSize;
+    uint32_t all=PinvVectorBlockCount(),physical=GetBlockIdx(),groupSize=all/data.batch,workers=groupSize-1,batch=physical/groupSize,core=physical%groupSize;
     TPipe pipe;LocalTensor<float> local;bool valid;float inverse=0;
     GlobalTensor<float> metadata,result;
-    metadata.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(workspace)+uint64_t(2)*data.batch*data.cols*data.stride+uint64_t(batch)*8192);
+    metadata.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(workspace)+pinv::MetadataOffset(data.batch,data.cols,data.stride,batch));
     result.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(dst));
     if(core==workers){WindowPivotProducer op;op.Init(in,workspace,data,pipe,batch);valid=op.Run(batch,metadata);local=op.Flags();}
     else{WindowPipelineRows op;op.Init(in,dst,workspace,data,pipe,batch,core,workers);valid=op.Run(batch,metadata);inverse=op.inverseTotal;local=op.Flags();}
     PipeBarrier<PIPE_ALL>();local.SetValue(0,valid?1.0f:0.0f);local.SetValue(1,inverse);
     SetFlag<HardEvent::S_MTE3>(0);WaitFlag<HardEvent::S_MTE3>(0);
-    DataCopyPad(metadata[2048+core*8],local,DataCopyExtParams{1,8,0,0,0});SyncAll();
+    DataCopyPad(metadata[pinv::kGroupStatus+core*8],local,DataCopyExtParams{1,8,0,0,0});SyncAll();
     uint32_t accepted=0,prepared=0,k=(data.cols+7)/8*8,owned=(data.cols+all-1)/all;
     for(uint32_t b=0;b<data.batch;++b){
-        metadata.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(workspace)+uint64_t(2)*data.batch*data.cols*data.stride+uint64_t(b)*8192);
-        DataCopy(local,metadata[2048],groupSize*8);
+        metadata.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(workspace)+pinv::MetadataOffset(data.batch,data.cols,data.stride,b));
+        DataCopy(local,metadata[pinv::kGroupStatus],groupSize*8);
         SetFlag<HardEvent::MTE2_S>(0);WaitFlag<HardEvent::MTE2_S>(0);
         bool sound=true;float inverseTotal=0;
         for(uint32_t c=0;c<groupSize;++c){if(local.GetValue(c*8)<0.5f)sound=false;inverseTotal+=local.GetValue(c*8+1);}
@@ -288,9 +289,9 @@ __aicore__ inline uint32_t TryWindowPipelinePinv(GM_ADDR in,GM_ADDR dst,GM_ADDR 
         SetFlag<HardEvent::S_V>(0);WaitFlag<HardEvent::S_V>(0);Sqrt(local[256],local[256],1);
         SetFlag<HardEvent::V_S>(0);WaitFlag<HardEvent::V_S>(0);
         float cutoff=local.GetValue(256)*data.rtol,absolute=data.atol/power;cutoff=cutoff>absolute?cutoff:absolute;
-        sound=sound && inverseTotal>0 && inverseTotal*cutoff*cutoff<81.0f;
-        if(sound && total*inverseTotal<3.6e9f)accepted|=uint32_t(1)<<b;
-        else if(sound && total*inverseTotal<4.0e11f && owned*k<=8*(k+k)
+        sound=sound && inverseTotal>0 && inverseTotal*cutoff*cutoff<pinv::kGapGateSquared;
+        if(sound && total*inverseTotal<pinv::kDirectConditionLimit)accepted|=uint32_t(1)<<b;
+        else if(sound && total*inverseTotal<pinv::kRefineConditionLimit && owned*k<=8*(k+k)
                 && data.inverseTile*data.stride>=owned*8 && 2*all*k<=data.cols*data.stride){
             prepared|=uint32_t(1)<<b;
             for(uint32_t row=physical;row<data.cols;row+=all){
@@ -309,7 +310,7 @@ __aicore__ inline uint32_t TryWindowPipelinePinv(GM_ADDR in,GM_ADDR dst,GM_ADDR 
             if(physical==0){
                 local.SetValue(0,total);local.SetValue(1,inverseTotal);local.SetValue(2,power);
                 SetFlag<HardEvent::S_MTE3>(0);WaitFlag<HardEvent::S_MTE3>(0);
-                DataCopyPad(metadata[1032],local,DataCopyExtParams{1,12,0,0,0});
+                DataCopyPad(metadata[pinv::kPrepared],local,DataCopyExtParams{1,12,0,0,0});
                 SetFlag<HardEvent::MTE3_S>(0);WaitFlag<HardEvent::MTE3_S>(0);
             }
         }

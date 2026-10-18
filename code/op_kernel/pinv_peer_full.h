@@ -1,5 +1,6 @@
 #pragma once
-#if defined(TILING_KEY_VAR) && TILING_KEY_VAR==45056UL
+#include "pinv_execution.h"
+#if defined(TILING_KEY_VAR) && TILING_KEY_VAR==(PINV_KEY_GROUP | PINV_KEY_PIPELINE | PINV_KEY_CUBE)
 class PeerWindowProducer {
     TBuf<TPosition::VECCALC> mem;
     LocalTensor<float> metaData,a,scratch,factors,v,prod,tmp,red;
@@ -44,7 +45,7 @@ public:
         indices=all[off].ReinterpretCast<uint32_t>();off+=k;perm=all[off].ReinterpretCast<uint32_t>();off+=k;metaData=all[off];
         input.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(in));
         stage.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(workspace)+uint64_t(batch)*n*data.stride);
-        header.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(workspace)+uint64_t(2)*data.batch*n*data.stride+uint64_t(batch)*8192+3072);
+        header.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(workspace)+pinv::MetadataOffset(data.batch,n,data.stride,batch)+3072);
     }
     __aicore__ inline bool Run(uint32_t batch,GlobalTensor<float> metadata){
 
@@ -59,7 +60,7 @@ public:
             Abs(scratch,a[begin],count);PipeBarrier<PIPE_V>();ReduceMax(red,scratch,prod,count,false);VS();
             float value=red.GetValue(0);localScale=value>localScale?value:localScale;
         }
-        if(localScale>0 && localScale<1.7014118e38f){while(localPower<localScale)localPower*=2;while(localPower*.5f>=localScale)localPower*=.5f;}
+        if(localScale>0 && localScale<pinv::kScaleLimit){while(localPower<localScale)localPower*=2;while(localPower*.5f>=localScale)localPower*=.5f;}
         for(uint32_t begin=0;begin<n*pitch;begin+=16320){uint32_t count=n*pitch-begin<16320?n*pitch-begin:16320;Muls(a[begin],a[begin],1.0f/localPower,count);}
         PipeBarrier<PIPE_V>();
         for(uint32_t begin=0;begin<n*pitch;begin+=chunkSize){
@@ -74,7 +75,7 @@ public:
         float scale0=scratch.GetValue(0),scale1=scratch.GetValue(8),scale=scale0>scale1?scale0:scale1;
         float sum0=scratch.GetValue(1),sum1=scratch.GetValue(9),power0=scratch.GetValue(2),power1=scratch.GetValue(10);
         CrossCoreSetFlag<1,PIPE_MTE3>(5);CrossCoreWaitFlag(5);
-        bool valid=scale>=.1f && scale<1.7014118e38f;float power=1;
+        bool valid=scale>=.1f && scale<pinv::kScaleLimit;float power=1;
         if(valid){while(power<scale)power*=2;while(power*.5f>=scale)power*=.5f;}
         float ratio0=power0/power,ratio1=power1/power,total=(sum0*ratio0*ratio0+sum1*ratio1*ratio1)*1.00001f;
         for(uint32_t begin=0;begin<n*pitch;begin+=16320){uint32_t count=n*pitch-begin<16320?n*pitch-begin:16320;Muls(a[begin],a[begin],localPower/power,count);}
@@ -140,17 +141,17 @@ public:
     }
 };
 __aicore__ inline bool TryPeerFullPinv(GM_ADDR in,GM_ADDR dst,GM_ADDR workspace,const LinalgPinvTilingData &data){
-    uint32_t all=GetBlockNum(),physical=GetBlockIdx(),groupSize=all/data.batch,workers=groupSize-2,batch=physical/groupSize,core=physical%groupSize;
+    uint32_t all=PinvVectorBlockCount(),physical=GetBlockIdx(),groupSize=all/data.batch,workers=groupSize-2,batch=physical/groupSize,core=physical%groupSize;
     TPipe pipe;LocalTensor<float> local;bool valid;float inverse=0;
-    GlobalTensor<float> metadata;metadata.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(workspace)+uint64_t(2)*data.batch*data.cols*data.stride+uint64_t(batch)*8192);
+    GlobalTensor<float> metadata;metadata.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(workspace)+pinv::MetadataOffset(data.batch,data.cols,data.stride,batch));
     if(core>=workers){auto producerData=data;producerData.local=data.cols;PeerWindowProducer op;op.Init(in,workspace,producerData,pipe,batch,core-workers);valid=op.Run(batch,metadata);local=op.Flags();}
     else{PipelineRows op;op.Init(in,dst,workspace,data,pipe,batch,core,workers);valid=op.Run(batch,metadata);inverse=op.inverseTotal;local=op.Flags();}
     PipeBarrier<PIPE_ALL>();local.SetValue(0,valid?1.0f:0.0f);local.SetValue(1,inverse);
-    SetFlag<HardEvent::S_MTE3>(0);WaitFlag<HardEvent::S_MTE3>(0);DataCopyPad(metadata[2048+core*8],local,DataCopyExtParams{1,8,0,0,0});SyncAll();
+    SetFlag<HardEvent::S_MTE3>(0);WaitFlag<HardEvent::S_MTE3>(0);DataCopyPad(metadata[pinv::kGroupStatus+core*8],local,DataCopyExtParams{1,8,0,0,0});SyncAll();
     valid=true;
     for(uint32_t b=0;b<data.batch;++b){
-        metadata.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(workspace)+uint64_t(2)*data.batch*data.cols*data.stride+uint64_t(b)*8192);
-        DataCopy(local,metadata[2048],groupSize*8);SetFlag<HardEvent::MTE2_S>(0);WaitFlag<HardEvent::MTE2_S>(0);
+        metadata.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(workspace)+pinv::MetadataOffset(data.batch,data.cols,data.stride,b));
+        DataCopy(local,metadata[pinv::kGroupStatus],groupSize*8);SetFlag<HardEvent::MTE2_S>(0);WaitFlag<HardEvent::MTE2_S>(0);
         float inverseTotal=0;
         for(uint32_t c=0;c<groupSize;++c){if(local.GetValue(c*8)<0.5f)valid=false;inverseTotal+=local.GetValue(c*8+1);}
         DataCopy(local,metadata,64);SetFlag<HardEvent::MTE2_S>(0);WaitFlag<HardEvent::MTE2_S>(0);
@@ -158,7 +159,7 @@ __aicore__ inline bool TryPeerFullPinv(GM_ADDR in,GM_ADDR dst,GM_ADDR workspace,
         local.SetValue(256,total);SetFlag<HardEvent::S_V>(0);WaitFlag<HardEvent::S_V>(0);Sqrt(local[256],local[256],1);
         SetFlag<HardEvent::V_S>(0);WaitFlag<HardEvent::V_S>(0);
         float cutoff=local.GetValue(256)*data.rtol,absolute=data.atol/power;cutoff=cutoff>absolute?cutoff:absolute;
-        if(!(inverseTotal>0 && inverseTotal*cutoff*cutoff<81.0f && total*inverseTotal<3.6e9f))valid=false;
+        if(!(inverseTotal>0 && inverseTotal*cutoff*cutoff<pinv::kGapGateSquared && total*inverseTotal<pinv::kDirectConditionLimit))valid=false;
     }
     PipeBarrier<PIPE_ALL>();pipe.Destroy();return valid;
 }
