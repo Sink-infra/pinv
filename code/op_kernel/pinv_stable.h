@@ -1,4 +1,5 @@
 #pragma once
+#include "pinv_execution.h"
 #include "kernel_operator.h"
 #include "linalg_pinv_tiling.h"
 using namespace AscendC;
@@ -56,7 +57,7 @@ class StablePinv {
     }
     __aicore__ inline void CacheNorms() {
         uint32_t first = t.parallel ? GetBlockIdx() : 0;
-        uint32_t step = t.parallel ? GetBlockNum() : 1;
+        uint32_t step = t.parallel ? PinvVectorBlockCount() : 1;
         for (uint32_t i = first; i < t.cols; i += step) {
             ReadRow(x, i); float a = Dot(x, x); x.SetValue(s, a);
             if (t.local) SV();
@@ -68,136 +69,11 @@ class StablePinv {
         red.SetValue(0, value); SV(); Sqrt(red, red, 1); VS(); return red.GetValue(0);
     }
     __aicore__ inline float AbsScalar(float value) { return value < 0 ? -value : value; }
-    struct Wide { float h, l; };
-    __aicore__ inline Wide Plus(Wide a, Wide b) {
-        volatile float sum = a.h + b.h;
-        volatile float bv = sum - a.h;
-        volatile float av = sum - bv;
-        volatile float br = b.h - bv;
-        volatile float ar = a.h - av;
-        volatile float e = ar + br;
-        e = e + a.l; e = e + b.l;
-        volatile float h = sum + e;
-        volatile float z = h - sum;
-        return {h, e - z};
-    }
-    __aicore__ inline Wide Minus(Wide a, Wide b) { return Plus(a, {-b.h, -b.l}); }
-    __aicore__ inline Wide Times(Wide a, Wide b) {
-        volatile float ahc = 4097.0f * a.h, bhc = 4097.0f * b.h;
-        volatile float ahv = ahc - a.h, bhv = bhc - b.h;
-        volatile float ah = ahc - ahv, bh = bhc - bhv;
-        volatile float al = a.h - ah, bl = b.h - bh;
-        volatile float p = a.h * b.h;
-        volatile float e = ah * bh; e = e - p;
-        volatile float x1 = ah * bl; e = e + x1;
-        volatile float x2 = al * bh; e = e + x2;
-        volatile float x3 = al * bl; e = e + x3;
-        volatile float x4 = a.h * b.l; e = e + x4;
-        volatile float x5 = a.l * b.h; e = e + x5;
-        return Plus({p, 0}, {e, 0});
-    }
-    __aicore__ inline Wide Divide(Wide a, Wide b) {
-        float q = a.h / b.h;
-        Wide residual = Minus(a, Times(b, {q, 0}));
-        return Plus({q, 0}, {residual.h / b.h, 0});
-    }
-    __aicore__ inline Wide Entry(LocalTensor<float> h, LocalTensor<float> l, uint32_t pos) {
-        return {h.GetValue(pos), l.GetValue(pos)};
-    }
-    __aicore__ inline void SaveEntry(LocalTensor<float> h, LocalTensor<float> l, uint32_t pos, Wide val) {
-        h.SetValue(pos, val.h); l.SetValue(pos, val.l);
-    }
-    __aicore__ inline void AccurateFull(uint32_t offset, float scale) {
-        float power = 1.0f;
-        while (power * 0.5f >= scale) power *= 0.5f;
-        for (uint32_t i = 0; i < t.cols; ++i) {
-            Duplicate(x, 0.0f, rowLength); PipeBarrier<PIPE_V>();
-            if (t.m >= t.n) {
-                DataCopyPad(gather, input[offset + i], DataCopyExtParams{static_cast<uint16_t>(t.m), 4, (t.n - 1) * 4, 0, 0}, DataCopyPadExtParams<float>{true, 0, 7, 0});
-                SetFlag<HardEvent::MTE2_S>(0); WaitFlag<HardEvent::MTE2_S>(0); VS();
-                for (uint32_t j = 0; j < t.rows; ++j) x.SetValue(j, gather.GetValue(j * 8));
-                SV();
-            } else Load(x, input[offset + i * t.n], t.n);
-            Muls(x, x, 1.0f / power, r8); PipeBarrier<PIPE_V>(); SaveRow(x, i);
-        }
-        for (uint32_t i = 0; i < t.cols; ++i) {
-            ReadRow(x, i);
-            for (uint32_t j = 0; j < t.cols; ++j) {
-                ReadRow(y, j); VS(); Wide sum = {0, 0};
-                for (uint32_t k = 0; k < t.rows; ++k) sum = Plus(sum, Times({x.GetValue(k), 0}, {y.GetValue(k), 0}));
-                SaveEntry(gh, gl, i * k8 + j, sum);
-                SaveEntry(ih, il, i * k8 + j, {i == j ? 1.0f : 0.0f, 0});
-            }
-        }
-        for (uint32_t p = 0; p < t.cols; ++p) {
-            uint32_t pivot = p; float best = AbsScalar(gh.GetValue(p * k8 + p));
-            for (uint32_t i = p + 1; i < t.cols; ++i) {
-                float value = AbsScalar(gh.GetValue(i * k8 + p));
-                if (value > best) { best = value; pivot = i; }
-            }
-            if (pivot != p) for (uint32_t j = 0; j < t.cols; ++j) {
-                Wide a = Entry(gh, gl, p * k8 + j), b = Entry(gh, gl, pivot * k8 + j);
-                SaveEntry(gh, gl, p * k8 + j, b); SaveEntry(gh, gl, pivot * k8 + j, a);
-                a = Entry(ih, il, p * k8 + j); b = Entry(ih, il, pivot * k8 + j);
-                SaveEntry(ih, il, p * k8 + j, b); SaveEntry(ih, il, pivot * k8 + j, a);
-            }
-            Wide divisor = Entry(gh, gl, p * k8 + p);
-            for (uint32_t j = 0; j < t.cols; ++j) {
-                SaveEntry(gh, gl, p * k8 + j, Divide(Entry(gh, gl, p * k8 + j), divisor));
-                SaveEntry(ih, il, p * k8 + j, Divide(Entry(ih, il, p * k8 + j), divisor));
-            }
-            for (uint32_t i = 0; i < t.cols; ++i) if (i != p) {
-                Wide factor = Entry(gh, gl, i * k8 + p);
-                for (uint32_t j = 0; j < t.cols; ++j) {
-                    SaveEntry(gh, gl, i * k8 + j, Minus(Entry(gh, gl, i * k8 + j), Times(factor, Entry(gh, gl, p * k8 + j))));
-                    SaveEntry(ih, il, i * k8 + j, Minus(Entry(ih, il, i * k8 + j), Times(factor, Entry(ih, il, p * k8 + j))));
-                }
-            }
-        }
-        for (uint32_t row = 0; row < t.n; ++row) {
-            for (uint32_t col = 0; col < t.m; ++col) {
-                Wide sum = {0, 0};
-                for (uint32_t i = 0; i < t.cols; ++i) {
-                    ReadRow(x, i); VS();
-                    Wide inv = Entry(ih, il, (t.m >= t.n ? row : col) * k8 + i);
-                    sum = Plus(sum, Times(inv, {x.GetValue(t.m >= t.n ? col : row), 0}));
-                }
-                output.SetValue(col, (sum.h + sum.l) / power);
-            }
-            Store(result[offset + row * t.m], output, t.m);
-        }
-    }
-    __aicore__ inline void VectorEliminate(Wide factor) {
-        auto qh = calc[0], ql = calc[1], bh = calc[2], bl = calc[3], e = calc[4], part = calc[5], product = calc[6], aux = calc[7];
-        volatile float ac = factor.h * 4097.0f;
-        volatile float az = ac - factor.h;
-        volatile float ah = ac - az;
-        volatile float al = factor.h - ah;
-        Muls(bh, u, 4097.0f, s); PipeBarrier<PIPE_V>();
-        Sub(bl, bh, u, s); PipeBarrier<PIPE_V>(); Sub(bh, bh, bl, s); PipeBarrier<PIPE_V>();
-        Sub(bl, u, bh, s); Muls(product, u, factor.h, s); PipeBarrier<PIPE_V>();
-        Muls(e, bh, static_cast<float>(ah), s); PipeBarrier<PIPE_V>(); Sub(e, e, product, s); PipeBarrier<PIPE_V>();
-        Muls(part, bl, static_cast<float>(ah), s); PipeBarrier<PIPE_V>(); Add(e, e, part, s); PipeBarrier<PIPE_V>();
-        Muls(part, bh, static_cast<float>(al), s); PipeBarrier<PIPE_V>(); Add(e, e, part, s); PipeBarrier<PIPE_V>();
-        Muls(part, bl, static_cast<float>(al), s); PipeBarrier<PIPE_V>(); Add(e, e, part, s); PipeBarrier<PIPE_V>();
-        Muls(part, v, factor.h, s); PipeBarrier<PIPE_V>(); Add(e, e, part, s); PipeBarrier<PIPE_V>();
-        Muls(part, u, factor.l, s); PipeBarrier<PIPE_V>(); Add(e, e, part, s); PipeBarrier<PIPE_V>();
-        Add(qh, product, e, s); PipeBarrier<PIPE_V>(); Sub(ql, qh, product, s); PipeBarrier<PIPE_V>(); Sub(ql, e, ql, s); PipeBarrier<PIPE_V>();
-        Sub(bh, x, qh, s); PipeBarrier<PIPE_V>(); Sub(bl, bh, x, s); PipeBarrier<PIPE_V>();
-        Sub(e, bh, bl, s); PipeBarrier<PIPE_V>(); Sub(e, x, e, s); Muls(part, qh, -1.0f, s); PipeBarrier<PIPE_V>();
-        Sub(part, part, bl, s); PipeBarrier<PIPE_V>(); Add(e, e, part, s); PipeBarrier<PIPE_V>();
-        Add(e, e, y, s); PipeBarrier<PIPE_V>(); Sub(e, e, ql, s); PipeBarrier<PIPE_V>();
-        Add(x, bh, e, s); PipeBarrier<PIPE_V>(); Sub(aux, x, bh, s); PipeBarrier<PIPE_V>(); Sub(y, e, aux, s); PipeBarrier<PIPE_V>();
-    }
-    __aicore__ inline void VectorNormalize(Wide divisor) {
-        float reciprocal = 1.0f / divisor.h;
-        Muls(u, x, reciprocal, s); Duplicate(v, 0.0f, s); PipeBarrier<PIPE_V>();
-        VectorEliminate(divisor);
-        Muls(calc[0], x, reciprocal, s); PipeBarrier<PIPE_V>();
-        Add(x, u, calc[0], s); PipeBarrier<PIPE_V>();
-        Sub(y, x, u, s); PipeBarrier<PIPE_V>();
-        Sub(y, calc[0], y, s); PipeBarrier<PIPE_V>();
-    }
+#include "pinv_wide.h"
+#include "pinv_full_precision.h"
+
+#include "pinv_vector_precision.h"
+
     __aicore__ inline void GlobalPivot(uint32_t cores, float &best, uint32_t &pivot) {
         if (cores == 0 || cores > 128 || (WAVE && cores < 8)) {
             for (uint32_t i = 0; i < cores; ++i) {
@@ -296,7 +172,7 @@ class StablePinv {
         uint32_t count = rows * r8, factors = (rows + 7) / 8 * 8;
         auto err = batchCalc[0], lowFactor = batchCalc[1], bh = batchCalc[2], bl = batchCalc[3];
         auto e = batchCalc[4], part = batchCalc[5], product = batchCalc[6], aux = batchCalc[7];
-        Muls(bh, v, 4097.0f, factors); PipeBarrier<PIPE_V>();
+        Muls(bh, v, pinv::kSplitFactor, factors); PipeBarrier<PIPE_V>();
         Sub(bl, bh, v, factors); PipeBarrier<PIPE_V>();
         Sub(bh, bh, bl, factors); PipeBarrier<PIPE_V>();
         Sub(bl, v, bh, factors); PipeBarrier<PIPE_V>();
@@ -333,7 +209,7 @@ class StablePinv {
         auto err = batchCalc[0], lowFactor = batchCalc[1], bh = batchCalc[2], bl = batchCalc[3];
         auto e = batchCalc[4], part = batchCalc[5], product = batchCalc[6], aux = batchCalc[7];
         if (!prepared) {
-        Muls(bh, v, 4097.0f, factors); PipeBarrier<PIPE_V>();
+        Muls(bh, v, pinv::kSplitFactor, factors); PipeBarrier<PIPE_V>();
         Sub(bl, bh, v, factors); PipeBarrier<PIPE_V>();
         Sub(bh, bh, bl, factors); PipeBarrier<PIPE_V>();
         Sub(bl, v, bh, factors); PipeBarrier<PIPE_V>();
@@ -381,7 +257,7 @@ class StablePinv {
     __aicore__ inline bool QuickResidentSquare(uint32_t b, uint32_t offset, float scale,
                                                GlobalTensor<float> meta, bool certify, float cutoff) {
         if (!(scale >= 0.1f)) return false;
-        uint32_t core = GetBlockIdx(), cores = GetBlockNum();
+        uint32_t core = GetBlockIdx(), cores = PinvVectorBlockCount();
         uint32_t owned = (t.cols + cores - 1 - core) / cores;
         auto bx = x, by = y, bu = u, bv = v;
         float power = 1.0f;
@@ -495,9 +371,9 @@ class StablePinv {
         for (uint32_t i = 0; i < cores; ++i) inverseTotal += gather.GetValue(i * 8);
         float scaledCutoff = cutoff / power;
         if (!(inverseTotal > 0.0f)) return false;
-        if (certify && !(inverseTotal * scaledCutoff * scaledCutoff < 81.0f)) return false;
-        if (!(total * inverseTotal < 3.6e9f)) {
-            if (total * inverseTotal < 4.0e11f && t.resident * r8 <= 8 * s &&
+        if (certify && !(inverseTotal * scaledCutoff * scaledCutoff < pinv::kGapGateSquared)) return false;
+        if (!(total * inverseTotal < pinv::kDirectConditionLimit)) {
+            if (total * inverseTotal < pinv::kRefineConditionLimit && t.resident * r8 <= 8 * s &&
                 owned <= 255 && t.inverseTile * stride >= owned * 8 && 2 * cores * r8 <= t.cols * stride)
                 return RefineResident(b, offset, power, total, inverseTotal, meta, certify, cutoff);
             return false;
@@ -512,9 +388,9 @@ class StablePinv {
     }
     __aicore__ inline bool ResidentSquare(uint32_t b, uint32_t offset, float scale,
                                           GlobalTensor<float> meta, bool certify, float cutoff, bool skipQuick = false) {
-        if constexpr (WAVE) if ((t.cols + GetBlockNum() - 1) / GetBlockNum() * stride > lowElements) return false;
+        if constexpr (WAVE) if ((t.cols + PinvVectorBlockCount() - 1) / PinvVectorBlockCount() * stride > lowElements) return false;
         if (!skipQuick && QuickResidentSquare(b, offset, scale, meta, certify, cutoff)) return true;
-        uint32_t core = GetBlockIdx(), cores = GetBlockNum();
+        uint32_t core = GetBlockIdx(), cores = PinvVectorBlockCount();
         uint32_t owned = (t.cols + cores - 1 - core) / cores;
         GlobalTensor<float> low;
         low.SetGlobalBuffer(workBase + uint64_t(t.batch + b) * t.cols * stride);
@@ -557,7 +433,7 @@ class StablePinv {
             }
             PipeBarrier<PIPE_V>();
             uint32_t cachedCount = t.inverseTile * stride;
-            Muls(batchCalc[0], batchU, 4097.0f, cachedCount); PipeBarrier<PIPE_V>();
+            Muls(batchCalc[0], batchU, pinv::kSplitFactor, cachedCount); PipeBarrier<PIPE_V>();
             Sub(batchCalc[1], batchCalc[0], batchU, cachedCount); PipeBarrier<PIPE_V>();
             Sub(batchCalc[0], batchCalc[0], batchCalc[1], cachedCount); PipeBarrier<PIPE_V>();
             Sub(batchCalc[1], batchU, batchCalc[0], cachedCount); PipeBarrier<PIPE_V>(); VS();
@@ -589,7 +465,7 @@ class StablePinv {
             Load(gather, meta, cores * 8); inverseTotal = 0.0f;
             for (uint32_t i = 0; i < cores; ++i) inverseTotal += gather.GetValue(i * 8);
             float scaledCutoff = cutoff / power;
-            if (!(inverseTotal > 0.0f && inverseTotal * scaledCutoff * scaledCutoff < 81.0f)) return false;
+            if (!(inverseTotal > 0.0f && inverseTotal * scaledCutoff * scaledCutoff < pinv::kGapGateSquared)) return false;
         }
         for (uint32_t row = 0; row < owned; ++row) {
             VS(); uint32_t target = static_cast<uint32_t>(static_cast<int32_t>(norms.GetValue(core + row * cores))) - 1;
@@ -603,11 +479,11 @@ class StablePinv {
                                          bool certify = false, float cutoff = 0.0f, bool skipQuick = false) {
         if (t.resident) {
             if constexpr (WAVE) {
-                if ((t.cols + GetBlockNum() - 1) / GetBlockNum() * stride <= lowElements)
+                if ((t.cols + PinvVectorBlockCount() - 1) / PinvVectorBlockCount() * stride <= lowElements)
                     return ResidentSquare(b, offset, scale, meta, certify, cutoff, skipQuick);
             } else return ResidentSquare(b, offset, scale, meta, certify, cutoff, skipQuick);
         }
-        uint32_t core = GetBlockIdx(), cores = GetBlockNum();
+        uint32_t core = GetBlockIdx(), cores = PinvVectorBlockCount();
         GlobalTensor<float> low;
         low.SetGlobalBuffer(workBase + uint64_t(t.batch + b) * t.cols * stride);
         float power = 1.0f;
@@ -634,7 +510,7 @@ class StablePinv {
             Load(gather, meta, cores * 8); best = 0; uint32_t bestCore = 0;
             for (uint32_t i = 0; i < cores; ++i) { float value = gather.GetValue(i * 8); if (value > best) { best = value; bestCore = i; } }
             if (certify && !(best > 0.0f)) return false;
-            Load(gather, meta[256], cores * 8);
+            Load(gather, meta[pinv::kPivotIndex], cores * 8);
             uint32_t pivot = static_cast<uint32_t>(static_cast<int32_t>(gather.GetValue(bestCore * 8)));
             if (core == 0) {
                 if (pivot != p) {
@@ -706,7 +582,7 @@ class StablePinv {
             float scaledCutoff = cutoff / power;
             // The promised spectral gap bounds a discarded nonzero value by 0.1 times the threshold.
             // Such a value forces the inverse norm times this upper threshold to be at least ten.
-            if (!(inverseTotal > 0.0f && inverseTotal * scaledCutoff * scaledCutoff < 81.0f)) return false;
+            if (!(inverseTotal > 0.0f && inverseTotal * scaledCutoff * scaledCutoff < pinv::kGapGateSquared)) return false;
         }
         for (uint32_t row = core; row < t.n; row += cores) {
             ReadRow(x, row); Load(y, low[row * stride], rowLength); VS();
@@ -717,7 +593,7 @@ class StablePinv {
         return true;
     }
     __aicore__ inline void RestoreJacobi(uint32_t offset, float scale) {
-        for (uint32_t i = GetBlockIdx(); i < t.cols; i += GetBlockNum()) {
+        for (uint32_t i = GetBlockIdx(); i < t.cols; i += PinvVectorBlockCount()) {
             Duplicate(x, 0.0f, rowLength); PipeBarrier<PIPE_V>();
             DataCopyPad(gather, input[offset + i], DataCopyExtParams{static_cast<uint16_t>(t.m), 4, (t.n - 1) * 4, 0, 0}, DataCopyPadExtParams<float>{true, 0, 7, 0});
             SetFlag<HardEvent::MTE2_S>(0); WaitFlag<HardEvent::MTE2_S>(0); VS();
@@ -729,11 +605,11 @@ class StablePinv {
     }
     __aicore__ inline void BatchEliminate(uint32_t count, bool cached = false, bool zeroLow = false) {
         auto qh = batchCalc[0], ql = batchCalc[1], bh = batchCalc[2], bl = batchCalc[3], e = batchCalc[4], part = batchCalc[5], product = batchCalc[6], aux = batchCalc[7];
-        Muls(bh, batchH, 4097.0f, count); PipeBarrier<PIPE_V>();
+        Muls(bh, batchH, pinv::kSplitFactor, count); PipeBarrier<PIPE_V>();
         Sub(bl, bh, batchH, count); PipeBarrier<PIPE_V>(); Sub(bh, bh, bl, count); PipeBarrier<PIPE_V>();
         Sub(bl, batchH, bh, count);
         if (!cached) {
-            Muls(qh, batchU, 4097.0f, count); PipeBarrier<PIPE_V>();
+            Muls(qh, batchU, pinv::kSplitFactor, count); PipeBarrier<PIPE_V>();
             Sub(ql, qh, batchU, count); PipeBarrier<PIPE_V>(); Sub(qh, qh, ql, count); PipeBarrier<PIPE_V>();
             Sub(ql, batchU, qh, count);
         }
@@ -813,7 +689,7 @@ class StablePinv {
         for (uint32_t i = 0; i < t.cols; ++i) { x = Row(i); inverseTotal += Dot(x[r8], x[r8]); }
         float cutoff = Root(total) * t.rtol;
         float absolute = t.atol / power; cutoff = cutoff > absolute ? cutoff : absolute;
-        if (!(inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < 0.81f)) return false;
+        if (!(inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < pinv::kDirectGateSquared)) return false;
         for (uint32_t i = 0; i < t.n; ++i) {
             x = Row(i); y = lowMatrix[i * stride];
             Add(output, x[r8], y[r8], r8); PipeBarrier<PIPE_V>(); Muls(output, output, 1.0f / power, r8); PipeBarrier<PIPE_V>();
@@ -883,7 +759,7 @@ class StablePinv {
         PipeBarrier<PIPE_V>(); ReduceSum(red, lowMatrix, tmp, count); VS();
         float inverseTotal = red.GetValue(0), cutoff = Root(total) * t.rtol;
         float absolute = t.atol / power; cutoff = cutoff > absolute ? cutoff : absolute;
-        if (!(inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < 0.81f)) return false;
+        if (!(inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < pinv::kDirectGateSquared)) return false;
         Muls(matrix, matrix, 1.0f / power, count); PipeBarrier<PIPE_V>();
         SetFlag<HardEvent::V_MTE3>(0); WaitFlag<HardEvent::V_MTE3>(0);
         SetFlag<HardEvent::S_MTE3>(0); WaitFlag<HardEvent::S_MTE3>(0);
@@ -950,7 +826,7 @@ class StablePinv {
         PipeBarrier<PIPE_V>(); ReduceSum(red, lowMatrix, tmp, count); VS();
         float inverseTotal = red.GetValue(0), cutoff = Root(total) * t.rtol;
         float absolute = t.atol / power; cutoff = cutoff > absolute ? cutoff : absolute;
-        if (!(inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < 0.81f)) return false;
+        if (!(inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < pinv::kDirectGateSquared)) return false;
         Muls(matrix, matrix, 1.0f / power, count); PipeBarrier<PIPE_V>();
         for (uint32_t row = 0; row < n; ++row) {
             uint32_t target = pivotOrder[row];
@@ -1003,14 +879,14 @@ class StablePinv {
     }
     template <bool PACKETS>
     __aicore__ inline uint32_t GroupedResidentPath() {
-        uint32_t physical = GetBlockIdx(), allCores = GetBlockNum(), groups = t.groupCount;
+        uint32_t physical = GetBlockIdx(), allCores = PinvVectorBlockCount(), groups = t.groupCount;
         uint32_t base = allCores / groups, extra = allCores % groups;
         uint32_t group, core, cores;
         if (physical < extra * (base + 1)) { group = physical / (base + 1); core = physical % (base + 1); cores = base + 1; }
         else { uint32_t rest = physical - extra * (base + 1); group = extra + rest / base; core = rest % base; cores = base; }
         uint32_t b = group, offset = b * t.m * t.n, owned = (t.cols + cores - 1 - core) / cores;
         GlobalTensor<float> meta;
-        meta.SetGlobalBuffer(workBase + uint64_t(2) * t.batch * t.cols * stride + uint64_t(b) * 8192);
+        meta.SetGlobalBuffer(workBase + pinv::MetadataOffset(t.batch,t.cols,stride,b));
         work.SetGlobalBuffer(workBase + uint64_t(b) * t.cols * stride);
         Duplicate(tileHigh, 0.0f, owned * stride); Duplicate(norms, 0.0f, k8); PipeBarrier<PIPE_V>();
         float scale = 0.0f;
@@ -1022,7 +898,7 @@ class StablePinv {
         red.SetValue(0, scale); Store(meta[core * 8], red, 1); SyncAll();
         Load(gather, meta, cores * 8); scale = 0.0f;
         for (uint32_t peer = 0; peer < cores; ++peer) { float value = gather.GetValue(peer * 8); scale = value > scale ? value : scale; }
-        bool valid = scale >= 0.1f && scale < 1.7014118e38f;
+        bool valid = scale >= 0.1f && scale < pinv::kScaleLimit;
         float power = 1.0f;
         if (valid) { while (power < scale) power *= 2.0f; while (power * 0.5f >= scale) power *= 0.5f; }
         float total = 0.0f;
@@ -1110,31 +986,31 @@ class StablePinv {
         if (valid) for (uint32_t row = 0; row < owned; ++row) inverseTotal += Dot(tileHigh[row * stride + r8], tileHigh[row * stride + r8]);
         red.SetValue(0, inverseTotal); Store(meta[core * 8], red, 1); SyncAll(); Load(gather, meta, cores * 8); inverseTotal = 0.0f;
         for (uint32_t peer = 0; peer < cores; ++peer) inverseTotal += gather.GetValue(peer * 8);
-        valid = valid && inverseTotal > 0.0f && total * inverseTotal < 3.6e9f && inverseTotal * cutoff * cutoff < 81.0f;
+        valid = valid && inverseTotal > 0.0f && total * inverseTotal < pinv::kDirectConditionLimit && inverseTotal * cutoff * cutoff < pinv::kGapGateSquared;
         if (valid) for (uint32_t row = 0; row < owned; ++row) {
             VS(); uint32_t target = static_cast<uint32_t>(static_cast<int32_t>(norms.GetValue(core + row * cores))) - 1;
             Muls(output, tileHigh[row * stride + r8], 1.0f / power, r8); PipeBarrier<PIPE_V>(); Store(result[offset + target * t.m], output, t.m);
         }
-        if (core == 0) { red.SetValue(0, valid ? 1.0f : 0.0f); Store(meta[1024], red, 1); }
+        if (core == 0) { red.SetValue(0, valid ? 1.0f : 0.0f); Store(meta[pinv::kGroupFlags], red, 1); }
         SyncAll();
         uint32_t accepted = 0;
         for (uint32_t peer = 0; peer < groups; ++peer) {
-            meta.SetGlobalBuffer(workBase + uint64_t(2) * t.batch * t.cols * stride + uint64_t(peer) * 8192);
-            Load(gather, meta[1024], 1); if (gather.GetValue(0) > 0.5f) accepted |= uint32_t(1) << peer;
+            meta.SetGlobalBuffer(workBase + pinv::MetadataOffset(t.batch,t.cols,stride,peer));
+            Load(gather, meta[pinv::kGroupFlags], 1); if (gather.GetValue(0) > 0.5f) accepted |= uint32_t(1) << peer;
         }
         t.resident = (t.cols + allCores - 1) / allCores;
         return accepted;
     }
     template <uint32_t PANEL>
     __aicore__ inline uint32_t GroupedResidentPanels() {
-        uint32_t physical = GetBlockIdx(), allCores = GetBlockNum(), groups = t.groupCount;
+        uint32_t physical = GetBlockIdx(), allCores = PinvVectorBlockCount(), groups = t.groupCount;
         uint32_t base = allCores / groups, extra = allCores % groups;
         uint32_t group, core, cores;
         if (physical < extra * (base + 1)) { group = physical / (base + 1); core = physical % (base + 1); cores = base + 1; }
         else { uint32_t rest = physical - extra * (base + 1); group = extra + rest / base; core = rest % base; cores = base; }
         uint32_t b = group, offset = b * t.m * t.n, owned = (t.cols + cores - 1 - core) / cores;
         GlobalTensor<float> meta;
-        meta.SetGlobalBuffer(workBase + uint64_t(2) * t.batch * t.cols * stride + uint64_t(b) * 8192);
+        meta.SetGlobalBuffer(workBase + pinv::MetadataOffset(t.batch,t.cols,stride,b));
         work.SetGlobalBuffer(workBase + uint64_t(b) * t.cols * stride);
         Duplicate(tileHigh, 0.0f, owned * stride); Duplicate(norms, 0.0f, k8);
         float scale = 0.0f;
@@ -1146,7 +1022,7 @@ class StablePinv {
         red.SetValue(0, scale); Store(meta[core * 8], red, 1); SyncAll();
         Load(gather, meta, cores * 8); scale = 0.0f;
         for (uint32_t peer = 0; peer < cores; ++peer) { float value = gather.GetValue(peer * 8); scale = value > scale ? value : scale; }
-        bool valid = scale >= 0.1f && scale < 1.7014118e38f;
+        bool valid = scale >= 0.1f && scale < pinv::kScaleLimit;
         float power = 1.0f;
         if (valid) { while (power < scale) power *= 2.0f; while (power * 0.5f >= scale) power *= 0.5f; }
         float total = 0.0f;
@@ -1278,11 +1154,11 @@ class StablePinv {
         if (valid) for (uint32_t row = 0; row < owned; ++row) inverseTotal += Dot(tileHigh[row * stride + r8], tileHigh[row * stride + r8]);
         red.SetValue(0, inverseTotal); Store(meta[core * 8], red, 1); SyncAll(); Load(gather, meta, cores * 8); inverseTotal = 0.0f;
         for (uint32_t peer = 0; peer < cores; ++peer) inverseTotal += gather.GetValue(peer * 8);
-        bool sound = valid && inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < 81.0f;
+        bool sound = valid && inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < pinv::kGapGateSquared;
         uint32_t normOwned = (t.cols + allCores - 1) / allCores;
-        bool prepared = sound && total * inverseTotal >= 3.6e9f && total * inverseTotal < 4.0e11f &&
+        bool prepared = sound && total * inverseTotal >= pinv::kDirectConditionLimit && total * inverseTotal < pinv::kRefineConditionLimit &&
             normOwned * r8 <= 8 * s && t.inverseTile * stride >= normOwned * 8 && 2 * allCores * r8 <= t.cols * stride;
-        valid = sound && total * inverseTotal < 3.6e9f;
+        valid = sound && total * inverseTotal < pinv::kDirectConditionLimit;
         if (valid || prepared) {
             for (uint32_t row = 0; row < owned; ++row) {
                 Muls(tileHigh[row * stride + r8], tileHigh[row * stride + r8], valid ? 1.0f / power : 1.0f, r8); PipeBarrier<PIPE_V>();
@@ -1298,15 +1174,15 @@ class StablePinv {
         }
         if (core == 0) {
             if (prepared) {
-                red.SetValue(0, total); red.SetValue(1, inverseTotal); red.SetValue(2, power); Store(meta[1032], red, 3);
+                red.SetValue(0, total); red.SetValue(1, inverseTotal); red.SetValue(2, power); Store(meta[pinv::kPrepared], red, 3);
             }
-            red.SetValue(0, valid ? 1.0f : (prepared ? 2.0f : 0.0f)); Store(meta[1024], red, 1);
+            red.SetValue(0, valid ? 1.0f : (prepared ? 2.0f : 0.0f)); Store(meta[pinv::kGroupFlags], red, 1);
         }
         SyncAll();
         uint32_t accepted = 0;
         for (uint32_t peer = 0; peer < groups; ++peer) {
-            meta.SetGlobalBuffer(workBase + uint64_t(2) * t.batch * t.cols * stride + uint64_t(peer) * 8192);
-            Load(gather, meta[1024], 1); float state = gather.GetValue(0);
+            meta.SetGlobalBuffer(workBase + pinv::MetadataOffset(t.batch,t.cols,stride,peer));
+            Load(gather, meta[pinv::kGroupFlags], 1); float state = gather.GetValue(0);
             if (state > 1.5f) accepted |= uint32_t(1) << (peer + 4);
             else if (state > 0.5f) accepted |= uint32_t(1) << peer;
         }
@@ -1318,14 +1194,14 @@ class StablePinv {
     template <uint32_t PANEL, bool LOGICAL = false>
     __aicore__ inline uint32_t GroupedResidentPartialPanels() {
         constexpr bool PAD_MAX = true;
-        uint32_t physical = GetBlockIdx(), allCores = GetBlockNum(), groups = t.groupCount;
+        uint32_t physical = GetBlockIdx(), allCores = PinvVectorBlockCount(), groups = t.groupCount;
         uint32_t base = allCores / groups, extra = allCores % groups;
         uint32_t group, core, cores;
         if (physical < extra * (base + 1)) { group = physical / (base + 1); core = physical % (base + 1); cores = base + 1; }
         else { uint32_t rest = physical - extra * (base + 1); group = extra + rest / base; core = rest % base; cores = base; }
         uint32_t b = group, offset = b * t.m * t.n, owned = (t.cols + cores - 1 - core) / cores;
         GlobalTensor<float> meta;
-        meta.SetGlobalBuffer(workBase + uint64_t(2) * t.batch * t.cols * stride + uint64_t(b) * 8192);
+        meta.SetGlobalBuffer(workBase + pinv::MetadataOffset(t.batch,t.cols,stride,b));
         work.SetGlobalBuffer(workBase + uint64_t(b) * t.cols * stride);
         uint32_t packedCount = owned * r8;
         uint32_t packedScratch = ((packedCount + 63) / 64 + 7) / 8 * 8;
@@ -1371,7 +1247,7 @@ class StablePinv {
         red.SetValue(0, scale); Store(meta[core * 8], red, 1); SyncAll();
         Load(gather, meta, cores * 8); scale = 0.0f;
         for (uint32_t peer = 0; peer < cores; ++peer) { float value = gather.GetValue(peer * 8); scale = value > scale ? value : scale; }
-        bool valid = scale >= 0.1f && scale < 1.7014118e38f;
+        bool valid = scale >= 0.1f && scale < pinv::kScaleLimit;
         float power = 1.0f;
         if (valid) { while (power < scale) power *= 2.0f; while (power * 0.5f >= scale) power *= 0.5f; }
         float total = 0.0f;
@@ -1550,11 +1426,11 @@ class StablePinv {
         } else if (valid) for (uint32_t row = 0; row < owned; ++row) inverseTotal += Dot(tileHigh[row * stride + r8], tileHigh[row * stride + r8]);
         red.SetValue(0, inverseTotal); Store(meta[core * 8], red, 1); SyncAll(); Load(gather, meta, cores * 8); inverseTotal = 0.0f;
         for (uint32_t peer = 0; peer < cores; ++peer) inverseTotal += gather.GetValue(peer * 8);
-        bool sound = valid && inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < 81.0f;
+        bool sound = valid && inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < pinv::kGapGateSquared;
         uint32_t normOwned = (t.cols + allCores - 1) / allCores;
-        bool prepared = sound && total * inverseTotal >= 3.6e9f && total * inverseTotal < 4.0e11f &&
+        bool prepared = sound && total * inverseTotal >= pinv::kDirectConditionLimit && total * inverseTotal < pinv::kRefineConditionLimit &&
             normOwned * r8 <= 8 * s && t.inverseTile * stride >= normOwned * 8 && 2 * allCores * r8 <= t.cols * stride;
-        valid = sound && total * inverseTotal < 3.6e9f;
+        valid = sound && total * inverseTotal < pinv::kDirectConditionLimit;
         if (valid || prepared) {
             if constexpr (LOGICAL) {
                 auto inverseColumns = gather.ReinterpretCast<uint32_t>();
@@ -1583,15 +1459,15 @@ class StablePinv {
         }
         if (core == 0) {
             if (prepared) {
-                red.SetValue(0, total); red.SetValue(1, inverseTotal); red.SetValue(2, power); Store(meta[1032], red, 3);
+                red.SetValue(0, total); red.SetValue(1, inverseTotal); red.SetValue(2, power); Store(meta[pinv::kPrepared], red, 3);
             }
-            red.SetValue(0, valid ? 1.0f : (prepared ? 2.0f : 0.0f)); Store(meta[1024], red, 1);
+            red.SetValue(0, valid ? 1.0f : (prepared ? 2.0f : 0.0f)); Store(meta[pinv::kGroupFlags], red, 1);
         }
         SyncAll();
         uint32_t accepted = 0;
         for (uint32_t peer = 0; peer < groups; ++peer) {
-            meta.SetGlobalBuffer(workBase + uint64_t(2) * t.batch * t.cols * stride + uint64_t(peer) * 8192);
-            Load(gather, meta[1024], 1); float state = gather.GetValue(0);
+            meta.SetGlobalBuffer(workBase + pinv::MetadataOffset(t.batch,t.cols,stride,peer));
+            Load(gather, meta[pinv::kGroupFlags], 1); float state = gather.GetValue(0);
             if (state > 1.5f) accepted |= uint32_t(1) << (peer + 4);
             else if (state > 0.5f) accepted |= uint32_t(1) << peer;
         }
@@ -1617,7 +1493,7 @@ class StablePinv {
             && t.resident * stride >= t.cols * panelRows + k8 * 8
             && t.cols * panelRows + panelRows * stride <= t.cols * stride
             && t.inverseTile * stride >= factorRows * 8) return GroupedResidentPanels<panelRows>();
-        uint32_t cores = (GetBlockNum() + t.groupCount - 1) / t.groupCount;
+        uint32_t cores = (PinvVectorBlockCount() + t.groupCount - 1) / t.groupCount;
         uint32_t factors = (t.resident + 7) / 8 * 8;
         bool fits = t.resident * stride >= cores * (rowLength + 8)
                     && 2 * cores * (rowLength + 8) <= t.cols * stride
@@ -1626,7 +1502,7 @@ class StablePinv {
         return GroupedResidentPath<false>();
     }
     __aicore__ inline void RebudgetWaveScratch() {
-        uint32_t active = (t.cols + GetBlockNum() - 1) / GetBlockNum();
+        uint32_t active = (t.cols + PinvVectorBlockCount() - 1) / PinvVectorBlockCount();
         if (t.singleResident) {
             tileLow = tileHigh[active * stride];
             uint32_t remaining = residentElements > active * stride ? residentElements - active * stride : 0;
@@ -1675,7 +1551,7 @@ class StablePinv {
         t.resident = active;
     }
     __aicore__ inline uint32_t WaveGroupedResident() {
-        uint32_t physical = GetBlockIdx(), allCores = GetBlockNum(), groups = t.groupCount;
+        uint32_t physical = GetBlockIdx(), allCores = PinvVectorBlockCount(), groups = t.groupCount;
         uint32_t base = allCores / groups, extra = allCores % groups;
         uint32_t group, core, cores;
         if (physical < extra * (base + 1)) { group = physical / (base + 1); core = physical % (base + 1); cores = base + 1; }
@@ -1684,7 +1560,7 @@ class StablePinv {
         for (uint32_t round = 0; round < t.batch / groups; ++round) {
         uint32_t b = round * groups + group, offset = b * t.m * t.n, owned = (t.cols + cores - 1 - core) / cores;
         GlobalTensor<float> meta;
-        meta.SetGlobalBuffer(workBase + uint64_t(2) * t.batch * t.cols * stride + uint64_t(b) * 8192);
+        meta.SetGlobalBuffer(workBase + pinv::MetadataOffset(t.batch,t.cols,stride,b));
         work.SetGlobalBuffer(workBase + uint64_t(b) * t.cols * stride);
         Duplicate(tileHigh, 0.0f, owned * stride); Duplicate(norms, 0.0f, k8); PipeBarrier<PIPE_V>();
         float scale = 0.0f;
@@ -1696,7 +1572,7 @@ class StablePinv {
         red.SetValue(0, scale); Store(meta[core * 8], red, 1); SyncAll();
         Load(gather, meta, cores * 8); scale = 0.0f;
         for (uint32_t peer = 0; peer < cores; ++peer) { float value = gather.GetValue(peer * 8); scale = value > scale ? value : scale; }
-        bool valid = scale >= 0.1f && scale < 1.7014118e38f;
+        bool valid = scale >= 0.1f && scale < pinv::kScaleLimit;
         float power = 1.0f;
         if (valid) { while (power < scale) power *= 2.0f; while (power * 0.5f >= scale) power *= 0.5f; }
         float total = 0.0f;
@@ -1778,24 +1654,24 @@ class StablePinv {
         if (valid) for (uint32_t row = 0; row < owned; ++row) inverseTotal += Dot(tileHigh[row * stride + r8], tileHigh[row * stride + r8]);
         red.SetValue(0, inverseTotal); Store(meta[core * 8], red, 1); SyncAll(); Load(gather, meta, cores * 8); inverseTotal = 0.0f;
         for (uint32_t peer = 0; peer < cores; ++peer) inverseTotal += gather.GetValue(peer * 8);
-        valid = valid && inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < 81.0f;
+        valid = valid && inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < pinv::kGapGateSquared;
         uint32_t normOwned = (t.cols + allCores - 1) / allCores;
-        bool prepared = valid && total * inverseTotal >= 3.6e9f && total * inverseTotal < 4.0e11f &&
+        bool prepared = valid && total * inverseTotal >= pinv::kDirectConditionLimit && total * inverseTotal < pinv::kRefineConditionLimit &&
             normOwned * r8 <= 8 * s && t.inverseTile * stride >= normOwned * 8 && 2 * allCores * r8 <= t.cols * stride;
-        valid = valid && total * inverseTotal < 3.6e9f;
+        valid = valid && total * inverseTotal < pinv::kDirectConditionLimit;
         if (valid || prepared) for (uint32_t row = 0; row < owned; ++row) {
             VS(); uint32_t target = static_cast<uint32_t>(static_cast<int32_t>(norms.GetValue(core + row * cores))) - 1;
             Muls(output, tileHigh[row * stride + r8], valid ? 1.0f / power : 1.0f, r8); PipeBarrier<PIPE_V>(); Store(result[offset + target * t.m], output, t.m);
         }
         if (core == 0) {
-            red.SetValue(0, total); red.SetValue(1, inverseTotal); red.SetValue(2, power); Store(meta[1032], red, 3);
-            red.SetValue(0, valid ? 1.0f : (prepared ? 2.0f : 0.0f)); Store(meta[1024], red, 1);
+            red.SetValue(0, total); red.SetValue(1, inverseTotal); red.SetValue(2, power); Store(meta[pinv::kPrepared], red, 3);
+            red.SetValue(0, valid ? 1.0f : (prepared ? 2.0f : 0.0f)); Store(meta[pinv::kGroupFlags], red, 1);
         }
         SyncAll();
         for (uint32_t peer = 0; peer < groups; ++peer) {
             uint32_t item = round * groups + peer;
-            meta.SetGlobalBuffer(workBase + uint64_t(2) * t.batch * t.cols * stride + uint64_t(item) * 8192);
-            Load(gather, meta[1024], 1); float state = gather.GetValue(0);
+            meta.SetGlobalBuffer(workBase + pinv::MetadataOffset(t.batch,t.cols,stride,item));
+            Load(gather, meta[pinv::kGroupFlags], 1); float state = gather.GetValue(0);
             if (state > 1.5f) accepted |= uint32_t(1) << (item + 4);
             else if (state > 0.5f) accepted |= uint32_t(1) << item;
         }
@@ -1805,7 +1681,7 @@ class StablePinv {
     }
     template <bool READY = false>
     __aicore__ inline void Parallel(uint32_t accepted = 0, uint32_t prepared = 0) {
-        uint32_t core = GetBlockIdx(), cores = GetBlockNum();
+        uint32_t core = GetBlockIdx(), cores = PinvVectorBlockCount();
         if constexpr (!READY) {
         if constexpr (WAVE) {
             uint32_t grouped = WaveGroupedResident(); accepted = grouped & 15; prepared = grouped >> 4;
@@ -1819,13 +1695,13 @@ class StablePinv {
             uint32_t offset = b * t.m * t.n;
             work.SetGlobalBuffer(workBase + uint64_t(b) * t.cols * stride);
             GlobalTensor<float> meta;
-            meta.SetGlobalBuffer(workBase + uint64_t(2) * t.batch * t.cols * stride + uint64_t(b) * 8192);
+            meta.SetGlobalBuffer(workBase + pinv::MetadataOffset(t.batch,t.cols,stride,b));
             if (prepared & (uint32_t(1) << b)) {
-                Load(gather, meta[1032], 3);
+                Load(gather, meta[pinv::kPrepared], 3);
                 float cachedTotal = gather.GetValue(0), cachedInverse = gather.GetValue(1), power = gather.GetValue(2);
                 float cutoff = power * Root(cachedTotal) * t.rtol;
                 cutoff = cutoff > t.atol ? cutoff : t.atol;
-#if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & 32768UL) && (TILING_KEY_VAR & 16384UL)
+#if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & PINV_KEY_CUBE) && (TILING_KEY_VAR & PINV_KEY_WINDOW)
                 if constexpr(READY){
                     if(RefineResident(b,offset,power,cachedTotal,cachedInverse,meta,true,cutoff,true))continue;
                 }else{
@@ -1877,11 +1753,11 @@ class StablePinv {
             }
             float absTol = t.atol / scale, discard = absTol * absTol;
             float rel = t.rtol * t.rtol * total;
-            discard = (discard > rel ? discard : rel) * 1.0e-8f;
-            float roundoffFloor = total * 1.0e-14f;
+            discard = (discard > rel ? discard : rel) * pinv::kJacobiDiscardMargin;
+            float roundoffFloor = total * pinv::kJacobiRoundoffFloor;
             discard = discard < roundoffFloor ? discard : roundoffFloor;
             bool cached = false;
-            for (uint32_t sweep = 0; sweep < 40; ++sweep) {
+            for (uint32_t sweep = 0; sweep < pinv::kJacobiSweeps; ++sweep) {
                 uint32_t changed = 0;
                 for (uint32_t round = 0; round + 1 < roundCols; ++round) {
                     for (uint32_t slot = core; slot < roundCols / 2; slot += cores) {
@@ -1892,7 +1768,7 @@ class StablePinv {
                         float a, d, h;
                         if (cached) { h = Dot(x, y); a = x.GetValue(s); d = y.GetValue(s); }
                         else { a = Dot(x, x); d = Dot(y, y); h = Dot(x, y); }
-                        if (a <= discard || d <= discard || h == 0 || h * h <= 1.0e-12f * (a * d)) continue;
+                        if (a <= discard || d <= discard || h == 0 || h * h <= pinv::kFp32OrthogonalitySquared * (a * d)) continue;
                         float tau = (d - a) / (2 * h), at = AbsScalar(tau);
                         float z = (tau < 0 ? -1.0f : 1.0f) / (at + Root(1 + at * at));
                         float c = 1.0f / Root(1 + z * z), sn = c * z;
@@ -1911,13 +1787,13 @@ class StablePinv {
                 Load(gather, meta, cores * 8); float sum = 0;
                 for (uint32_t i = 0; i < cores; ++i) sum += gather.GetValue(i * 8);
                 if (sum == 0) break;
-                if (!cached && sum < 0.35f * t.cols * (t.cols - 1)) { CacheNorms(); cached = true; }
+                if (!cached && sum < pinv::kJacobiNormCacheRatio * t.cols * (t.cols - 1)) { CacheNorms(); cached = true; }
             }
             for (uint32_t i = core; i < t.cols; i += cores) {
                 ReadRow(x, i); float a = Dot(x, x); red.SetValue(0, a); Store(meta[512 + i * 8], red, 1);
             }
             SyncAll();
-            DataCopyPad(gather, meta[512], DataCopyExtParams{static_cast<uint16_t>(t.cols), 4, 28, 0, 0}, DataCopyPadExtParams<float>{true, 0, 7, 0});
+            DataCopyPad(gather, meta[pinv::kJacobiNorm], DataCopyExtParams{static_cast<uint16_t>(t.cols), 4, 28, 0, 0}, DataCopyPadExtParams<float>{true, 0, 7, 0});
             SetFlag<HardEvent::MTE2_S>(0); WaitFlag<HardEvent::MTE2_S>(0);
             float maxNorm = 0;
             for (uint32_t i = 0; i < t.cols; ++i) { float a = gather.GetValue(i * 8); norms.SetValue(i, a); maxNorm = a > maxNorm ? a : maxNorm; }
@@ -1991,7 +1867,7 @@ public:
                 uint32_t residentBuffers = 2, lowOffset = residentSize;
                 if constexpr (WAVE) if (t.singleResident) {
                     residentBuffers = 1;
-                    lowOffset = (t.cols + GetBlockNum() - 1) / GetBlockNum() * stride;
+                    lowOffset = (t.cols + PinvVectorBlockCount() - 1) / PinvVectorBlockCount() * stride;
                 }
                 residentElements = residentBuffers * residentSize;
                 lowElements = residentElements - lowOffset;
@@ -2008,90 +1884,6 @@ public:
     }
     __aicore__ inline void Process() {
         if constexpr (!LOCAL) { if (t.parallel) { Parallel(); return; } }
-        for (uint32_t b = GetBlockIdx(); b < t.batch; b += GetBlockNum()) {
-            uint32_t offset = b * t.m * t.n;
-            if (t.localInverse && LocalInverse(offset)) continue;
-            if (!t.local) work.SetGlobalBuffer(workBase + uint64_t(b) * t.cols * stride);
-            float scale = 0;
-            for (uint32_t i = 0; i < t.cols; ++i) {
-                Duplicate(x, 0.0f, rowLength); PipeBarrier<PIPE_V>();
-                if (t.m >= t.n) {
-                    DataCopyPad(gather, input[offset + i], DataCopyExtParams{static_cast<uint16_t>(t.m), 4, (t.n - 1) * 4, 0, 0}, DataCopyPadExtParams<float>{true, 0, 7, 0});
-                    SetFlag<HardEvent::MTE2_S>(0); WaitFlag<HardEvent::MTE2_S>(0); VS();
-                    for (uint32_t j = 0; j < t.rows; ++j) x.SetValue(j, gather.GetValue(j * 8));
-                } else Load(x, input[offset + i * t.n], t.n);
-                VS(); x.SetValue(r8 + i, 1.0f); SV();
-                Abs(prod, x, r8); PipeBarrier<PIPE_V>(); ReduceMax(red, prod, tmp, r8, false); VS();
-                float mx = red.GetValue(0); scale = mx > scale ? mx : scale;
-                SaveRow(x, i);
-            }
-            if (scale == 0) {
-                Duplicate(output, 0.0f, r8); PipeBarrier<PIPE_V>();
-                for (uint32_t i = 0; i < t.n; ++i) Store(result[offset + i * t.m], output, t.m);
-                continue;
-            }
-            float total = 0;
-            for (uint32_t i = 0; i < t.cols; ++i) {
-                ReadRow(x, i); Muls(x, x, 1.0f / scale, r8); PipeBarrier<PIPE_V>();
-                total += Dot(x, x); SaveRow(x, i);
-            }
-            float absTol = t.atol / scale;
-            float discard = absTol * absTol;
-            float rel = t.rtol * t.rtol * total;
-            discard = (discard > rel ? discard : rel) * 1.0e-8f;
-            float roundoffFloor = total * 1.0e-14f;
-            discard = discard < roundoffFloor ? discard : roundoffFloor;
-            bool cached = false;
-            for (uint32_t sweep = 0; sweep < 40; ++sweep) {
-                uint32_t changed = 0;
-                for (uint32_t p = 0; p < t.cols; ++p) {
-                    ReadRow(x, p);
-                    for (uint32_t q = p + 1; q < t.cols; ++q) {
-                        ReadRow(y, q);
-                        float a, d, h;
-                        if (cached) { h = Dot(x, y); a = x.GetValue(s); d = y.GetValue(s); }
-                        else { a = Dot(x, x); d = Dot(y, y); h = Dot(x, y); }
-                        if (a <= discard || d <= discard || h == 0 || h * h <= 1.0e-12f * (a * d)) continue;
-                        float tau = (d - a) / (2 * h);
-                        float at = AbsScalar(tau);
-                        float z = (tau < 0 ? -1.0f : 1.0f) / (at + Root(1 + at * at));
-                        float c = 1.0f / Root(1 + z * z), sn = c * z;
-                        Muls(u, x, c, s); Muls(v, y, -sn, s); PipeBarrier<PIPE_V>(); Add(u, u, v, s); PipeBarrier<PIPE_V>();
-                        Muls(v, x, sn, s); Muls(y, y, c, s); PipeBarrier<PIPE_V>(); Add(y, y, v, s); PipeBarrier<PIPE_V>();
-                        if (cached) {
-                            float na = Dot(u, u), nd = Dot(y, y);
-                            u.SetValue(s, na); y.SetValue(s, nd); SV();
-                        }
-                        DataCopy(x, u, stride); PipeBarrier<PIPE_V>(); SaveRow(y, q); ++changed;
-                    }
-                    SaveRow(x, p);
-                }
-                if (changed == 0) break;
-                if (!cached && changed < 0.35f * t.cols * (t.cols - 1)) { CacheNorms(); cached = true; }
-            }
-            float maxNorm = 0;
-            for (uint32_t i = 0; i < t.cols; ++i) {
-                ReadRow(x, i); float a = Dot(x, x); norms.SetValue(i, a); maxNorm = a > maxNorm ? a : maxNorm;
-            }
-            float threshold = absTol * absTol;
-            float relative = maxNorm * t.rtol * t.rtol;
-            threshold = threshold > relative ? threshold : relative;
-            uint32_t kept = 0;
-            for (uint32_t i = 0; i < t.cols; ++i) {
-                float a = norms.GetValue(i); if (a > threshold) ++kept; norms.SetValue(i, a > threshold ? 1.0f / (a * scale) : 0.0f);
-            }
-            if (t.rows <= 32 && kept == t.cols && scale < 0.001f) { AccurateFull(offset, scale); continue; }
-            for (uint32_t row = 0; row < t.n; ++row) {
-                Duplicate(output, 0.0f, r8); PipeBarrier<PIPE_V>();
-                for (uint32_t i = 0; i < t.cols; ++i) {
-                    float inv = norms.GetValue(i); if (inv == 0) continue;
-                    ReadRow(x, i); VS();
-                    float factor = x.GetValue(t.m >= t.n ? r8 + row : row) * inv;
-                    Muls(prod, t.m >= t.n ? x : x[r8], factor, t.m >= t.n ? r8 : k8); PipeBarrier<PIPE_V>();
-                    Add(output, output, prod, t.m >= t.n ? r8 : k8); PipeBarrier<PIPE_V>();
-                }
-                Store(result[offset + row * t.m], output, t.m);
-            }
-        }
+#include "pinv_jacobi_body.h"
     }
 };
