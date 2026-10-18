@@ -14,7 +14,7 @@ from tests.common.tensor_io import store_text
 class CaseMatrixTests(unittest.TestCase):
     def test_case_counts_and_tuple_attributes(self):
         self.assertEqual({suite: len(cases) for suite, cases in CASE_GROUPS.items()},
-                         {"coverage": 34, "correctness": 35})
+                         {"coverage": 34, "correctness": 43})
         self.assertEqual(len(load_document("mock")["cases"]), 12)
         nonscalar = []
         for cases in CASE_GROUPS.values():
@@ -47,7 +47,7 @@ class CaseMatrixTests(unittest.TestCase):
     def test_cli_lists_suites_and_refuses_cross_suite_selection(self):
         project = Path(__file__).resolve().parents[2]
         command = [sys.executable, "-m", "tests.st.scripts.gen_data"]
-        for suite, count in (("coverage", 34), ("correctness", 35), ("mock", 12)):
+        for suite, count in (("coverage", 34), ("correctness", 43), ("mock", 12)):
             with self.subTest(suite=suite):
                 result = subprocess.run(command + ["--suite", suite, "--list"],
                                         cwd=project, capture_output=True, text=True)

@@ -5,7 +5,7 @@
         for(uint32_t chunk=0;chunk<r8/64;++chunk)WholeReduceSum(parts[chunk*8],square[chunk*64],64,owned,1,1,r8/8);
         PipeBarrier<PIPE_V>();DataCopy(dest,parts,8);PipeBarrier<PIPE_V>();
         for(uint32_t chunk=1;chunk<r8/64;++chunk){Add(dest,dest,parts[chunk*8],8);PipeBarrier<PIPE_V>();}
-        Sqrt(dest,dest,8);PipeBarrier<PIPE_V>();Muls(dest,dest,1.001f,8);PipeBarrier<PIPE_V>();
+        Sqrt(dest,dest,8);PipeBarrier<PIPE_V>();Muls(dest,dest,pinv::kNormSlack,8);PipeBarrier<PIPE_V>();
     }
     __aicore__ inline bool CertifyCubeRefinement(LocalTensor<float> cache,uint32_t owned,float gamma,float rf,float er,float denominator,float power,float &correctedTotal){
         uint32_t count=owned*r8;
@@ -22,9 +22,9 @@
             Mul(threshold[column],output[column],fb,uint64_t(64),static_cast<uint8_t>(owned),{1,1,0,static_cast<uint8_t>(r8/8),0,1});
         }
         PipeBarrier<PIPE_V>();Add(bound,bound,threshold,count);Abs(threshold,cache,count);Abs(roundoff,tileLow,count);PipeBarrier<PIPE_V>();
-        Add(threshold,threshold,roundoff,count);PipeBarrier<PIPE_V>();Muls(threshold,threshold,5.9604644775390625e-8f,count);PipeBarrier<PIPE_V>();
-        Add(bound,bound,threshold,count);PipeBarrier<PIPE_V>();Muls(bound,bound,1.002f,count);Abs(threshold,tileHigh,count);PipeBarrier<PIPE_V>();
-        Muls(threshold,threshold,1.0e-4f,count);PipeBarrier<PIPE_V>();Adds(threshold,threshold,1.0e-4f*power,count);PipeBarrier<PIPE_V>();
+        Add(threshold,threshold,roundoff,count);PipeBarrier<PIPE_V>();Muls(threshold,threshold,pinv::kUnitRoundoff,count);PipeBarrier<PIPE_V>();
+        Add(bound,bound,threshold,count);PipeBarrier<PIPE_V>();Muls(bound,bound,pinv::kResidualSlack,count);Abs(threshold,tileHigh,count);PipeBarrier<PIPE_V>();
+        Muls(threshold,threshold,pinv::kOutputRtol,count);PipeBarrier<PIPE_V>();Adds(threshold,threshold,pinv::kOutputAtol*power,count);PipeBarrier<PIPE_V>();
         Sub(bound,bound,threshold,count);PipeBarrier<PIPE_V>();ReduceMax(red,bound,tmp,count,false);VS();bool valid=red.GetValue(0)<=0.0f;
         Mul(bound,tileHigh,tileHigh,count);PipeBarrier<PIPE_V>();ReduceSum(red,bound,tmp,count);VS();correctedTotal=red.GetValue(0);
         return valid;

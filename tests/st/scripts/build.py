@@ -11,9 +11,9 @@ from tests.common.tensor_io import store_text
 from tests.st.scripts.runtime import DEFAULT_BUILD, ROOT, SDK, environment, sha256_file, source_digest
 
 RUNNER_SOURCE = ROOT / "tests/st/runner/linalg_pinv_runner.cpp"
-STANDALONE_FILES = ("CMakeLists.txt", "op_host/CMakeLists.txt", "op_host/linalg_pinv.cpp",
-                    "op_kernel/CMakeLists.txt", "op_kernel/linalg_pinv.cpp",
-                    "op_kernel/linalg_pinv_tiling.h", "op_kernel/tiling_key_linalg_pinv.h")
+def standalone_files():
+    return tuple(path.relative_to(ROOT / "code").as_posix()
+                 for path in sorted((ROOT / "code").rglob("*")) if path.is_file())
 
 def tiling_path(build_dir):
     return Path(build_dir) / "tmp/vendors/custom/op_impl/ai_core/tbe/op_tiling/lib/linux" / platform.machine() / "libcust_opmaster_rt2.0.so"
@@ -38,7 +38,7 @@ def build_current(build_dir=DEFAULT_BUILD, jobs=8, compute_unit="ascend910b", so
         source = build_dir / "tests/source/code"
         if source.exists():
             shutil.rmtree(source)
-        for name in STANDALONE_FILES:
+        for name in standalone_files():
             destination = source / name
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / "code" / name, destination)
@@ -97,9 +97,9 @@ def verify_build(build_dir):
         source = ROOT / "code" if layout == "project" else build_dir / "tests/source/code"
         files = {path.relative_to(source).as_posix(): sha256_file(path)
                  for path in sorted(source.rglob("*")) if path.is_file()}
-        if layout == "standalone" and (set(files) != set(STANDALONE_FILES) or any(
-                sha256_file(ROOT / "code" / name) != files[name] for name in STANDALONE_FILES)):
-            raise ValueError("standalone source differs from the current template")
+        if layout == "standalone" and (set(files) != set(standalone_files()) or any(
+                sha256_file(ROOT / "code" / name) != files[name] for name in standalone_files())):
+            raise ValueError("standalone source differs from the current source tree")
         actual.update(source_layout=layout, layout_files=files)
     if actual != expected:
         raise ValueError("build does not match the current source, SDK, runner, or library")
