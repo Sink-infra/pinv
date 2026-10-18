@@ -1,14 +1,13 @@
-#if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & 4096UL)
+#include "pinv_contract.h"
+#if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & PINV_KEY_GROUP)
 #define K_MAX_SHAPE_DIM 0
 #endif
 #include "kernel_operator.h"
 #include "linalg_pinv_tiling.h"
 using namespace AscendC;
 #include "pinv_cube_residual.h"
-#if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & 32768UL)
-__aicore__ inline uint32_t PinvVectorCount(){return GetBlockNum()*2;}
-#define GetBlockNum PinvVectorCount
-#endif
+#include "pinv_execution.h"
+#include "pinv_rect.h"
 #include "pinv_pipeline.h"
 #include "pinv_peer_full.h"
 #include "pinv_window_pipeline.h"
@@ -16,16 +15,19 @@ __aicore__ inline uint32_t PinvVectorCount(){return GetBlockNum()*2;}
 #include "pinv_stable.h"
 #include "pinv_local.h"
 #include "pinv_compact.h"
-#include "pinv_compact_aligned.h"
 #include "pinv_compact_quick.h"
-template <typename DT_A, bool COMPACT, bool TAIL, bool WAVE, bool LOCAL, bool GROUP, bool PIPELINE, bool WINDOW, bool CUBE>
+template <typename DT_A, bool COMPACT, bool TAIL, bool WAVE, bool LOCAL, bool GROUP, bool PIPELINE, bool WINDOW, bool CUBE, bool RECT>
 __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR workspace, GM_ADDR tiling) {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIV_1_0);
     REGISTER_TILING_DEFAULT(LinalgPinvCubeTilingData);
     GET_TILING_DATA_WITH_STRUCT(LinalgPinvTilingData, data, tiling);
+    if constexpr(RECT){
+        TPipe pipe;RectPinv op;op.Init(A,A_pinv,GetUserWorkspace(workspace),data,pipe);
+        op.Process(GetUserWorkspace(workspace));return;
+    }
     if constexpr(CUBE){
-#if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & 32768UL)
-#if (TILING_KEY_VAR & 16384UL)
+#if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & PINV_KEY_CUBE)
+#if (TILING_KEY_VAR & PINV_KEY_WINDOW)
         GET_TILING_DATA_WITH_STRUCT(LinalgPinvCubeTilingData,cubeData,tiling);
         if ASCEND_IS_AIC { PinvCubeService(GetUserWorkspace(workspace),A_pinv,cubeData);return; }
 #else
@@ -41,7 +43,7 @@ __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR worksp
             if((windowState&15)==(uint32_t(1)<<data.batch)-1)return;
             data.local=0;
         }else{
-#if defined(TILING_KEY_VAR) && TILING_KEY_VAR==45056UL
+#if defined(TILING_KEY_VAR) && TILING_KEY_VAR==(PINV_KEY_GROUP | PINV_KEY_PIPELINE | PINV_KEY_CUBE)
             if(TryPeerFullPinv(A,A_pinv,GetUserWorkspace(workspace),data))return;
 #else
             if(TryPipelinePinv(A,A_pinv,GetUserWorkspace(workspace),data))return;
@@ -56,19 +58,12 @@ __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR worksp
     TPipe pipe;
     if constexpr (COMPACT) {
         data.parallel = 0; data.local = 1; data.localInverse = 1;
-        if constexpr (TAIL) {
-            if (data.rows > 8 && data.rows <= 16) {
-                Pinv<TAIL, 16> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
-            } else {
-                Pinv<TAIL> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
-            }
+        if (data.rows > 8 && data.rows <= 16) {
+            Pinv<TAIL, 16> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
         } else {
-            if (data.rows > 8 && data.rows <= 16) {
-                Pinv<TAIL, 16> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
-            } else {
-                Pinv<TAIL> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
-            }
+            Pinv<TAIL> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
         }
+
     } else {
         if constexpr (WAVE) { data.parallel = 1; data.local = 0; data.localInverse = 0; }
         if constexpr (LOCAL) { data.parallel = 0; data.groupCount = 0; data.localInverse = 1; }

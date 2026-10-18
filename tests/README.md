@@ -5,7 +5,7 @@
 | 套件 | 用例数 | 内容 |
 | --- | ---: | --- |
 | Coverage | 34 | 输入契约、Shape、数据类型、属性和边界，其中 18 个有效用例、16 个拒绝用例 |
-| Correctness | 35 | 矩形、批量、秩亏、奇异值截断和数值构造 |
+| Correctness | 43 | 矩形、批量、秩亏、奇异值截断和数值构造 |
 | Mock | 12 | 固定 FP32 矩阵及独立 FP64 参考 |
 
 ```text
@@ -35,6 +35,8 @@ python3 -m tests --details
 
 Mock 数据构造使用 NumPy 1.26.4 和 2 个 BLAS 线程；设备测试命令使用同一环境。
 单元测试检查输入契约、数学参考、生成文件和校验逻辑，不调用设备算子。
+Correctness 包含条件数约 95 的双向矩形、低秩小尺度矩形、显式截断、混合批量秩与尺度，
+以及独立的小尺度矩形。数值路径和后验误差界见 [数值说明](../code/NUMERICS.md)。
 `python3 -m tests` 只读取用例定义，不依赖 NumPy。
 
 ## 用例选择与数据生成
@@ -107,8 +109,8 @@ OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2 python3 -m tests.st.scripts.profile_moc
 `build.py` 构建当前 `code/`、本地 tiling 包和直接链接 ACLNN 的设备 runner。
 默认构建目录为 `build/tests/npu`；`--build-dir` 可指定其他构建目录。
 `build.py --source-layout project` 构建完整工程。
-`--source-layout standalone` 将三份 CMake 文件、Host、Kernel、Tiling 结构和 Tiling Key
-七个模板文件复制到独立源码目录后构建，用于检查模板的自包含性。
+`--source-layout standalone` 将完整 `code/` 文件集合复制到独立源码目录后构建，
+包括公共头文件、实现片段和数值说明，用于检查源码的自包含性。
 构建目录中的 `tests/source.json` 记录布局与实际参与构建的文件摘要。
 构建记录检查源码、SDK、算子库、tiling 库和 runner 的一致性。
 `run_tests.py` 默认执行构建；`--no-build` 要求已有匹配的构建，不能复用不一致的产物。

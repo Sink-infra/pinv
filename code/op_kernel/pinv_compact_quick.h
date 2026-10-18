@@ -33,7 +33,7 @@ public:
         Abs(lowMatrix, matrix, count); PipeBarrier<PIPE_V>();
         ReduceMax(red, lowMatrix, tmp, count, false); VS();
         float scale = red.GetValue(0);
-        if (!(scale >= 0.1f && scale < 1.7014118e38f)) return false;
+        if (!(scale >= 0.1f && scale < pinv::kScaleLimit)) return false;
         float power = 1.0f;
         while (power < scale) power *= 2.0f;
         while (power * 0.5f >= scale) power *= 0.5f;
@@ -70,7 +70,7 @@ public:
         PipeBarrier<PIPE_V>(); ReduceSum(red, lowMatrix, tmp, count); VS();
         float inverseTotal = red.GetValue(0), cutoff = Root(total) * rtol;
         float absolute = atol / power; cutoff = cutoff > absolute ? cutoff : absolute;
-        if (!(inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < 0.81f)) return false;
+        if (!(inverseTotal > 0.0f && inverseTotal * cutoff * cutoff < pinv::kDirectGateSquared)) return false;
         Muls(matrix, matrix, -1.0f / power, count); PipeBarrier<PIPE_V>();
         for (uint32_t row = 0; row < n; ++row) {
             uint32_t target = order[row];
