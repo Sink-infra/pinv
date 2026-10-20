@@ -11,6 +11,7 @@ from hashlib import sha256
 
 def main(argv=None):
     import tilelang
+    tilelang.disable_cache()
     from code_dsl.op_kernel.components import COMPONENTS,component_kernel,device_functions,composed_kernel
     from code_dsl.op_kernel.backend import vector_only_backend,jit_compiler_options
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--output',required=True,type=Path);parser.add_argument('--optimization-level',type=int,choices=[2,3],default=3);parser.add_argument('--unroll',type=int,choices=[1,2,4,8],default=1);parser.add_argument('--factor-pitch',type=int,choices=[8,16],default=8);args=parser.parse_args(argv)

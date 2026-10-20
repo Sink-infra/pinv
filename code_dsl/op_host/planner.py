@@ -65,5 +65,10 @@ def make_plan(shape,*,atol=0.0,rtol=None,hermitian=False,soc,library=Path('build
     rect_floats=2*g.batch*cols*(head+basis)
     native_user=max(0,int(native.workspace)-int(native.lib_workspace))
     words=max(rect_floats,(native_user+3)//4)
+    status_words=g.batch*32
+    if strategy=='window_cube':
+        from code_dsl.op_host.recovery_layout import scratch
+        recovery=scratch(g.n,g.batch,struct.unpack('<13I2f',bytes(native.tiling[:60]))[5],int(native.blocks))
+        words=max(words,recovery['words']);status_words=recovery['status_words']
     return Plan(g,strategy,int(native.blocks),int(native.blocks)*(2 if cube else 1),bytes(native.tiling[:native.tiling_bytes]),
-                flags,words,g.batch*32,int(native.workspace),int(native.ub_size),int(native.aic),int(native.aiv),int(native.schedule))
+                flags,words,status_words,int(native.workspace),int(native.ub_size),int(native.aic),int(native.aiv),int(native.schedule))

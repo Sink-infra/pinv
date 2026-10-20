@@ -64,7 +64,7 @@ def _vector_device_source(source, mixed=False, paired=False):
     if 'ascend_ub' in source:
         allocation=re.compile(r'\s*AscendC::TBuf<AscendC::TPosition::VECCALC> ascend_ub; pipe.InitBuffer\(ascend_ub, ([0-9]+)\);\s*')
         view=re.compile(r'\s*auto \w+ = ascend_ub.GetWithOffset<([\w:]+)>\(([0-9]+), ([0-9]+)\);\s*')
-        widths={'int':4,'uint':4,'uchar':1,'ushort':2,'float':4,'uint32_t':4,'int32_t':4,'int64_t':8,'uint64_t':8}
+        widths={'half':2,'int8_t':1,'uint8_t':1,'int16_t':2,'uint16_t':2,'int':4,'uint':4,'uchar':1,'ushort':2,'float':4,'uint32_t':4,'int32_t':4,'int64_t':8,'uint64_t':8}
         allocated=[];maximum=0
         for line in source.splitlines():
             if 'ascend_ub' not in line:continue
