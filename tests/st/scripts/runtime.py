@@ -13,12 +13,18 @@ def sha256_file(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def source_files(source=None):
+    """Build inputs, excluding the optional local conversion report."""
+    source = ROOT / "code" if source is None else Path(source)
+    return tuple(path for path in sorted(source.rglob("*"))
+                 if path.is_file() and path.relative_to(source).as_posix() != "project_manifest.json")
+
+
 def source_digest():
     digest = hashlib.sha256()
-    for path in sorted((ROOT / "code").rglob("*")):
-        if path.is_file():
-            digest.update(path.relative_to(ROOT).as_posix().encode() + b"\0")
-            digest.update(path.read_bytes())
+    for path in source_files():
+        digest.update(path.relative_to(ROOT).as_posix().encode() + b"\0")
+        digest.update(path.read_bytes())
     return digest.hexdigest()
 
 

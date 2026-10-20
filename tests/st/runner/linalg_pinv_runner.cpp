@@ -57,7 +57,7 @@ int main(int argc, char** argv) {
     if ((argc - 1) % 2 || !args.count("--result")) return 2;
     std::vector<float> samples, first, final;
     std::vector<std::pair<std::string, int>> teardown;
-    std::string status = "Runtime Error", failedApi, detail, outputInit = "runtime";
+    std::string status = "Runtime Error", failedApi, detail, soc, outputInit = "runtime";
     int failedCode = 0;
     bool initialized = false, selected = false, profiling = false, profileInitialized = false;
     int device = 0;
@@ -113,6 +113,8 @@ int main(int argc, char** argv) {
         auto inStrides = strides(shape), outStrides = strides(outShape);
         Check("aclInit", aclInit(nullptr)); initialized = true;
         Check("aclrtSetDevice", aclrtSetDevice(device)); selected = true;
+        const char* socName = aclrtGetSocName();
+        if (socName) soc = socName;
         Check("aclrtSetOpExecuteTimeOut", aclrtSetOpExecuteTimeOut(30));
         Check("aclrtCreateStream", aclrtCreateStream(&stream));
         Check("aclrtMalloc", aclrtMalloc(&input, bytes, ACL_MEM_MALLOC_HUGE_FIRST));
@@ -184,7 +186,7 @@ int main(int argc, char** argv) {
     std::ofstream report(args["--result"]);
     report << "{\"status\":" << Quote(status) << ",\"api\":" << Quote(failedApi)
            << ",\"code\":" << failedCode << ",\"detail\":" << Quote(detail)
-           << ",\"output_init\":" << Quote(outputInit) << ",\"event_micros\":[";
+           << ",\"soc\":" << Quote(soc) << ",\"output_init\":" << Quote(outputInit) << ",\"event_micros\":[";
     for (size_t i = 0; i < samples.size(); ++i) { if (i) report << ','; report << samples[i]; }
     report << "],\"teardown\":[";
     for (size_t i = 0; i < teardown.size(); ++i) {

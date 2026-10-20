@@ -1,3 +1,4 @@
+#include "../op_kernel/pinv_dsl_workspace.h"
 #include "tiling/tiling_api.h"
 #include "register/op_def_registry.h"
 #include "tiling/platform/platform_ascendc.h"
@@ -279,6 +280,16 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
                 CUBE=1;context->SetBlockDim(pairedTotal/2);
             }
         }
+    }
+    // Partial DSL rollout: numerical strategy selection remains unchanged.
+    if(COMPACT || (LOCAL && t->cols<=64)) {
+        if(COMPACT) {
+        context->SetBlockDim(std::min<uint64_t>(platform.GetCoreNumAiv(),std::max<uint64_t>(batch,std::max<uint32_t>(1,platform.GetCoreNumAiv()/4))));
+        }
+        ws[0]=0;
+    } else if(GROUP && PIPELINE && CUBE && !WINDOW && !WAVE) {
+        uint64_t dslWords=pinv_dsl::WorkFloats(batch,t->rows,t->cols,t->stride)+batch*32;
+        ws[0]=std::max<uint64_t>(ws[0],platform.GetLibApiWorkSpaceSize()+dslWords*sizeof(float));
     }
     uint32_t RECT=0;
     ASCENDC_TPL_SEL_PARAM(context, DT_A, COMPACT, TAIL, WAVE, LOCAL, GROUP, PIPELINE, WINDOW, CUBE, RECT);
