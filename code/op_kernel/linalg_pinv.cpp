@@ -171,8 +171,10 @@ __aicore__ inline void PvStageNative(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR workspac
     }
 }
 
-#include "pinv_dsl_generated.h"
 #include "pinv_dsl_workspace.h"
+#include "pinv_dsl_compact.h"
+#include "pinv_dsl_local.h"
+#include "pinv_dsl_peer_pipeline.h"
 template <typename DT_A, bool COMPACT, bool TAIL, bool WAVE, bool LOCAL, bool GROUP, bool PIPELINE, bool WINDOW, bool CUBE, bool RECT>
 __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR workspace, GM_ADDR tiling) {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIV_1_0);

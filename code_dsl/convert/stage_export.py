@@ -104,7 +104,7 @@ def export_stage(args,native,current,acceptance):
         if adapted[adapted.index('{'):]!=body.replace(metadata[0],'',1):raise ValueError('device body changed')
         functions[key]='#pragma once\n#include "pinv_dsl_common.h"\n'+adapted
         sources[key]=raw
-        records[key]={'source':'op_kernel/pinv_dsl_generated.h','entry':symbol,
+        records[key]={'source':'op_kernel/pinv_dsl_'+key+'.h','entry':symbol,
                       'jit_source_sha256':digest(raw.encode()),'jit_library_sha256':record['library_sha256'],
                       'callable_body_sha256':digest(adapted[adapted.index('{'):].encode()),
                       'abi_changes':['global entry to inline function','remove launch-only metadata'],
@@ -148,18 +148,12 @@ def export_stage(args,native,current,acceptance):
     native=native.replace(macro,'(TILING_KEY_VAR & (PINV_KEY_GROUP | PINV_KEY_COMPACT | PINV_KEY_LOCAL))',1)
     native=native.replace('__global__ __aicore__ void linalg_pinv(', '__aicore__ inline void PvStageNative(',1)
     native=native.replace('    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIV_1_0);\n','',1)
-    # Keep the official upload below its 20-additional-file limit. This is
-    # include expansion only; generated and native function bodies are intact.
-    quick=(original/'op_kernel/pinv_compact_quick.h').read_text().replace('#pragma once\n','')
-    native=native.replace('#include "pinv_compact_quick.h"',quick,1)
+    # Each generated strategy owns its header; shared primitives and native
+    # continuations have one definition. Function bodies remain unchanged.
     entry=ENTRY.replace('#include "pinv_native_entry.h"\n','')
-    for name in ['compact','local','peer_pipeline']:
-        entry=entry.replace('#include "pinv_dsl_'+name+'.h"\n','')
-    entry='#include "pinv_dsl_generated.h"\n'+entry
-    merged=common+'\n'+''.join(text.replace('#pragma once\n','',1).replace('#include "pinv_dsl_common.h"\n','',1)
-                               for text in functions.values())
     files={'op_kernel/linalg_pinv.cpp':native+'\n'+entry,
-           'op_kernel/pinv_dsl_workspace.h':WORKSPACE,'op_kernel/pinv_dsl_generated.h':merged}
+           'op_kernel/pinv_dsl_workspace.h':WORKSPACE,'op_kernel/pinv_dsl_common.h':common}
+    files.update({'op_kernel/pinv_dsl_'+key+'.h':text for key,text in functions.items()})
     host=(original/'op_host/linalg_pinv.cpp').read_text()
     host='#include "../op_kernel/pinv_dsl_workspace.h"\n'+host
     needle='    uint32_t RECT=0;\n'
@@ -175,10 +169,22 @@ def export_stage(args,native,current,acceptance):
     }
 '''+needle,1)
     files['op_host/linalg_pinv.cpp']=host
+    # The service currently allows twenty additional files. Preserve separate
+    # DSL strategies and expand only native leaves with a single consumer.
+    native_leaves=[('linalg_pinv.cpp','pinv_compact_quick.h'),
+                   ('pinv_cube_residual.h','pinv_cube_digits.h'),
+                   ('pinv_refinement.h','pinv_refinement_certificate.h'),
+                   ('pinv_rect.h','pinv_rect_certificate.h')]
+    for parent,leaf in native_leaves:
+        path='op_kernel/'+parent
+        text=files.get(path,(original/path).read_text())
+        include='#include "'+leaf+'"'
+        if text.count(include)!=1:raise ValueError('unexpected native include: '+leaf)
+        fragment=(original/'op_kernel'/leaf).read_text().replace('#pragma once\n','')
+        files[path]=text.replace(include,fragment,1)
     for path,text in files.items():(destination/path).write_text(text)
-    for name in ['NUMERICS.md','op_kernel/pinv_compact_quick.h','op_kernel/pinv_native_entry.h',
-                 'op_kernel/pinv_dsl_common.h','op_kernel/pinv_dsl_compact.h',
-                 'op_kernel/pinv_dsl_local.h','op_kernel/pinv_dsl_peer_pipeline.h']:
+    for name in ['NUMERICS.md','op_kernel/pinv_native_entry.h','op_kernel/pinv_dsl_generated.h',
+                 *['op_kernel/'+leaf for _,leaf in native_leaves]]:
         (destination/name).unlink(missing_ok=True)
     for name in CMAKE_FILES:
         if (destination/name).read_bytes()!=(original/name).read_bytes():raise ValueError('CMake changed')
