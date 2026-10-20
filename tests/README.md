@@ -63,13 +63,13 @@ python3 -m tests run --backend both --suite mock \
 Ascend 后端仅需 NumPy 和 CANN；JIT 构建额外需要项目使用的 tilelang-ascend
 `0.1.1.010+e909216995c2acc527bdb252039ec93a920c052c`。
 JIT 构建器编译 compact/local/rectangular 模块、带完整数值继续路径的 peer 模块，以及只处理
-形状和启动参数的 host planner。运行时加载真实 JIT 动态库，使用实际 SoC 的调度数据。
+形状和启动参数的 host planner；另含完整窗口恢复模块。运行时加载真实 JIT 动态库，使用实际 SoC 的调度数据。
 `--no-build` 校验 DSL、生成源码、动态库、planner、测试执行代码和 SDK 的身份。
 中断后的 JIT 构建可用 `build --backend jit --resume` 重试；仅复用已校验的当前 DSL 模块，重新构建 planner。
 JIT 默认构建位置为 `build/tests/jit`，Ascend 默认位置为 `build/tests/npu`；`both` 使用
 `build/tests/backends/jit` 和 `build/tests/backends/ascend`。
 
-当前 JIT 尚未完成全部策略：Mock 3、9 等配置报告 `Unsupported`，不会暗中改用 Ascend 后端。
+当前 JIT 支持全部 12 个 Mock；尚未移植的非 Mock 配置仍报告 `Unsupported`，不会暗中改用 Ascend 后端。
 默认遇到不支持的配置会使套件返回失败；`--allow-unsupported` 可运行已支持范围，但报告仍保留
 `complete=false`、`passed=false` 和不支持用例名，仅 `scoped_passed` 表示已支持范围是否通过。
 不能把阶段检查当作完整移植验收。
