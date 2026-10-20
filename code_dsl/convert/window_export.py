@@ -56,16 +56,12 @@ def export_window(args,native,current,acceptance):
         raise ValueError('window JIT artifact changed')
     common=(destination/'op_kernel/pinv_dsl_common.h').read_text()
     sources={}
-    for name in ['rows','producer','prepared_rows','prepared_producer','transformer','raw','quant','decode','integer','half','norms','certify','fallback']:
+    for name in ['rows','producer','prepared_rows','prepared_producer','transformer','raw','prepared_raw','quant','decode','integer','half','norms','certify','fallback']:
         path=args.window_build/'components'/name/'kernel.cpp'
         text=path.read_text()
         if digest(text)!=receipt['lowering'][name]['source_sha256']:
             raise ValueError('component source changed: '+name)
         sources[name]=text
-    shared_rows=definition(common,'PvDslPipelineRows')
-    lowered_rows=definition(callable_source(sources['rows'],'PvDslPipelineRows'),'PvDslPipelineRows')
-    if shared_rows!=lowered_rows:
-        raise ValueError('shared worker definition differs')
     shared_fallback=definition(common,'PvDslRectangular')
     lowered_fallback=definition(callable_source(sources['fallback'],'PvDslRectangular',noinline=True),'PvDslRectangular')
     if shared_fallback!=lowered_fallback:
@@ -79,21 +75,27 @@ def export_window(args,native,current,acceptance):
         start=prefix.rfind('namespace tl::ascend {')
         if start<0:raise ValueError('missing elementary helper prefix')
         header+='\n'.join(line.rstrip() for line in prefix[start:].splitlines())+'\n'
-    for name in ['producer','prepared_rows','prepared_producer','transformer']:
-        symbol='PvDslPipeline'+''.join(part.title() for part in name.split('_'))
+    for name in ['rows','producer','prepared_rows','prepared_producer','transformer']:
+        symbol='PvDslWindowRows' if name=='rows' else 'PvDslPipeline'+''.join(part.title() for part in name.split('_'))
         function=callable_source(sources[name],symbol)
         body=function[function.index('{'):]
         if digest(body)!=receipt['pipeline'][name]['callable_body_sha256']:
             raise ValueError('pipeline component body changed: '+name)
         header+='namespace tl::ascend {\n'+function+'\n}\n'
     raw_prefix=sources['raw'].split('#include "tl_templates/ascend/common.h"',1)[0]
-    for name in ['producer','prepared_rows','prepared_producer','transformer']:
+    for name in ['rows','producer','prepared_rows','prepared_producer','transformer']:
         bindings=[line for line in raw_prefix.splitlines() if line.startswith('#define pv_pipeline_'+name+'(')]
         if len(bindings)!=1:raise ValueError('missing pipeline ABI binding: '+name)
-        header+=bindings[0]+'\n'
+        binding=bindings[0]
+        if name=='rows':
+            if binding.count('PvDslPipelineRows(')!=1:raise ValueError('unexpected worker callback binding')
+            binding=binding.replace('PvDslPipelineRows(','PvDslWindowRows(',1)
+            header+='#undef pv_pipeline_rows\n'
+        header+=binding+'\n'
     records={}
-    for name in ['raw','quant','decode','integer','half','norms','certify']:
-        function=callable_source(sources[name],'Fused'+name.title())
+    for name in ['raw','prepared_raw','quant','decode','integer','half','norms','certify']:
+        symbol='FusedPreparedRaw' if name=='prepared_raw' else 'Fused'+name.title()
+        function=callable_source(sources[name],symbol,noinline=False)
         body=function[function.index('{'):]
         if digest(body)!=receipt['components'][name]['callable_body_sha256']:
             raise ValueError('component body changed: '+name)
@@ -179,8 +181,9 @@ def export_window(args,native,current,acceptance):
     document['strategies']['window_cube']={'source':'op_kernel/pinv_dsl_window.h','entry':'PvStageWindow',
                 'jit_source_sha256':artifact['source_sha256'],'jit_library_sha256':artifact['library_sha256'],
                 'callable_body_sha256':digest(root[root.index('{'):]),
-                'shared':'identical worker and Jacobi definitions from the other JIT strategies',
-                'abi_changes':['device callback declaration','remove launch metadata','relative runtime include']}
+                'shared':'identical Jacobi continuation; window worker retains its own generated epilogue',
+                'abi_changes':['device callback declaration','remove launch metadata','relative runtime include',
+                               'window worker declaration and callback binding use a private symbol']}
     document['files_sha256']={p.relative_to(destination).as_posix():sha256(p.read_bytes()).hexdigest()
                              for p in sorted(destination.rglob('*')) if p.is_file() and p!=manifest}
     if len(document['files_sha256'])-7>20:
