@@ -1,4 +1,20 @@
-#pragma once
+#include "pinv_contract.h"
+#if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & (PINV_KEY_GROUP | PINV_KEY_COMPACT | PINV_KEY_LOCAL))
+#define K_MAX_SHAPE_DIM 0
+#endif
+#include "kernel_operator.h"
+#include "linalg_pinv_tiling.h"
+using namespace AscendC;
+#include "pinv_cube_residual.h"
+#include "pinv_execution.h"
+#include "pinv_rect.h"
+#include "pinv_pipeline.h"
+#include "pinv_peer_full.h"
+#include "pinv_window_pipeline.h"
+#include "tiling_key_linalg_pinv.h"
+#include "pinv_stable.h"
+#include "pinv_local.h"
+#include "pinv_compact.h"
 #include "kernel_operator.h"
 #include "linalg_pinv_tiling.h"
 using namespace AscendC;
@@ -93,4 +109,93 @@ __aicore__ inline bool TryCompactQuickLight(GM_ADDR in,GM_ADDR dst,const LinalgP
     TPipe pipe;CompactQuickLight<PAD> op;op.Init(in,dst,data,pipe);
     bool valid=op.Run(GetBlockIdx()*data.m*data.n);
     PipeBarrier<PIPE_ALL>();pipe.Destroy();return valid;
+}
+
+template <typename DT_A, bool COMPACT, bool TAIL, bool WAVE, bool LOCAL, bool GROUP, bool PIPELINE, bool WINDOW, bool CUBE, bool RECT>
+__aicore__ inline void PvStageNative(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR workspace, GM_ADDR tiling) {
+    REGISTER_TILING_DEFAULT(LinalgPinvCubeTilingData);
+    GET_TILING_DATA_WITH_STRUCT(LinalgPinvTilingData, data, tiling);
+    if constexpr(RECT){
+        TPipe pipe;RectPinv op;op.Init(A,A_pinv,GetUserWorkspace(workspace),data,pipe);
+        op.Process(GetUserWorkspace(workspace));return;
+    }
+    if constexpr(CUBE){
+#if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & PINV_KEY_CUBE)
+#if (TILING_KEY_VAR & PINV_KEY_WINDOW)
+        GET_TILING_DATA_WITH_STRUCT(LinalgPinvCubeTilingData,cubeData,tiling);
+        if ASCEND_IS_AIC { PinvCubeService(GetUserWorkspace(workspace),A_pinv,cubeData);return; }
+#else
+        if ASCEND_IS_AIC {return;}
+#endif
+#endif
+    }
+    PinvCubeGuard<CUBE && WINDOW> cubeGuard((CUBE && WINDOW) ? GetUserWorkspace(workspace) : nullptr,data);
+    uint32_t windowState=0;
+    if constexpr (PIPELINE) {
+        if constexpr (WINDOW) {
+            windowState=TryWindowPipelinePinv(A,A_pinv,GetUserWorkspace(workspace),data);
+            if((windowState&15)==(uint32_t(1)<<data.batch)-1)return;
+            data.local=0;
+        }else{
+#if defined(TILING_KEY_VAR) && TILING_KEY_VAR==(PINV_KEY_GROUP | PINV_KEY_PIPELINE | PINV_KEY_CUBE)
+            if(TryPeerFullPinv(A,A_pinv,GetUserWorkspace(workspace),data))return;
+#else
+            if(TryPipelinePinv(A,A_pinv,GetUserWorkspace(workspace),data))return;
+#endif
+        }
+    }
+    if constexpr (COMPACT || LOCAL) if (GetBlockIdx() >= data.batch) return;
+    if constexpr (COMPACT && !TAIL) {
+        if(data.rows>8 && data.rows<=16 && data.cols%8==0)
+            if(TryCompactQuickLight<16>(A,A_pinv,data))return;
+    }
+    TPipe pipe;
+    if constexpr (COMPACT) {
+        data.parallel = 0; data.local = 1; data.localInverse = 1;
+        if (data.rows > 8 && data.rows <= 16) {
+            Pinv<TAIL, 16> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
+        } else {
+            Pinv<TAIL> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
+        }
+
+    } else {
+        if constexpr (WAVE) { data.parallel = 1; data.local = 0; data.localInverse = 0; }
+        if constexpr (LOCAL) { data.parallel = 0; data.groupCount = 0; data.localInverse = 1; }
+        if constexpr (LOCAL) {
+            LocalPinv<WAVE, LOCAL> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe); op.Process();
+        } else {
+            StablePinv<WAVE, LOCAL, GROUP> op; op.Init(A, A_pinv, GetUserWorkspace(workspace), data, &pipe);
+            if constexpr (WINDOW) op.ProcessPrepared(windowState);
+            else op.Process();
+        }
+    }
+}
+
+#include "pinv_dsl_generated.h"
+#include "pinv_dsl_workspace.h"
+template <typename DT_A, bool COMPACT, bool TAIL, bool WAVE, bool LOCAL, bool GROUP, bool PIPELINE, bool WINDOW, bool CUBE, bool RECT>
+__global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR workspace, GM_ADDR tiling) {
+    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIV_1_0);
+    REGISTER_TILING_DEFAULT(LinalgPinvCubeTilingData);
+    GET_TILING_DATA_WITH_STRUCT(LinalgPinvTilingData, data, tiling);
+    if constexpr (COMPACT || LOCAL) {
+        if (COMPACT || data.cols<=64) {
+            // Complete resident paths keep matrices and admission status in
+            // TileLang UB buffers, including rank/truncation continuations.
+            GM_ADDR work=nullptr;
+            GM_ADDR status=nullptr;
+            if constexpr (COMPACT) PvStageCompact(A,A_pinv,work,status,GetBlockNum(),data.m,data.n,data.batch,data.atol,data.rtol,0);
+            else PvStageLocal(A,A_pinv,work,status,GetBlockNum(),data.m,data.n,data.batch,data.atol,data.rtol,0);
+            return;
+        }
+    }
+    if constexpr (GROUP && PIPELINE && CUBE && !WINDOW && !WAVE) {
+        if ASCEND_IS_AIC {return;}
+        GM_ADDR work=GetUserWorkspace(workspace);
+        GM_ADDR status=work+pinv_dsl::WorkFloats(data.batch,data.rows,data.cols,data.stride)*sizeof(float);
+        // CANN initializes the hardware sync base; 0 skips the JIT-only setter.
+        PvStagePeerPipeline(A,A_pinv,work,status,GetBlockNum(),data.cols,data.batch,data.stride,0,data.atol,data.rtol,0);
+        return;
+    }
+    PvStageNative<DT_A,COMPACT,TAIL,WAVE,LOCAL,GROUP,PIPELINE,WINDOW,CUBE,RECT>(A,A_pinv,workspace,tiling);
 }

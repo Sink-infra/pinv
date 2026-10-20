@@ -1,108 +1,36 @@
 """Execute one current-source suite with device timing and optional kernel profiling."""
 
 import argparse
-from dataclasses import asdict
-from decimal import Decimal, ROUND_HALF_UP
 import hashlib
 import json
-import math
 import shlex
 from pathlib import Path
-import statistics
 import subprocess
 
-import numpy as np
-
 from tests.common.cases import CASE_GROUPS
-from tests.common.mock_cases import generate as generate_mock
-from tests.common.tensor_io import _select_cases, generate_suite, store_text
-from tests.st.scripts.build import build_current, verify_build
+from tests.common.tensor_io import _select_cases, store_text
 from tests.st.scripts.gen_data import select_mock_cases
-from tests.st.scripts.profile_mock_workloads import profile_samples
+from tests.common.profiling import profile_samples
+from tests.common.measurements import hardware_snapshot, steady_samples
+from tests.st.backends import get_backend
+from tests.st.backends.transport import execution_transport
 from tests.st.scripts.runtime import DEFAULT_BUILD, ROOT, environment
-from tests.st.scripts.verify_result import VerificationResult, verify_case_output
+from tests.st.scripts.verify_result import verify_case_output
 
 
-def output_initialization(suite, mode="auto"):
-    if suite not in ("coverage", "correctness", "mock"):
-        raise ValueError("unknown suite for output initialization")
-    if mode == "auto":
-        return "runtime" if suite == "mock" else "nan"
-    if mode not in ("runtime", "nan", "nan-once"):
-        raise ValueError("unknown output initialization mode")
-    return mode
+from tests.common.observations import (output_initialization, compare_mock_output, comparison_record, timing_summary)
+from tests.common.workloads import prepare_cases
 
 
-def compare_mock_output(path, expected):
-    payload = Path(path).read_bytes()
-    if len(payload) != expected.size * 4:
-        raise ValueError("output byte count differs from reference")
-    actual = np.frombuffer(payload, dtype="<f4").astype(np.float64)
-    shape = expected.shape
-    expected = expected.ravel(order="C")
-    finite = np.isfinite(actual)
-    diff = np.abs(actual[finite] - expected[finite])
-    mismatches = ~finite
-    mismatches[finite] = diff > 1e-4 + 1e-4 * np.abs(expected[finite])
-    count = int(np.count_nonzero(mismatches))
-    return VerificationResult(count == 0, actual.size, count, int(np.count_nonzero(~finite)),
-                              float(np.max(diff)) if diff.size else 0.0,
-                              tuple(int(value) for value in np.unravel_index(int(np.flatnonzero(mismatches)[0]), shape)) if count else None,
-                              "pass" if count == 0 else "elementwise mismatch")
-
-
-def comparison_record(result):
-    record = asdict(result)
-    percent = (Decimal(result.mismatch_count) * 100 / Decimal(result.element_count)).quantize(
-        Decimal("0.01"), rounding=ROUND_HALF_UP)
-    record["output_error_ratio"] = str(percent) + "%"
-    return record
-
-
-def timing_summary(samples, repeats):
-    if len(samples) != repeats or any(not math.isfinite(value) or value <= 0 for value in samples):
-        raise ValueError("device event sample count or duration is invalid")
-    return {"samples_us": samples, "median_us": statistics.median(samples),
-            "mean_us": statistics.mean(samples), "min_us": min(samples), "max_us": max(samples)}
-
-
-def prepare_cases(suite, names, destination):
-    if suite == "mock":
-        manifest = generate_mock(destination, select_mock_cases("success", names))
-        prepared = []
-        for case in manifest:
-            arrays = {}
-            for key in ("input", "reference"):
-                arrays[key] = np.load(destination / case[key], allow_pickle=False)
-                if hashlib.sha256(arrays[key].tobytes()).hexdigest() != case[key + "_sha256"]:
-                    raise ValueError("Mock array digest differs")
-            a, gold = arrays["input"], arrays["reference"]
-            shape = tuple(case["shape"])
-            if a.dtype != np.float32 or a.shape != shape or gold.dtype != np.float64:
-                raise ValueError("Mock array declaration differs")
-            if gold.shape != shape[:-2] + shape[-2:][::-1] or not np.isfinite(gold).all():
-                raise ValueError("Mock reference shape or values differ")
-            raw = destination / (case["name"] + ".bin")
-            a.astype("<f4").tofile(raw)
-            prepared.append({"name": case["name"], "shape": shape, "input": raw,
-                             "atol": case["atol"], "rtol": case["rtol"], "gold": gold,
-                             "output_init": case["output_init"]})
-        return prepared
-    cases = _select_cases(CASE_GROUPS[suite], "success", names)
-    generate_suite(destination, cases)
-    return [{"name": case.name, "shape": case.a_shape, "input": destination / case.name / "a.bin",
-             "atol": case.atol, "rtol": -1.0 if case.rtol is None else case.rtol,
-             "folder": destination / case.name} for case in cases]
-
-
-def _capture_case(case, build_dir, folder, *, device=0, warmup=3, repeats=7, timeout=120, profile=False,
-                  output_init="runtime", profiler_backend="operator", profile_samples_count=None, profiler_replay="kernel", profiler_warmup=5):
+def _capture_case(case, build_dir, folder, *, device=0, warmup=3, repeats=9, timeout=120, profile=False,
+                  output_init="runtime", profiler_backend="operator", profile_samples_count=None, profiler_replay="kernel", profiler_warmup=5, backend="ascend", executor=None):
     folder.mkdir()
     if output_init not in ("runtime", "nan", "nan-once"):
         raise ValueError("unknown output initialization mode")
     result_path = folder / "runner.json"
     actual = folder / "actual.bin"
-    command = [str(build_dir / "tests/linalg_pinv_runner"),
+    implementation = get_backend(backend)
+    command = implementation.command(build_dir) + [
                "--input", str(case["input"]), "--output", str(actual),
                "--result", str(result_path), "--shape", ",".join(map(str, case["shape"])),
                "--atol", str(case["atol"]), "--rtol", str(case["rtol"]),
@@ -128,13 +56,16 @@ def _capture_case(case, build_dir, folder, *, device=0, warmup=3, repeats=7, tim
                    "--replay-mode=" + profiler_replay]
     store_text(folder / "command.json", json.dumps(command, indent=2) + "\n")
     report = {"name": case["name"], "shape": list(case["shape"]), "status": "Harness Error",
+              "device": device,
+              "backend": backend, "attributes": {"atol": case["atol"], "rtol": case["rtol"]}, "input_sha256": hashlib.sha256(Path(case["input"]).read_bytes()).hexdigest() if Path(case["input"]).is_file() else None,
+              "reference_sha256": hashlib.sha256(case["gold"].tobytes()).hexdigest() if "gold" in case else hashlib.sha256((case["folder"] / "reference_a_pinv_fp64.bin").read_bytes()).hexdigest(),
               "output_init": output_init, "profiler_backend": profiler_backend if profile else None,
               "profile_samples": captured if profile else None,
               "profiler_replay": profiler_replay if profile and profiler_backend == "operator" else None,
               "profiler_warmup": profiler_warmup if profile and profiler_backend == "operator" else None}
     with (folder / "runner.log").open("w") as log:
         try:
-            process = subprocess.run(command, env=environment(build_dir), stdout=log,
+            process = (executor or subprocess.run)(command, env=environment(build_dir), stdout=log,
                                      stderr=subprocess.STDOUT, timeout=timeout)
         except subprocess.TimeoutExpired:
             report.update(status="TLE", timeout_seconds=timeout)
@@ -147,8 +78,12 @@ def _capture_case(case, build_dir, folder, *, device=0, warmup=3, repeats=7, tim
         if not isinstance(native, dict):
             raise ValueError("runner result must be an object")
         report["runner"] = native
+        if native.get("provenance"):
+            report["provenance"] = native["provenance"]
+        if native.get("soc"):
+            report["environment"] = hardware_snapshot(native["soc"])
         if native.get("status") != "executed":
-            report["status"] = native["status"] if native.get("status") in ("Runtime Error", "Harness Error") else "Harness Error"
+            report["status"] = native["status"] if native.get("status") in ("Runtime Error", "Harness Error", "Unsupported") else "Harness Error"
             return report
         if native.get("output_init") != output_init:
             report["detail"] = "runner output initialization mode differs from the request"
@@ -167,12 +102,13 @@ def _capture_case(case, build_dir, folder, *, device=0, warmup=3, repeats=7, tim
             report["status"] = "Pass" if all(value["passed"] for value in observations.values()) else "Wrong Answer"
             if profile:
                 if profiler_backend == "task":
-                    subprocess.run(["msprof", "--export=on", "--output=" + str(folder / "profile")],
+                    (executor or subprocess.run)(["msprof", "--export=on", "--output=" + str(folder / "profile")],
                                    env=environment(build_dir), stdout=log, stderr=subprocess.STDOUT,
                                    timeout=60, check=True)
                 measured = profile_samples(folder / "profile", 0 if profiler_backend == "operator" else warmup,
-                                           captured, profiler_backend)
+                                           captured, profiler_backend, kernel_prefix=implementation.KERNEL_PREFIX)
                 report["kernel"] = timing_summary(measured, captured)
+                report["steady"] = steady_samples(measured)
         except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
             report.update(status="Harness Error", detail=str(error))
     return report
@@ -190,32 +126,36 @@ def run_case(case, build_dir, folder, **settings):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--suite", required=True, choices=("coverage", "correctness", "mock"))
+    parser.add_argument("--backend", choices=("ascend", "jit", "both"), default="ascend")
     parser.add_argument("--case", action="append", default=[])
-    parser.add_argument("--build-dir", type=Path, default=DEFAULT_BUILD)
+    parser.add_argument("--build-dir", type=Path)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--no-build", action="store_true", help="require an existing matching current-source build")
+    parser.add_argument("--no-build", action="store_true", help="verify the selected backend's current-source build")
     parser.add_argument("--jobs", type=int, default=8)
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument("--warmup", type=int, default=3)
-    parser.add_argument("--repeats", type=int, default=7)
+    parser.add_argument("--repeats", type=int, default=9)
+    parser.add_argument("--processes", type=int, default=1)
     parser.add_argument("--timeout", type=int, default=120)
+    parser.add_argument("--transport", choices=("direct", "npu-session"), default="direct")
+    parser.add_argument("--allow-unsupported", action="store_true", help="allow scoped results, while reporting incomplete coverage")
+    parser.add_argument("--max-slowdown", type=float, default=0.05)
     parser.add_argument("--profile", action="store_true")
     parser.add_argument("--profiler-backend", choices=("operator", "task"), default="operator")
-    parser.add_argument("--profiler-warmup", type=int, default=5, help="operator replay warmup count")
+    parser.add_argument("--profiler-warmup", type=int, default=5)
     parser.add_argument("--profiler-replay", choices=("kernel", "application"), default="kernel")
-    parser.add_argument("--profile-samples", type=int, help="operator samples after warmup; default: all repeats")
-    parser.add_argument("--output-init", choices=("auto", "runtime", "nan", "nan-once"), default="auto",
-                        help="auto: runtime allocation for Mock, NaN diagnostics for other suites")
+    parser.add_argument("--profile-samples", type=int)
+    parser.add_argument("--output-init", choices=("auto", "runtime", "nan", "nan-once"), default="auto")
     args = parser.parse_args(argv)
     if not (0 <= args.warmup <= 10000 and 1 <= args.repeats <= 10000 and args.timeout > 0 and args.device >= 0
-            and 0 <= args.profiler_warmup <= 500):
-        parser.error("invalid device, launch counts, or timeout")
+            and 0 <= args.profiler_warmup <= 500 and 1 <= args.processes <= 64 and 0 <= args.max_slowdown <= 1):
+        parser.error("invalid device, counts, slowdown limit or timeout")
     if args.profile_samples is not None and (not args.profile or args.profiler_backend != "operator"
                                               or not 1 <= args.profile_samples <= args.repeats):
         parser.error("profile samples require operator profiling and a count in [1, repeats]")
     output = args.output.resolve()
-    build_dir = args.build_dir.resolve()
-    if output == ROOT or ROOT / "tests" == output or ROOT / "tests" in output.parents or ROOT / "code" in output.parents:
+    artifact_roots = (ROOT / "build", ROOT / "code_dsl/results")
+    if output == ROOT or (ROOT in output.parents and not any(base == output or base in output.parents for base in artifact_roots)):
         parser.error("result directory must be outside tracked source directories")
     try:
         output_init = output_initialization(args.suite, args.output_init)
@@ -225,36 +165,73 @@ def main(argv=None):
             _select_cases(CASE_GROUPS[args.suite], "success", args.case)
         if output.exists():
             raise ValueError("result directory already exists")
-        if not args.no_build:
-            build_current(build_dir, args.jobs)
-        identity = verify_build(build_dir)
+        # Prepare once: both implementations consume exactly these input/reference files.
         output.mkdir(parents=True)
         cases = prepare_cases(args.suite, args.case, output / "data")
-        records = []
-        for case in cases:
-            result = run_case(case, build_dir, output / case["name"], device=args.device,
-                              warmup=args.warmup, repeats=args.repeats, timeout=args.timeout, profile=args.profile,
-                              output_init=(case.get("output_init", output_init) if args.output_init == "auto" else output_init),
-                              profiler_backend=args.profiler_backend, profile_samples_count=args.profile_samples,
-                              profiler_replay=args.profiler_replay, profiler_warmup=args.profiler_warmup)
-            records.append(result)
-            print(json.dumps({"name": result["name"], "status": result["status"],
-                              "event_mean_us": result.get("event", {}).get("mean_us"),
-                              "kernel_mean_us": result.get("kernel", {}).get("mean_us"),
-                              "event_median_us": result.get("event", {}).get("median_us"),
-                              "kernel_median_us": result.get("kernel", {}).get("median_us")}), flush=True)
-        verify_build(build_dir)
-        report = {"suite": args.suite, "build": identity, "device": args.device,
-                  "warmup": args.warmup, "repeats": args.repeats, "profile": args.profile,
-                  "output_init": args.output_init, "profiler_backend": args.profiler_backend if args.profile else None,
-                  "profile_samples": (args.profile_samples or args.repeats) if args.profile else None,
-                  "profiler_replay": args.profiler_replay if args.profile and args.profiler_backend == "operator" else None,
-                  "profiler_warmup": args.profiler_warmup if args.profile and args.profiler_backend == "operator" else None,
-                  "cases": records, "passed": bool(records) and all(row["status"] == "Pass" for row in records)}
-        store_text(output / "result.json", json.dumps(report, indent=2, allow_nan=False) + "\n")
-    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        names = ["jit", "ascend"] if args.backend == "both" else [args.backend]
+        reports = {}
+        for name in names:
+            implementation = get_backend(name)
+            if args.backend == "both":
+                build_dir = (args.build_dir or ROOT / "build/tests/backends") / name
+            else:
+                build_dir = args.build_dir or (DEFAULT_BUILD if name == "ascend" else implementation.DEFAULT_BUILD)
+            build_dir = build_dir.resolve()
+            if not args.no_build:
+                implementation.build(build_dir, args.jobs)
+            identity = implementation.verify(build_dir)
+            backend_output = output / name if args.backend == "both" else output
+            backend_output.mkdir(exist_ok=True)
+            report = {"suite": args.suite, "backend": name, "build": identity,
+                      "selection": [case["name"] for case in cases],
+                      "device": args.device, "warmup": args.warmup, "repeats": args.repeats,
+                      "processes": args.processes, "profile": args.profile,
+                      "output_init": args.output_init, "profiler_backend": args.profiler_backend if args.profile else None,
+                      "profiler_replay": args.profiler_replay if args.profile else None,
+                      "profiler_warmup": args.profiler_warmup if args.profile else None,
+                      "cases": [], "passed": False}
+            def save():
+                store_text(backend_output / "result.json", json.dumps(report, indent=2, allow_nan=False) + "\n")
+            with execution_transport(args.transport, args.device) as (executor, transport):
+                report["execution"] = transport
+                save()
+                for process in range(1, args.processes + 1):
+                    folder = backend_output if args.processes == 1 else backend_output / f"process-{process}"
+                    folder.mkdir(exist_ok=True)
+                    for case in cases:
+                        result = run_case(case, build_dir, folder / case["name"], device=args.device,
+                                          warmup=args.warmup, repeats=args.repeats, timeout=args.timeout, profile=args.profile,
+                                          output_init=case.get("output_init", output_init) if args.output_init == "auto" else output_init,
+                                          profiler_backend=args.profiler_backend, profile_samples_count=args.profile_samples,
+                                          profiler_replay=args.profiler_replay, profiler_warmup=args.profiler_warmup,
+                                          backend=name, executor=executor)
+                        result.update(process=process, measurement=str(folder / case["name"] / "result.json"))
+                        report["cases"].append(result)
+                        save()
+                        print(json.dumps({"backend": name, "process": process, "name": result["name"],
+                                          "status": result["status"], "kernel_median_us": result.get("kernel", {}).get("median_us")}), flush=True)
+            implementation.verify(build_dir)
+            rows = report["cases"]
+            report["unsupported_cases"] = sorted({r["name"] for r in rows if r["status"] == "Unsupported"})
+            report["complete"] = not report["unsupported_cases"]
+            report["passed"] = bool(rows) and all(r["status"] == "Pass" for r in rows)
+            report["scoped_passed"] = any(r["status"] == "Pass" for r in rows) and all(r["status"] in ("Pass", "Unsupported") for r in rows)
+            save()
+            reports[name] = report
+        success = all(r["passed"] or (args.allow_unsupported and r["scoped_passed"]) for r in reports.values())
+        if args.backend == "both":
+            from tests.common.paired import compare_backends
+            comparison = compare_backends(reports["jit"]["cases"], reports["ascend"]["cases"], max_slowdown=args.max_slowdown)
+            comparison["selection"] = [case["name"] for case in cases]
+            comparison["reports"] = {name: {"path": str(output / name / "result.json"),
+                                               "sha256": hashlib.sha256((output / name / "result.json").read_bytes()).hexdigest()}
+                                     for name in names}
+            store_text(output / "comparison.json", json.dumps(comparison, indent=2, allow_nan=False) + "\n")
+            if args.profile:
+                success = success and comparison["scoped_performance_accepted" if args.allow_unsupported else "performance_accepted"]
+    except (OSError, ValueError, RuntimeError, ImportError, subprocess.CalledProcessError) as error:
         parser.error(str(error))
-    return 0 if report["passed"] else 1
+    return 0 if success else 1
 
 
 if __name__ == "__main__":
