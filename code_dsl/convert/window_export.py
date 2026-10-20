@@ -78,7 +78,7 @@ def export_window(args,native,current,acceptance):
         prefix=sources[name].split('#include "tl_templates/ascend/common.h"',1)[0]
         start=prefix.rfind('namespace tl::ascend {')
         if start<0:raise ValueError('missing elementary helper prefix')
-        header+=prefix[start:]+'\n'
+        header+='\n'.join(line.rstrip() for line in prefix[start:].splitlines())+'\n'
     producer=callable_source(sources['producer'],'PvDslPipelineProducer')
     body=producer[producer.index('{'):]
     if digest(body)!=receipt['pipeline']['producer']['callable_body_sha256']:
