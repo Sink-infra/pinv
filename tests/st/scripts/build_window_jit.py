@@ -8,7 +8,7 @@ def main(argv=None):
     import tilelang,tvm
     from code_dsl.source import dsl_digest
     from code_dsl.op_kernel.backend import vector_only_backend,vector_only_source,jit_compiler_options
-    from code_dsl.op_kernel.parallel_components import rows_kernel,producer_kernel,parallel_device_functions,pipeline_kernel
+    from code_dsl.op_kernel.parallel_components import rows_kernel,producer_kernel,parallel_device_functions,pipeline_kernel,prepared_rows_kernel,prepared_producer_kernel,transformer_kernel
     from code_dsl.op_kernel.components import component_kernel
     from code_dsl.op_kernel.recovery_quant import quant_kernel
     from code_dsl.op_kernel.recovery_decode import decode_kernel
@@ -47,11 +47,11 @@ def main(argv=None):
                                  'scope':'source lowering; compiled as part of the final JIT module'}
         return source
     pipeline={}
-    for name,factory in [('rows',rows_kernel),('producer',producer_kernel)]:
+    for name,factory in [('rows',rows_kernel),('producer',producer_kernel),('prepared_rows',prepared_rows_kernel),('prepared_producer',prepared_producer_kernel),('transformer',transformer_kernel)]:
         print('lowering',name,flush=True)
         pipeline[name]=Source(lower(name,factory()))
     header,protocol=parallel_device_functions(pipeline)
-    sources['raw']=lower('raw',pipeline_kernel(header,paired=True,peer=False),paired=True)
+    sources['raw']=lower('raw',pipeline_kernel(header,paired=True,peer=False,prepared=True),paired=True)
     factories={'quant':quant_kernel,'decode':decode_kernel,
                'integer':integer_gemm_kernel,'half':half_gemm_kernel,
                'fallback':lambda:component_kernel('rectangular')}

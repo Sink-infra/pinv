@@ -342,6 +342,10 @@ __aicore__ inline void pv_even_max(AscendC::LocalTensor<float> d,AscendC::LocalT
 }
 #define pv_sync_init(d,a,b) PvSetSyncBase(fftsAddr)
 
+namespace tl::ascend {
+__aicore__ inline void pp_clear_history(AscendC::LocalTensor<float> d,AscendC::LocalTensor<float>,AscendC::LocalTensor<float>,int count,int pitch){AscendC::Duplicate(d,0.0f,uint64_t(8),uint8_t(count),1,uint8_t(pitch));}
+}
+
 using uint=unsigned int;using uchar=unsigned char;using ushort=unsigned short;
 namespace tl::ascend {
 __aicore__ inline void PvDslPipelineRows( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_ADDR W_handle, int32_t blocks, uint32_t n, uint32_t stride, uint32_t all_batch, uint32_t job, uint32_t core, uint32_t cores, uint32_t window, uint64_t fftsAddr) {

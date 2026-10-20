@@ -56,7 +56,7 @@ def export_window(args,native,current,acceptance):
         raise ValueError('window JIT artifact changed')
     common=(destination/'op_kernel/pinv_dsl_common.h').read_text()
     sources={}
-    for name in ['rows','producer','raw','quant','decode','integer','half','norms','certify','fallback']:
+    for name in ['rows','producer','prepared_rows','prepared_producer','transformer','raw','quant','decode','integer','half','norms','certify','fallback']:
         path=args.window_build/'components'/name/'kernel.cpp'
         text=path.read_text()
         if digest(text)!=receipt['lowering'][name]['source_sha256']:
@@ -79,15 +79,18 @@ def export_window(args,native,current,acceptance):
         start=prefix.rfind('namespace tl::ascend {')
         if start<0:raise ValueError('missing elementary helper prefix')
         header+='\n'.join(line.rstrip() for line in prefix[start:].splitlines())+'\n'
-    producer=callable_source(sources['producer'],'PvDslPipelineProducer')
-    body=producer[producer.index('{'):]
-    if digest(body)!=receipt['pipeline']['producer']['callable_body_sha256']:
-        raise ValueError('producer body changed')
-    header+='namespace tl::ascend {\n'+producer+'\n}\n'
+    for name in ['producer','prepared_rows','prepared_producer','transformer']:
+        symbol='PvDslPipeline'+''.join(part.title() for part in name.split('_'))
+        function=callable_source(sources[name],symbol)
+        body=function[function.index('{'):]
+        if digest(body)!=receipt['pipeline'][name]['callable_body_sha256']:
+            raise ValueError('pipeline component body changed: '+name)
+        header+='namespace tl::ascend {\n'+function+'\n}\n'
     raw_prefix=sources['raw'].split('#include "tl_templates/ascend/common.h"',1)[0]
-    bindings=[line for line in raw_prefix.splitlines() if line.startswith('#define pv_pipeline_producer(')]
-    if len(bindings)!=1:raise ValueError('missing producer ABI binding')
-    header+=bindings[0]+'\n'
+    for name in ['producer','prepared_rows','prepared_producer','transformer']:
+        bindings=[line for line in raw_prefix.splitlines() if line.startswith('#define pv_pipeline_'+name+'(')]
+        if len(bindings)!=1:raise ValueError('missing pipeline ABI binding: '+name)
+        header+=bindings[0]+'\n'
     records={}
     for name in ['raw','quant','decode','integer','half','norms','certify']:
         function=callable_source(sources[name],'Fused'+name.title())
