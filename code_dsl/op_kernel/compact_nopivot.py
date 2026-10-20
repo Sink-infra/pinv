@@ -41,7 +41,7 @@ def make_nopivot_macro():
                 emit('pv_gather',ub.access_ptr('w',offset=1416),ub.access_ptr('r'),indices.access_ptr('r'),column*4,n)
                 T.set_flag('V','S',0);T.wait_flag('V','S',0)
                 divisor=ub[1416+column]
-                if not (T.max(divisor,-divisor)>T.float32(0.0078125)):
+                if not (T.max(divisor,-divisor)>T.float32(0.00390625)):
                     valid=0
                     T.loop_break()
                 emit('pv_scale',ub.access_ptr('w',offset=column*40),ub.access_ptr('r',offset=column*40),T.float32(-1)/divisor,32)
