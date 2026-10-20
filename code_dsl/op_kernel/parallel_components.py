@@ -71,11 +71,11 @@ def peer_producer_kernel():
     return kernel
 
 
-def transformer_kernel():
+def transformer_kernel(*, cache_peak=False):
     import tilelang.language as T
     from code_dsl.op_kernel.packet_transformer import make_transformer_macro as make_peer_producer_macro
     from code_dsl.op_kernel.intrinsics import emit
-    operation=make_peer_producer_macro();instructions=parallel_instruction_source()
+    operation=make_peer_producer_macro(cache_peak=cache_peak);instructions=parallel_instruction_source()
     @T.prim_func
     def kernel(A:T.Tensor((1,),'float32'),X:T.Tensor((1,),'float32'),W:T.Tensor((1,),'float32'),
                blocks:T.int32,n:T.uint32,stride:T.uint32,all_batch:T.uint32,job:T.uint32,core:T.uint32,cores:T.uint32,window:T.uint32):
@@ -126,7 +126,7 @@ def parallel_device_functions(compiled):
     return header,records
 
 
-def pipeline_kernel(component_source,*,paired=False,peer=False,prepared=False,fallback_source=None):
+def pipeline_kernel(component_source,*,paired=False,peer=False,prepared=False,prepared_checked=False,fallback_source=None):
     """Full/window/peer pipeline; optional DSL Jacobi continuation on rejection.
 
     Window refinement remains a separate, unfinished strategy. Passing a DSL
@@ -164,7 +164,7 @@ def pipeline_kernel(component_source,*,paired=False,peer=False,prepared=False,fa
                     output_size=T.max(T.max(owned*k,512),16*factor_rows*8+owned*16+256)
                     worker_peak=owned*stride+16*(k+16)+output_size+8*T.max(factor_rows,16)+64+5*wide+32+factor_rows+16+k
                     producer_peak=n*window+4096+10*k+3*wide+64+T.ceildiv(n,16)*64+512
-                    if group_size>2 and n%16==0 and window>0 and window%16==0 and worker_peak<=49088 and producer_peak<=49088:
+                    if prepared_checked or group_size>2 and n%16==0 and window>0 and window%16==0 and worker_peak<=49088 and producer_peak<=49088:
                         if core<prepared_workers:
                             emit('pv_pipeline_prepared_rows',W.access_ptr('rw'),blocks,n,stride,batch,job,core,prepared_workers,window)
                         elif core==prepared_workers:

@@ -20,6 +20,7 @@ struct FusedBuffers { AscendC::GlobalTensor<float> input,output,work,status; };
 }
 #define fr_bind(d,a,b) FusedBuffers fr{d,a,b,S}
 #define fr_raw(d,a,b,bl,n,ba,st,wi,at,rt,so) FusedRaw((GM_ADDR)fr.input.GetPhyAddr(),(GM_ADDR)fr.output.GetPhyAddr(),(GM_ADDR)fr.work.GetPhyAddr(),(GM_ADDR)(fr.work.GetPhyAddr()+so),bl,n,ba,st,wi,at,rt,fftsAddr),tl::ascend::FrRestorePipe(&pipe)
+#define fr_prepared_raw(d,a,b,bl,n,ba,st,wi,at,rt,so) FusedPreparedRaw((GM_ADDR)fr.input.GetPhyAddr(),(GM_ADDR)fr.output.GetPhyAddr(),(GM_ADDR)fr.work.GetPhyAddr(),(GM_ADDR)(fr.work.GetPhyAddr()+so),bl,n,ba,st,wi,at,rt,fftsAddr),tl::ascend::FrRestorePipe(&pipe)
 #define fr_quant(d,a,b,off,qa,qy,qn,bl,n,job,sa,sy) FusedQuant((GM_ADDR)fr.input.GetPhyAddr(),(GM_ADDR)fr.output.GetPhyAddr(),(GM_ADDR)(fr.work.GetPhyAddr()+off+qa),(GM_ADDR)(fr.work.GetPhyAddr()+off+qy),(GM_ADDR)(fr.work.GetPhyAddr()+off+qn),bl,n,job,sa,sy,fftsAddr),tl::ascend::FrRestorePipe(&pipe)
 #define fr_integer(d,a,b,off,qa,qy,pr,bl,n) FusedInteger((GM_ADDR)(d.GetPhyAddr()+off+qa),(GM_ADDR)(d.GetPhyAddr()+off+qy),(GM_ADDR)(d.GetPhyAddr()+off+pr),bl,(GM_ADDR)d.GetPhyAddr(),n,5,fftsAddr)
 #define fr_decode(d,a,b,off,pr,rr,yh,rh,bl,n,job,sa,sy) FusedDecode((GM_ADDR)(fr.work.GetPhyAddr()+off+pr),(GM_ADDR)fr.output.GetPhyAddr(),(GM_ADDR)(fr.work.GetPhyAddr()+off+rr),(GM_ADDR)(fr.work.GetPhyAddr()+off+yh),(GM_ADDR)(fr.work.GetPhyAddr()+off+rh),bl,n,job,sa,sy,fftsAddr),tl::ascend::FrRestorePipe(&pipe)

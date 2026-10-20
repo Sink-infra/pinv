@@ -46,12 +46,17 @@ def main(argv=None):
                                  'source_sha256':sha256(source.encode()).hexdigest(),
                                  'scope':'source lowering; compiled as part of the final JIT module'}
         return source
+    from code_dsl.op_kernel.pipeline_rows import make_pipeline_rows_macro
+    from code_dsl.op_kernel.producer import make_producer_macro
+    from code_dsl.op_kernel.prepared_rows import make_prepared_rows_macro
+    from code_dsl.op_kernel.prepared_producer import make_prepared_producer_macro
     pipeline={}
-    for name,factory in [('rows',rows_kernel),('producer',producer_kernel),('prepared_rows',prepared_rows_kernel),('prepared_producer',prepared_producer_kernel),('transformer',transformer_kernel)]:
+    for name,factory in [('rows',lambda: rows_kernel(make_pipeline_rows_macro(cache_peak=True))),('producer',lambda: producer_kernel(make_producer_macro(cache_peak=True))),('prepared_rows',lambda: rows_kernel(make_prepared_rows_macro(cache_peak=True))),('prepared_producer',lambda: producer_kernel(make_prepared_producer_macro(cache_peak=True))),('transformer',lambda: transformer_kernel(cache_peak=True))]:
         print('lowering',name,flush=True)
         pipeline[name]=Source(lower(name,factory()))
     header,protocol=parallel_device_functions(pipeline)
-    sources['raw']=lower('raw',pipeline_kernel(header,paired=True,peer=False,prepared=True),paired=True)
+    sources['raw']=lower('raw',pipeline_kernel(header,paired=True,peer=False),paired=True)
+    sources['prepared_raw']=lower('prepared_raw',pipeline_kernel(header,paired=True,peer=False,prepared=True,prepared_checked=True),paired=True)
     factories={'quant':quant_kernel,'decode':decode_kernel,
                'integer':integer_gemm_kernel,'half':half_gemm_kernel,
                'fallback':lambda:component_kernel('rectangular')}
