@@ -67,6 +67,27 @@ class BuildLayoutTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build.verify_build(self.area)
 
+    def test_local_export_manifest_does_not_change_build_identity(self):
+        before = runtime.source_digest()
+        report = self.code / "project_manifest.json"
+        for layout in ("project", "standalone"):
+            receipt = {**self.receipt, "source_layout": layout}
+            store_text(self.area / "tests/build.json", json.dumps(receipt))
+            for contents in ('{"export": 1}\n', 'a changed local report\n'):
+                store_text(report, contents)
+                self.assertEqual(runtime.source_digest(), before)
+                self.assertNotIn("project_manifest.json", build.standalone_files())
+                self.assertEqual(build.verify_build(self.area), receipt)
+            report.unlink()
+            self.assertEqual(build.verify_build(self.area), receipt)
+
+    def test_standalone_export_manifest_is_optional(self):
+        report = self.area / "tests/source/code/project_manifest.json"
+        store_text(report, "local conversion report\n")
+        self.assertEqual(build.verify_build(self.area), self.receipt)
+        report.unlink()
+        self.assertEqual(build.verify_build(self.area), self.receipt)
+
     def test_missing_staged_header_invalidates_the_receipt(self):
         (self.area / "tests/source/code/op_kernel/common.inc").unlink()
         with self.assertRaises(ValueError):

@@ -1,9 +1,10 @@
-"""Report independent suite counts and shapes without requiring NumPy."""
+"""Inspect suites, build and run AscendC or TileLang JIT tests."""
 
 import argparse
 from tests.common.cases import CASE_GROUPS, load_document
 import json
 import math
+import sys
 
 
 def summary():
@@ -33,10 +34,23 @@ def summary():
     return result
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "run":
+        from tests.st.scripts.run_tests import main as run
+        return run(argv[1:])
+    if argv and argv[0] == "build":
+        from tests.st.scripts.build import main as build
+        return build(argv[1:])
+    parser = argparse.ArgumentParser(description=__doc__,
+        epilog="Build: python -m tests build --help; run: python -m tests run --help")
     parser.add_argument("--details", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     result = summary()
     print(json.dumps(result if args.details else {key: value["count"] for key, value in result.items()},
                      indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
