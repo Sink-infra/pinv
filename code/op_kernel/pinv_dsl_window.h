@@ -89,6 +89,7 @@ __aicore__ inline void PvDslPipelineProducer( GM_ADDR A_handle,  GM_ADDR X_handl
   int valid = 0;
   int size = 0;
   int pitch = 0;
+  int window_end = 0;
   int columns = 0;
   int next_pitch = 0;
   float best = 0.000000e+00f;
@@ -100,7 +101,7 @@ __aicore__ inline void PvDslPipelineProducer( GM_ADDR A_handle,  GM_ADDR X_handl
     wide = (((k + 63) / 64) * 64);
     capacity = (n * k);
     if (0 < window) {
-      capacity = max((n * window), (((n - window) * (((n + 7) - window) / 8)) * 8));
+      capacity = (n * window);
     }
     int32_t scratch = capacity;
     int32_t vector = (((k * 8) + scratch) + 4096);
@@ -197,8 +198,13 @@ __aicore__ inline void PvDslPipelineProducer( GM_ADDR A_handle,  GM_ADDR X_handl
     if (0 < window) {
       pitch = window;
     }
+    window_end = n;
+    if (0 < window) {
+      window_end = min(n, window);
+    }
     for (int32_t panel = 0; panel < ((n + 15) / 16); ++panel) {
-      if ((0 < window) && ((panel * 16) == window)) {
+      if ((0 < window) && ((panel * 16) == window_end)) {
+        window_end = min(n, (window_end + window));
         tl::ascend::pv_all_barrier(pool[0], pool[0], pool[0]);
         tl::ascend::pv_cross_set0(pool[0], pool[0], pool[0], 3);
         tl::ascend::pv_cross_wait(pool[0], pool[0], pool[0], 3);
@@ -207,7 +213,7 @@ __aicore__ inline void PvDslPipelineProducer( GM_ADDR A_handle,  GM_ADDR X_handl
         if (valid != 0) {
           for (int32_t row_1 = 0; row_1 < size; ++row_1) {
             int32_t original = ((int32_t)pool.GetValue((((int64_t)permutation) + ((int64_t)row_1))));
-            tl::ascend::pv_load_rows(pool[(row_1 * pitch)], W[((((job * n) * stride) + (original * k)) + window)], pool[(row_1 * pitch)], 1, size, 0, 0);
+            tl::ascend::pv_load_rows(pool[(row_1 * pitch)], W[(((panel * 16) + ((job * n) * stride)) + (original * k))], pool[(row_1 * pitch)], 1, (window_end - (panel * 16)), 0, 0);
           }
           AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(0);
           AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(0);
@@ -283,13 +289,16 @@ __aicore__ inline void PvDslPipelineProducer( GM_ADDR A_handle,  GM_ADDR X_handl
         }
         int32_t remaining_1 = (size - block);
         columns = remaining_1;
-        if ((0 < window) && (((panel * 16) + block) < window)) {
-          columns = ((window - block) - (panel * 16));
+        if (0 < window) {
+          columns = min(remaining_1, ((window_end - block) - (panel * 16)));
+        }
+        if ((0 < window) && (((panel * 16) + block) == window_end)) {
+          columns = min(window, remaining_1);
         }
         next_pitch = (((columns + 7) / 8) * 8);
         AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
         AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
-        if ((window <= 0) || (((panel * 16) + block) != window)) {
+        if ((window <= 0) || (((panel * 16) + block) != window_end)) {
           for (int32_t row_chunk_1 = 0; row_chunk_1 < ((remaining_1 + 15) / 16); ++row_chunk_1) {
             tl::ascend::pv_copy_ub_rows(pool[((row_chunk_1 * next_pitch) * 16)], pool[((((row_chunk_1 * 16) + block) * pitch) + block)], pool[((row_chunk_1 * next_pitch) * 16)], min((remaining_1 - (row_chunk_1 * 16)), 16), next_pitch, (pitch - next_pitch), 0);
             AscendC::PipeBarrier<PIPE_V>();

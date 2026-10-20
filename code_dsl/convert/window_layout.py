@@ -15,9 +15,7 @@ PV_WINDOW_LAYOUT_FN bool WindowSupported(uint32_t m,uint32_t n,uint32_t batch,
     uint64_t group=cores/batch;
     if(group<2 || group>48 || !window || window>=n || window%16)return false;
     uint64_t k=(n+7)/8*8,wide=(k+63)/64*64;
-    uint64_t trailing=(n-window)*uint64_t((n-window+7)/8*8);
     uint64_t capacity=uint64_t(n)*window;
-    if(trailing>capacity)capacity=trailing;
     uint64_t producer=capacity+4096+10*k+2*wide+64+(n+15)/16*64;
     uint64_t owned=(n+group-2)/(group-1),factors=(owned+7)/8*8;
     uint64_t output=owned*k>512?owned*k:512;
