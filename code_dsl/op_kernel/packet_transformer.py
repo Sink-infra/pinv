@@ -1,6 +1,6 @@
 from code_dsl.op_kernel.intrinsics import emit
 
-def make_transformer_macro():
+def make_transformer_macro(*, cache_peak=False):
     import tilelang.language as T
     @T.macro
     def transformer(A,X,W,pool,n,stride,all_batch,job,core,cores,window):
@@ -61,7 +61,8 @@ def make_transformer_macro():
         emit('pv_all_barrier',pool.access_ptr('rw'))
         pool[0]=T.Cast('float32',valid)
         pool[1]=T.float32(0)
+        if cache_peak:pool[2]=T.float32(0)
         T.set_flag('S','MTE3',0);T.wait_flag('S','MTE3',0)
-        emit('pv_store_rows',W.access_ptr('w',offset=metadata+2048+core*8),pool.access_ptr('r'),1,2,0,0)
+        emit('pv_store_rows',W.access_ptr('w',offset=metadata+2048+core*8),pool.access_ptr('r'),1,3 if cache_peak else 2,0,0)
         emit('pv_all_barrier',pool.access_ptr('rw'))
     return transformer

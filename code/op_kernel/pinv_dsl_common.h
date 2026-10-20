@@ -372,6 +372,7 @@ __aicore__ inline void PvDslPipelineRows( GM_ADDR A_handle,  GM_ADDR X_handle,  
   float power = 0.000000e+00f;
   uint32_t window_end = (uint32_t)0;
   float inverse = 0.000000e+00f;
+  float peak = 0.000000e+00f;
   auto vid = AscendC::GetSubBlockIdx();
   if ASCEND_IS_AIV {
     tl::ascend::pv_sync_init(W[0], W[0], W[0]);
@@ -548,6 +549,7 @@ __aicore__ inline void PvDslPipelineRows( GM_ADDR A_handle,  GM_ADDR X_handle,  
       }
     }
     inverse = 0.000000e+00f;
+    peak = 0.000000e+00f;
     if (valid != 0) {
       AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
       AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);

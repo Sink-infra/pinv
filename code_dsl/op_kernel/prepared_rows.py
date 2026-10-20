@@ -6,7 +6,7 @@ column schedule are expressed as DSL. Window width is a runtime parameter.
 from code_dsl.op_kernel.intrinsics import emit
 
 
-def make_prepared_rows_macro():
+def make_prepared_rows_macro(*, cache_peak=False):
     import tilelang.language as T
 
     @T.macro
@@ -135,6 +135,7 @@ def make_prepared_rows_macro():
                 emit('pv_cross_wait',pool.access_ptr('rw'),4)
                 window_end=T.min(n,window_end+window)
         inverse=T.alloc_var('float32');inverse=T.float32(0)
+        peak=T.alloc_var('float32');peak=T.float32(0)
         if valid!=0:
             T.set_flag('V','S',0);T.wait_flag('V','S',0)
             for j in T.serial(n):
@@ -153,6 +154,14 @@ def make_prepared_rows_macro():
             emit('pv_reduce_sum',pool.access_ptr('w',offset=red),pool.access_ptr('r',offset=accumulator),pool.access_ptr('rw',offset=scratch),k)
             T.set_flag('V','S',0);T.wait_flag('V','S',0)
             inverse=pool[red]
+            if cache_peak:
+                # The original augmented rows are dead after the output gather.
+                # Their two halves hold absolute values and reduction scratch.
+                emit('pv_abs',pool.access_ptr('w'),pool.access_ptr('r',offset=output),owned*k)
+                T.pipe_barrier('V')
+                emit('pv_reduce_max',pool.access_ptr('w',offset=red),pool.access_ptr('r'),pool.access_ptr('rw',offset=owned*k),owned*k)
+                T.set_flag('V','S',0);T.wait_flag('V','S',0)
+                peak=pool[red]/power
             for i in T.serial(owned):
                 emit('pv_scale',pool.access_ptr('w',offset=output+i*k),pool.access_ptr('r',offset=output+i*k),T.float32(1)/power,k)
                 T.pipe_barrier('V')
@@ -162,7 +171,8 @@ def make_prepared_rows_macro():
             emit('pv_all_barrier',pool.access_ptr('rw'))
         pool[0]=T.Cast('float32',valid)
         pool[1]=inverse
+        if cache_peak:pool[2]=peak
         T.set_flag('S','MTE3',0);T.wait_flag('S','MTE3',0)
-        emit('pv_store_rows',W.access_ptr('w',offset=metadata+2048+core*8),pool.access_ptr('r'),1,2,0,0)
+        emit('pv_store_rows',W.access_ptr('w',offset=metadata+2048+core*8),pool.access_ptr('r'),1,3 if cache_peak else 2,0,0)
         emit('pv_all_barrier',pool.access_ptr('rw'))
     return workers
