@@ -595,24 +595,25 @@ __aicore__ inline void FusedDecode( GM_ADDR P_handle,  GM_ADDR Y_handle,  GM_ADD
   AscendC::GlobalTensor<half> RH;
   RH.SetGlobalBuffer((__gm__ half*)RH_handle);
 
-  AscendC::TBuf<AscendC::TPosition::VECCALC> ascend_ub; pipe.InitBuffer(ascend_ub, 90112);
+  AscendC::TBuf<AscendC::TPosition::VECCALC> ascend_ub; pipe.InitBuffer(ascend_ub, 106496);
   auto core = AscendC::GetBlockIdx();
   if ASCEND_IS_AIV {
     }
   auto high = ascend_ub.GetWithOffset<float>(2048, 0);
   auto low = ascend_ub.GetWithOffset<float>(2048, 8192);
   auto raw = ascend_ub.GetWithOffset<int>(2048, 16384);
-  float row_weight = 0.000000e+00f;
-  auto part = ascend_ub.GetWithOffset<float>(2048, 24576);
   float weight = 0.000000e+00f;
-  auto total = ascend_ub.GetWithOffset<float>(2048, 32768);
-  auto bv = ascend_ub.GetWithOffset<float>(2048, 40960);
-  auto av = ascend_ub.GetWithOffset<float>(2048, 49152);
-  auto error = ascend_ub.GetWithOffset<float>(2048, 57344);
-  auto alt = ascend_ub.GetWithOffset<float>(2048, 65536);
-  auto h_r = ascend_ub.GetWithOffset<half>(2048, 73728);
-  auto cache = ascend_ub.GetWithOffset<float>(2048, 77824);
-  auto h_y = ascend_ub.GetWithOffset<half>(2048, 86016);
+  auto part = ascend_ub.GetWithOffset<float>(2048, 24576);
+  auto roundtrip = ascend_ub.GetWithOffset<int>(2048, 32768);
+  auto remainder = ascend_ub.GetWithOffset<float>(2048, 40960);
+  auto total = ascend_ub.GetWithOffset<float>(2048, 49152);
+  auto bv = ascend_ub.GetWithOffset<float>(2048, 57344);
+  auto av = ascend_ub.GetWithOffset<float>(2048, 65536);
+  auto error = ascend_ub.GetWithOffset<float>(2048, 73728);
+  auto alt = ascend_ub.GetWithOffset<float>(2048, 81920);
+  auto h_r = ascend_ub.GetWithOffset<half>(2048, 90112);
+  auto cache = ascend_ub.GetWithOffset<float>(2048, 94208);
+  auto h_y = ascend_ub.GetWithOffset<half>(2048, 102400);
   auto vid = AscendC::GetSubBlockIdx();
   if ASCEND_IS_AIV {
     tl::ascend::pv_fill(high[0], high[0], high[0], 0.000000e+00f, 2048);
@@ -626,20 +627,45 @@ __aicore__ inline void FusedDecode( GM_ADDR P_handle,  GM_ADDR Y_handle,  GM_ADD
     }
     AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
     AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
-    row_weight = (scale_a * 3.906250e-03f);
-    row_weight = (row_weight * (scale_y * 3.906250e-03f));
-    for (int32_t i = 0; i < 5; ++i) {
-      weight = row_weight;
-      for (int32_t j = 0; j < 5; ++j) {
-        AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(0);
-        AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(0);
-        tl::ascend::rd_load(raw[0], P[(n * ((((i * n) * 5) + (core * 5)) + j))], raw[0], ((((n + blocks) - core) - 1) / blocks), n, (((blocks * 5) - 1) * n));
-        AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(0);
-        AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(0);
-        AscendC::Cast(part[0], raw[0], AscendC::RoundMode::CAST_RINT, 2048);
+    weight = (scale_a * 3.906250e-03f);
+    weight = (weight * (scale_y * 3.906250e-03f));
+    for (int32_t diagonal = 0; diagonal < 9; ++diagonal) {
+      AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(0);
+      AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(0);
+      tl::ascend::rd_load(raw[0], P[(((diagonal * n) + core) * n)], raw[0], ((((n + blocks) - core) - 1) / blocks), n, ((blocks - 1) * n));
+      AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(0);
+      AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(0);
+      AscendC::Cast(part[0], raw[0], AscendC::RoundMode::CAST_RINT, 2048);
+      AscendC::PipeBarrier<PIPE_V>();
+      if (diagonal == 4) {
+        AscendC::Cast(roundtrip[0], part[0], AscendC::RoundMode::CAST_RINT, 2048);
         AscendC::PipeBarrier<PIPE_V>();
+        AscendC::Sub(raw[0], raw[0], roundtrip[0], 2048);
+        AscendC::PipeBarrier<PIPE_V>();
+        AscendC::Cast(remainder[0], raw[0], AscendC::RoundMode::CAST_RINT, 2048);
+        AscendC::PipeBarrier<PIPE_V>();
+      }
+      {
+      AscendC::Muls(part[0], part[0], (weight * -1.000000e+00f), 2048);
+      }
+      AscendC::PipeBarrier<PIPE_V>();
+      AscendC::Add(total[0], high[0], part[0], 2048);
+      AscendC::PipeBarrier<PIPE_V>();
+      AscendC::Sub(bv[0], total[0], high[0], 2048);
+      AscendC::PipeBarrier<PIPE_V>();
+      AscendC::Sub(av[0], total[0], bv[0], 2048);
+      AscendC::PipeBarrier<PIPE_V>();
+      AscendC::Sub(error[0], high[0], av[0], 2048);
+      AscendC::Sub(alt[0], part[0], bv[0], 2048);
+      AscendC::PipeBarrier<PIPE_V>();
+      AscendC::Add(error[0], error[0], alt[0], 2048);
+      AscendC::PipeBarrier<PIPE_V>();
+      AscendC::Add(low[0], low[0], error[0], 2048);
+      tl::ascend::pv_copy(high[0], total[0], high[0], 2048);
+      AscendC::PipeBarrier<PIPE_V>();
+      if (diagonal == 4) {
         {
-        AscendC::Muls(part[0], part[0], (weight * -1.000000e+00f), 2048);
+        AscendC::Muls(part[0], remainder[0], (weight * -1.000000e+00f), 2048);
         }
         AscendC::PipeBarrier<PIPE_V>();
         AscendC::Add(total[0], high[0], part[0], 2048);
@@ -656,9 +682,8 @@ __aicore__ inline void FusedDecode( GM_ADDR P_handle,  GM_ADDR Y_handle,  GM_ADD
         AscendC::Add(low[0], low[0], error[0], 2048);
         tl::ascend::pv_copy(high[0], total[0], high[0], 2048);
         AscendC::PipeBarrier<PIPE_V>();
-        weight = (weight * 3.906250e-03f);
       }
-      row_weight = (row_weight * 3.906250e-03f);
+      weight = (weight * 3.906250e-03f);
     }
     AscendC::Add(high[0], high[0], low[0], 2048);
     AscendC::PipeBarrier<PIPE_V>();
@@ -718,7 +743,10 @@ __aicore__ inline void FusedInteger( GM_ADDR A_handle,  GM_ADDR B_handle,  GM_AD
     }
   auto a = ascend_l1.GetWithOffset<int8_t>(40960, 0);
   auto b = ascend_l1.GetWithOffset<int8_t>(163840, 40960);
+  int first = 0;
+  int last = 0;
   auto c = ascend_l0c.GetWithOffset<int>(4096, 0);
+  int clear = 0;
   auto vid = AscendC::GetSubBlockIdx();
   if ASCEND_IS_AIC {
     for (int32_t iteration = 0; iteration < ((((((n + 31) / 32) * ((n + 127) / 128)) + blocks) - 1) / blocks); ++iteration) {
@@ -730,15 +758,29 @@ __aicore__ inline void FusedInteger( GM_ADDR A_handle,  GM_ADDR B_handle,  GM_AD
           }
         }
         AscendC::PipeBarrier<PIPE_ALL>();
-        for (int32_t i_1 = 0; i_1 < planes; ++i_1) {
-          for (int32_t j = 0; j < planes; ++j) {
+        for (int32_t diagonal = 0; diagonal < ((planes * 2) - 1); ++diagonal) {
+          first = 0;
+          last = planes;
+          if (planes <= diagonal) {
+            first = ((diagonal + 1) - planes);
+          }
+          if ((diagonal + 1) < planes) {
+            last = (diagonal + 1);
+          }
+          for (int32_t i_1 = first; i_1 < last; ++i_1) {
             for (int32_t kk_1 = 0; kk_1 < (n / 128); ++kk_1) {
-              tl::ascend::gemm_v0<int8_t, int, 32, 128, 128, false, false>(a[((i_1 * 8192) + (kk_1 * 4096))], b[((j * 32768) + (kk_1 * 16384))], c[0], ascend_l0a, ascend_l0b, (kk_1 == 0));
+              clear = 0;
+              if (i_1 == first) {
+                if (kk_1 == 0) {
+                  clear = 1;
+                }
+              }
+              tl::ascend::gemm_v0<int8_t, int, 32, 128, 128, false, false>(a[((i_1 * 8192) + (kk_1 * 4096))], b[(((diagonal * 32768) + (kk_1 * 16384)) - (i_1 * 32768))], c[0], ascend_l0a, ascend_l0b, (clear != 0));
               AscendC::PipeBarrier<PIPE_ALL>();
             }
-            tl::ascend::copy_l0c_to_gm<int, int, layout::RowMajor, 32, 128, 0>(C[(((((bid + (iteration * blocks)) % ((n + 127) / 128)) * 128) + ((((((bid + (iteration * blocks)) / ((n + 127) / 128)) * 32) + (i_1 * n)) * planes) * n)) + (j * n))], c[0], (planes * n), ((1 <= (((n * (planes - i_1)) / 32) - ((bid + (iteration * blocks)) / ((n + 127) / 128)))) ? 32 : ((0 < ((n * (planes - i_1)) - (((bid + (iteration * blocks)) / ((n + 127) / 128)) * 32))) ? ((n * (planes - i_1)) - (((bid + (iteration * blocks)) / ((n + 127) / 128)) * 32)) : 0)), ((1 <= (((n * (planes - j)) / 128) - ((bid + (iteration * blocks)) % ((n + 127) / 128)))) ? 128 : ((0 < ((n * (planes - j)) - (((bid + (iteration * blocks)) % ((n + 127) / 128)) * 128))) ? ((n * (planes - j)) - (((bid + (iteration * blocks)) % ((n + 127) / 128)) * 128)) : 0)));
-            AscendC::PipeBarrier<PIPE_ALL>();
           }
+          tl::ascend::copy_l0c_to_gm<int, int, layout::RowMajor, 32, 128, 0>(C[((((bid + (iteration * blocks)) % ((n + 127) / 128)) * 128) + (((((bid + (iteration * blocks)) / ((n + 127) / 128)) * 32) + (diagonal * n)) * n))], c[0], n, ((1 <= (((n * (((planes * 2) - diagonal) - 1)) / 32) - ((bid + (iteration * blocks)) / ((n + 127) / 128)))) ? 32 : ((0 < ((n * (((planes * 2) - diagonal) - 1)) - (((bid + (iteration * blocks)) / ((n + 127) / 128)) * 32))) ? ((n * (((planes * 2) - diagonal) - 1)) - (((bid + (iteration * blocks)) / ((n + 127) / 128)) * 32)) : 0)), ((1 <= ((n / 128) - ((bid + (iteration * blocks)) % ((n + 127) / 128)))) ? 128 : ((0 < (n - (((bid + (iteration * blocks)) % ((n + 127) / 128)) * 128))) ? (n - (((bid + (iteration * blocks)) % ((n + 127) / 128)) * 128)) : 0)));
+          AscendC::PipeBarrier<PIPE_ALL>();
         }
       }
     }
