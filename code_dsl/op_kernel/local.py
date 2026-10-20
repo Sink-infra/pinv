@@ -82,6 +82,7 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
                         T.loop_break()
                     emit('pv_mask_remove', pool.access_ptr('rw'), pivot)
                     order[pivot] = T.Cast('uint32',p*4)
+                    if full_tile:order[pad+p]=T.Cast('uint32',(pivot*pitch+pad)*4)
                     consumed = T.alloc_var('int32')
                     consumed = 0
                     base = T.alloc_var('int32')
@@ -128,6 +129,7 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
                         T.loop_break()
                     emit('pv_mask_remove', pool.access_ptr('rw'), pivot)
                     order[pivot] = T.Cast('uint32',p*4)
+                    if full_tile:order[pad+p]=T.Cast('uint32',(pivot*pitch+pad)*4)
                     consumed = T.alloc_var('int32')
                     consumed = 0
                     base = T.alloc_var('int32')
@@ -174,23 +176,37 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
                 else:
                     emit('pv_scale',pool.access_ptr('w'),pool.access_ptr('r'),T.float32(-1)/power,count)
                     T.pipe_barrier('V')
-                    # Store byte offsets during pivoting, then transfer the
-                    # permutation in bulk on the Vector pipe. This removes
-                    # the scalar UB read/write loop from the output schedule.
-                    T.set_flag('S','V',0);T.wait_flag('S','V',0)
-                    T.copy(order[0:pad],indices[0:pad])
-                    T.pipe_barrier('V')
-                    # Keep one row->pivot permutation. Write each physical
-                    # row into its logical output slot in the UB output tile.
-                    for physical_row in T.serial(n):
-                        output_row=T.Cast('int32',order[physical_row])//4
-                        emit('pv_gather',pool.access_ptr('w',offset=lo+output_row*pitch),pool.access_ptr('r'),indices.access_ptr('r'),(physical_row*pitch+pad)*4,n)
-                    T.pipe_barrier('V')
-                    T.set_flag('V','MTE3',0);T.wait_flag('V','MTE3',0)
-                    T.set_flag('S','MTE3',0);T.wait_flag('S','MTE3',0)
-                    emit('pv_store_rows',X.access_ptr('w',offset=offset),pool.access_ptr('r',offset=lo),n,n,pitch-dma_pad,0)
-                    T.set_flag('MTE3','V',0);T.wait_flag('MTE3','V',0)
-                    T.set_flag('MTE3','MTE2',0);T.wait_flag('MTE3','MTE2',0)
+                    if full_tile:
+                        # Output and offset tiles fit the dead space before factors.
+                        T.set_flag('S','V',0);T.wait_flag('S','V',0)
+                        emit('bl_index_brcb',pool.access_ptr('w',offset=factors),order.access_ptr('r',offset=pad),pad)
+                        T.pipe_barrier('V')
+                        emit('bl_index_matrix',pool.access_ptr('w',offset=lo+pad*pad),pool.access_ptr('r',offset=factors),order.access_ptr('r'),pad,pad)
+                        T.pipe_barrier('V')
+                        emit('bl_gather',pool.access_ptr('w',offset=lo),pool.access_ptr('r'),pool.access_ptr('r',offset=lo+pad*pad),pad*pad)
+                        T.pipe_barrier('V')
+                        T.set_flag('V','MTE3',0);T.wait_flag('V','MTE3',0)
+                        emit('pv_store_rows',X.access_ptr('w',offset=offset),pool.access_ptr('r',offset=lo),n,n,0,0)
+                        T.set_flag('MTE3','V',0);T.wait_flag('MTE3','V',0)
+                        T.set_flag('MTE3','MTE2',0);T.wait_flag('MTE3','MTE2',0)
+                    else:
+                        # Store byte offsets during pivoting, then transfer the
+                        # permutation in bulk on the Vector pipe. This removes
+                        # the scalar UB read/write loop from the output schedule.
+                        T.set_flag('S','V',0);T.wait_flag('S','V',0)
+                        T.copy(order[0:pad],indices[0:pad])
+                        T.pipe_barrier('V')
+                        # Keep one row->pivot permutation. Write each physical
+                        # row into its logical output slot in the UB output tile.
+                        for physical_row in T.serial(n):
+                            output_row=T.Cast('int32',order[physical_row])//4
+                            emit('pv_gather',pool.access_ptr('w',offset=lo+output_row*pitch),pool.access_ptr('r'),indices.access_ptr('r'),(physical_row*pitch+pad)*4,n)
+                        T.pipe_barrier('V')
+                        T.set_flag('V','MTE3',0);T.wait_flag('V','MTE3',0)
+                        T.set_flag('S','MTE3',0);T.wait_flag('S','MTE3',0)
+                        emit('pv_store_rows',X.access_ptr('w',offset=offset),pool.access_ptr('r',offset=lo),n,n,pitch-dma_pad,0)
+                        T.set_flag('MTE3','V',0);T.wait_flag('MTE3','V',0)
+                        T.set_flag('MTE3','MTE2',0);T.wait_flag('MTE3','MTE2',0)
         store_admission(accepted,valid)
     return quick
 
