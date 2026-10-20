@@ -169,8 +169,22 @@ def export_stage(args,native,current,acceptance):
     }
 '''+needle,1)
     files['op_host/linalg_pinv.cpp']=host
+    # The service currently allows twenty additional files. Preserve separate
+    # DSL strategies and expand only native leaves with a single consumer.
+    native_leaves=[('linalg_pinv.cpp','pinv_compact_quick.h'),
+                   ('pinv_cube_residual.h','pinv_cube_digits.h'),
+                   ('pinv_refinement.h','pinv_refinement_certificate.h'),
+                   ('pinv_rect.h','pinv_rect_certificate.h')]
+    for parent,leaf in native_leaves:
+        path='op_kernel/'+parent
+        text=files.get(path,(original/path).read_text())
+        include='#include "'+leaf+'"'
+        if text.count(include)!=1:raise ValueError('unexpected native include: '+leaf)
+        fragment=(original/'op_kernel'/leaf).read_text().replace('#pragma once\n','')
+        files[path]=text.replace(include,fragment,1)
     for path,text in files.items():(destination/path).write_text(text)
-    for name in ['NUMERICS.md','op_kernel/pinv_native_entry.h','op_kernel/pinv_dsl_generated.h']:
+    for name in ['NUMERICS.md','op_kernel/pinv_native_entry.h','op_kernel/pinv_dsl_generated.h',
+                 *['op_kernel/'+leaf for _,leaf in native_leaves]]:
         (destination/name).unlink(missing_ok=True)
     for name in CMAKE_FILES:
         if (destination/name).read_bytes()!=(original/name).read_bytes():raise ValueError('CMake changed')
