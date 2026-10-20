@@ -8,10 +8,10 @@ BOUNDARY='\nvoid linalg_pinv_tilelang_kernel_tiling('
 
 
 def recovery_device_functions(sources):
-    expected={'raw','quant','decode','integer','half','norms','certify','fallback'}
+    expected={'raw','prepared_raw','quant','decode','integer','half','norms','certify','fallback'}
     if set(sources)!=expected:
         raise ValueError('all window recovery components are required')
-    raw=sources['raw']
+    raw=sources['prepared_raw']
     header=raw.split('#include "tl_templates/ascend/common.h"',1)[0]+'\n'
     for name in ['quant','decode']:
         prefix=sources[name].split('#include "tl_templates/ascend/common.h"',1)[0]
@@ -20,7 +20,7 @@ def recovery_device_functions(sources):
             raise ValueError('missing elementary recovery helpers')
         header+=prefix[start:]+'\n'
     records={}
-    for name in ['raw','quant','decode','integer','half','norms','certify','fallback']:
+    for name in ['raw','prepared_raw','quant','decode','integer','half','norms','certify','fallback']:
         source=sources[name]
         if source.count(DECLARATION)!=1 or source.count(BOUNDARY)!=1:
             raise ValueError('unexpected component ABI: '+name)
@@ -28,7 +28,7 @@ def recovery_device_functions(sources):
         metadata=re.findall(r'^  KERNEL_TASK_TYPE_DEFAULT\([^\n]+\);\n',function,re.M)
         if len(metadata)!=1:
             raise ValueError('unexpected component metadata: '+name)
-        symbol='PvDslRectangular' if name=='fallback' else 'Fused'+name.title()
+        symbol='PvDslRectangular' if name=='fallback' else 'FusedPreparedRaw' if name=='prepared_raw' else 'Fused'+name.title()
         linkage='static __attribute__((noinline))' if name=='fallback' else 'inline'
         adapted=function.replace(DECLARATION,'__aicore__ '+linkage+' void '+symbol+'(',1).replace(metadata[0],'',1)
         before=function[function.index('{'):].replace(metadata[0],'',1)

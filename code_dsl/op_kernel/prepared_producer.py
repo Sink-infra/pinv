@@ -6,7 +6,7 @@ previous packet. The window transition reloads worker-produced trailing rows.
 from code_dsl.op_kernel.intrinsics import emit
 
 
-def make_prepared_producer_macro():
+def make_prepared_producer_macro(*, cache_peak=False):
     import tilelang.language as T
     from code_dsl.op_kernel.reduction import make_argmax_macro
     argmax=make_argmax_macro()
@@ -196,7 +196,8 @@ def make_prepared_producer_macro():
         emit('pv_all_barrier',pool.access_ptr('rw'))
         pool[0]=T.Cast('float32',valid)
         pool[1]=T.float32(0)
+        if cache_peak:pool[2]=T.float32(0)
         T.set_flag('S','MTE3',0);T.wait_flag('S','MTE3',0)
-        emit('pv_store_rows',W.access_ptr('w',offset=metadata+2048+core*8),pool.access_ptr('r'),1,2,0,0)
+        emit('pv_store_rows',W.access_ptr('w',offset=metadata+2048+core*8),pool.access_ptr('r'),1,3 if cache_peak else 2,0,0)
         emit('pv_all_barrier',pool.access_ptr('rw'))
     return producer

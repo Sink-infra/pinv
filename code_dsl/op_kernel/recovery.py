@@ -4,6 +4,7 @@ from code_dsl.op_kernel.intrinsics import emit
 
 def window_recovery_kernel(component_source):
     import tilelang.language as T
+    from code_dsl.op_kernel.prepared_layout import use_prepared
     header=component_source
     @T.prim_func
     def kernel(A:T.Tensor((1,),'float32'),X:T.Tensor((1,),'float32'),W:T.Tensor((1,),'float32'),S:T.Tensor((1,),'float32'),
@@ -33,7 +34,10 @@ def window_recovery_kernel(component_source):
       with T.Scope('V'):
        T.reads(A[0],W[0],S[0]);T.writes(X[0],W[0],S[0])
        emit('fr_bind',A.access_ptr('r'),X.access_ptr('rw'),W.access_ptr('rw'))
-       emit('fr_raw',W.access_ptr('rw'),blocks,n,batch,stride,window,atol,rtol,off+qn+blocks*32)
+       if use_prepared(n,stride,batch,blocks,window):
+        emit('fr_prepared_raw',W.access_ptr('rw'),blocks,n,batch,stride,window,atol,rtol,off+qn+blocks*32)
+       else:
+        emit('fr_raw',W.access_ptr('rw'),blocks,n,batch,stride,window,atol,rtol,off+qn+blocks*32)
        cores=blocks*2
        group_size=cores//batch
        for job in T.serial(batch):
@@ -42,10 +46,12 @@ def window_recovery_kernel(component_source):
         emit('pv_load_rows',pool.access_ptr('w',offset=384),W.access_ptr('r',offset=metadata),1,64,0,0)
         T.set_flag('MTE2','S',0);T.wait_flag('MTE2','S',0)
         inverse=T.alloc_var('float32');inverse=T.float32(0)
+        peak_cached=T.alloc_var('float32');peak_cached=T.float32(0)
         valid=T.alloc_var('int32');valid=1
         for c in T.serial(group_size):
          if pool[c*8]<T.float32(.5):valid=0
          inverse+=pool[c*8+1]
+         peak_cached=T.max(peak_cached,pool[c*8+2])
         power=pool[416];total=pool[417]
         pool[3648]=total;pool[3649]=inverse
         T.set_flag('S','V',0);T.wait_flag('S','V',0)
@@ -59,18 +65,7 @@ def window_recovery_kernel(component_source):
         sy=T.alloc_var('float32');sy=T.float32(1)
         sa=power*T.float32(8)
         if refine!=0:
-         owned=(n+cores-1-bid)//cores
-         emit('pv_load_rows',pool.access_ptr('w'),X.access_ptr('r',offset=job*extent+bid*n),owned,n,(cores-1)*n,0)
-         T.set_flag('MTE2','V',0);T.wait_flag('MTE2','V',0)
-         emit('pv_abs',pool.access_ptr('w'),pool.access_ptr('r'),owned*n);T.pipe_barrier('V')
-         emit('pv_reduce_max',pool.access_ptr('w',offset=2560),pool.access_ptr('r'),pool.access_ptr('rw',offset=2048),owned*n)
-         T.set_flag('V','MTE3',0);T.wait_flag('V','MTE3',0)
-         emit('pv_store_rows',S.access_ptr('w',offset=job*512+32+bid*8),pool.access_ptr('r',offset=2560),1,8,0,0)
-         emit('pv_sync_all',W.access_ptr('rw'))
-         emit('pv_load_rows',pool.access_ptr('w',offset=2688),S.access_ptr('r',offset=job*512+32),1,cores*8,0,0)
-         T.set_flag('MTE2','S',0);T.wait_flag('MTE2','S',0)
-         peak=T.alloc_var('float32');peak=T.float32(0)
-         for c in T.serial(cores):peak=T.max(peak,pool[2688+c*8])
+         peak=peak_cached
          if not (peak>T.float32(0) and peak<T.float32(1e20)):refine=0;valid=0
          if refine!=0:
           while sy<peak*T.float32(4):sy*=T.float32(2)
