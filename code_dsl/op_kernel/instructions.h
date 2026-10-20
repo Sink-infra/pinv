@@ -42,3 +42,10 @@ __aicore__ inline void pv_mad_strided(LocalTensor<float> d,LocalTensor<float> a,
 #define pv_mask_begin(d,a,b,n) PvLaneMask pvLaneMask(n)
 #define pv_mask_reduce(d,a,b) PvMaskReduce(d,a,pvLaneMask)
 #define pv_mask_remove(d,a,b,pivot) PvMaskRemove(pvLaneMask,pivot)
+
+
+namespace tl::ascend {
+__aicore__ inline void bl_index_brcb(LocalTensor<float>d,LocalTensor<uint32_t>a,LocalTensor<float>,int n){Brcb(d.ReinterpretCast<int32_t>(),a.ReinterpretCast<int32_t>(),uint8_t(n/8),BrcbRepeatParams{1,8});}
+__aicore__ inline void bl_index_matrix(LocalTensor<float>d,LocalTensor<float>a,LocalTensor<uint32_t>b,int width,int rows){Add(d.ReinterpretCast<int32_t>(),a.ReinterpretCast<int32_t>(),b.ReinterpretCast<int32_t>(),uint64_t(width),uint8_t(rows),BinaryRepeatParams{1,0,1,uint8_t(width/8),1,0});}
+__aicore__ inline void bl_gather(LocalTensor<float>d,LocalTensor<float>a,LocalTensor<float>indices,int n){Gather(d,a,indices.ReinterpretCast<uint32_t>(),uint32_t(0),n);}
+}

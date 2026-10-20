@@ -255,6 +255,7 @@ __aicore__ inline void PvStageLocal( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_AD
                   }
                   tl::ascend::pv_mask_remove(pool[0], pool[0], pool[0], pivot_2);
                   order.SetValue(pivot_2, ((uint32_t)(pivot_tile_1 * 4)));
+                  order.SetValue((pivot_tile_1 + 64), ((uint32_t)((pivot_2 * 544) + 256)));
                   consumed_2 = 0;
                   base_2 = ((pivot_tile_1 / 8) * 8);
                   if (((pivot_tile_1 % 8) == 7) || (pivot_tile_1 == 63)) {
@@ -302,18 +303,15 @@ __aicore__ inline void PvStageLocal( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_AD
                     AscendC::PipeBarrier<PIPE_V>();
                     AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
                     AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
-                    tl::ascend::copy_ub_to_ub<uint32_t, uint32_t, 64>(indices[0], order[0]);
+                    tl::ascend::bl_index_brcb(pool[17408], order[64], pool[17408], 64);
                     AscendC::PipeBarrier<PIPE_V>();
-                    for (int32_t physical_row_1 = 0; physical_row_1 < 64; ++physical_row_1) {
-                      int32_t output_row_1 = (((int32_t)order.GetValue(physical_row_1)) / 4);
-                      tl::ascend::pv_gather(pool[((output_row_1 * 136) + 8704)], pool[0], indices[0], ((physical_row_1 * 544) + 256), 64);
-                    }
+                    tl::ascend::bl_index_matrix(pool[12800], pool[17408], order[0], 64, 64);
+                    AscendC::PipeBarrier<PIPE_V>();
+                    tl::ascend::bl_gather(pool[8704], pool[0], pool[12800], 4096);
                     AscendC::PipeBarrier<PIPE_V>();
                     AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(0);
                     AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(0);
-                    AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(0);
-                    AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(0);
-                    tl::ascend::pv_store_rows(X[offset], pool[8704], X[offset], 64, 64, (136 - dma_pad_1), 0);
+                    tl::ascend::pv_store_rows(X[offset], pool[8704], X[offset], 64, 64, 0, 0);
                     AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(0);
                     AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(0);
                     AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(0);
@@ -432,9 +430,9 @@ __aicore__ inline void PvStageLocal( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_AD
                     AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
                     tl::ascend::copy_ub_to_ub<uint32_t, uint32_t, 64>(indices[0], order[0]);
                     AscendC::PipeBarrier<PIPE_V>();
-                    for (int32_t physical_row_2 = 0; physical_row_2 < n_2; ++physical_row_2) {
-                      int32_t output_row_2 = (((int32_t)order.GetValue(physical_row_2)) / 4);
-                      tl::ascend::pv_gather(pool[((output_row_2 * 136) + 8704)], pool[0], indices[0], ((physical_row_2 * 544) + 256), n_2);
+                    for (int32_t physical_row_1 = 0; physical_row_1 < n_2; ++physical_row_1) {
+                      int32_t output_row_1 = (((int32_t)order.GetValue(physical_row_1)) / 4);
+                      tl::ascend::pv_gather(pool[((output_row_1 * 136) + 8704)], pool[0], indices[0], ((physical_row_1 * 544) + 256), n_2);
                     }
                     AscendC::PipeBarrier<PIPE_V>();
                     AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(0);
