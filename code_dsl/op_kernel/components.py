@@ -149,7 +149,7 @@ def composed_kernel(strategy,component_source,unroll=1,factor_pitch=8):
         trial=make_nopivot_macro()
         @T.macro
         def fast(A,X,pool,indices,order,accepted,offset,n,atol,rtol):
-            if n%8!=0:
+            if n>0:
                         trial(A,X,pool,indices,order,accepted,offset,n,atol,rtol)
             if accepted[0]==0:
                 pivoted(A,X,pool,indices,order,accepted,offset,n,atol,rtol)

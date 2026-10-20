@@ -16,7 +16,7 @@ def make_producer_macro():
         k=T.alloc_var('int32');k=T.ceildiv(n,8)*8
         wide=T.alloc_var('int32');wide=T.ceildiv(k,64)*64
         capacity=T.alloc_var('int32');capacity=n*k
-        if window>0:capacity=T.max(n*window,(n-window)*(T.ceildiv(n-window,8)*8))
+        if window>0:capacity=n*window
         scratch=capacity
         factors=scratch+4096
         vector=factors+8*k
@@ -89,9 +89,12 @@ def make_producer_macro():
         size=T.alloc_var('int32');size=n
         pitch=T.alloc_var('int32');pitch=k
         if window>0:pitch=window
+        window_end=T.alloc_var('int32');window_end=n
+        if window>0:window_end=T.min(n,window)
         for panel in T.serial(T.ceildiv(n,16)):
             first=panel*16
-            if window>0 and first==window:
+            if window>0 and first==window_end:
+                window_end=T.min(n,window_end+window)
                 emit('pv_all_barrier',pool.access_ptr('rw'))
                 emit('pv_cross_set0',pool.access_ptr('rw'),3)
                 emit('pv_cross_wait',pool.access_ptr('rw'),3)
@@ -100,7 +103,7 @@ def make_producer_macro():
                 if valid!=0:
                     for row in T.serial(size):
                         original=T.Cast('int32',pool[permutation+row])
-                        emit('pv_load_rows',pool.access_ptr('w',offset=row*pitch),W.access_ptr('r',offset=stage+original*k+window),1,size,0,0)
+                        emit('pv_load_rows',pool.access_ptr('w',offset=row*pitch),W.access_ptr('r',offset=stage+original*k+first),1,window_end-first,0,0)
                     T.set_flag('MTE2','V',0);T.wait_flag('MTE2','V',0)
                 emit('pv_all_barrier',pool.access_ptr('rw'))
                 emit('pv_cross_set0',pool.access_ptr('rw'),4)
@@ -151,10 +154,11 @@ def make_producer_macro():
                             T.pipe_barrier('V')
                 remaining=size-block
                 columns=T.alloc_var('int32');columns=remaining
-                if window>0 and first+block<window:columns=window-first-block
+                if window>0:columns=T.min(remaining,window_end-first-block)
+                if window>0 and first+block==window_end:columns=T.min(window,remaining)
                 next_pitch=T.alloc_var('int32');next_pitch=T.ceildiv(columns,8)*8
                 T.set_flag('V','S',0);T.wait_flag('V','S',0)
-                if not (window>0 and first+block==window):
+                if not (window>0 and first+block==window_end):
                     for row_chunk in T.serial(T.ceildiv(remaining,16)):
                         row=row_chunk*16
                         emit('pv_copy_ub_rows',pool.access_ptr('w',offset=row*next_pitch),pool.access_ptr('r',offset=(row+block)*pitch+block),T.min(remaining-row,16),next_pitch,pitch-next_pitch,0)

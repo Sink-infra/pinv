@@ -10,7 +10,7 @@ from tests.st.scripts.runtime import ROOT, SDK, environment, sha256_file
 NAME = "jit"
 KERNEL_PREFIX = "linalg_pinv_tilelang_kernel"
 DEFAULT_BUILD = ROOT / "build/tests/jit"
-HARNESS_FILES = ("tests/st/scripts/build_jit.py", "tests/st/scripts/build_peer_jit.py",
+HARNESS_FILES = ("tests/st/scripts/build_jit.py", "tests/st/scripts/build_peer_jit.py", "tests/st/scripts/build_window_jit.py",
                  "tests/st/backends/jit.py", "tests/st/backends/jit_runner.py",
                  "code_dsl/op_host/planner.cpp", "code/op_kernel/linalg_pinv_tiling.h",
                  "code/op_kernel/pinv_contract.h")
@@ -28,19 +28,22 @@ def select_strategy(plan):
         return strategy
     if strategy == "peer_pipeline" and plan.geometry.m == plan.geometry.n == 200:
         return strategy
+    if strategy == "window_cube":
+        from code_dsl.op_host.recovery_layout import supported
+        if supported(plan):return strategy
     raise UnsupportedStrategy(f"TileLang JIT has no validated {strategy} implementation for {plan.geometry.shape}")
 
 
 def artifacts(build_dir, strategy):
-    root = Path(build_dir) / ("peer" if strategy == "peer_pipeline" else "module")
-    library = root / "kernel.so" if strategy == "peer_pipeline" else root / strategy / "kernel.so"
+    root = Path(build_dir) / {"peer_pipeline":"peer","window_cube":"window"}.get(strategy,"module")
+    library = root / "kernel.so" if strategy in {"peer_pipeline","window_cube"} else root / strategy / "kernel.so"
     return library, root / "build-receipt.json"
 
 
 def module_identity(build_dir):
     build_dir = Path(build_dir)
     libraries = {}
-    for strategy in ("compact", "local", "rectangular", "peer_pipeline"):
+    for strategy in ("compact", "local", "rectangular", "peer_pipeline", "window_cube"):
         library, receipt = artifacts(build_dir, strategy)
         from tests.common.provenance import jit_provenance
         provenance = jit_provenance(library, receipt, strategy)
@@ -50,7 +53,7 @@ def module_identity(build_dir):
         source = library.with_suffix(".cpp")
         if sha256_file(source) != provenance["source_sha256"]:
             raise ValueError("JIT generated source changed")
-        if strategy == "peer_pipeline" and document.get("complete_continuation") is not True:
+        if strategy in {"peer_pipeline","window_cube"} and document.get("complete_continuation") is not True:
             raise ValueError("communication-only probes cannot be tested as operators")
         libraries[strategy] = provenance
     return libraries
@@ -82,7 +85,7 @@ def build(build_dir=DEFAULT_BUILD, jobs=8, *, resume=False):
     (build_dir / "tests/build.json").unlink(missing_ok=True)
     env = environment(build_dir)
     commands = [[sys.executable, "-m", "tests.st.scripts." + module, "--output", str(build_dir / name)]
-                for module, name in (("build_jit", "module"), ("build_peer_jit", "peer"))
+                for module, name in (("build_jit", "module"), ("build_peer_jit", "peer"), ("build_window_jit", "window"))
                 if not (resume and (build_dir / name).exists())]
     commands.append(["c++", "-std=c++17", "-O2", "-shared", "-fPIC",
                      str(ROOT / "code_dsl/op_host/planner.cpp"), "-I" + str(SDK / "include"),

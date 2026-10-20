@@ -171,13 +171,17 @@ __aicore__ inline void PvStageNative(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR workspac
     }
 }
 
-#include "pinv_dsl_workspace.h"
 #include "pinv_dsl_compact.h"
 #include "pinv_dsl_local.h"
 #include "pinv_dsl_peer_pipeline.h"
+#include "pinv_dsl_window.h"
 template <typename DT_A, bool COMPACT, bool TAIL, bool WAVE, bool LOCAL, bool GROUP, bool PIPELINE, bool WINDOW, bool CUBE, bool RECT>
 __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR workspace, GM_ADDR tiling) {
+#if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & PINV_KEY_WINDOW) && (TILING_KEY_VAR & PINV_KEY_CUBE)
+    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);
+#else
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIV_1_0);
+#endif
     REGISTER_TILING_DEFAULT(LinalgPinvCubeTilingData);
     GET_TILING_DATA_WITH_STRUCT(LinalgPinvTilingData, data, tiling);
     if constexpr (COMPACT || LOCAL) {
@@ -189,6 +193,26 @@ __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR worksp
             if constexpr (COMPACT) PvStageCompact(A,A_pinv,work,status,GetBlockNum(),data.m,data.n,data.batch,data.atol,data.rtol,0);
             else PvStageLocal(A,A_pinv,work,status,GetBlockNum(),data.m,data.n,data.batch,data.atol,data.rtol,0);
             return;
+        }
+    }
+    if constexpr (GROUP && PIPELINE && WINDOW && CUBE && !WAVE) {
+        if(pinv_dsl::WindowSupported(data.m,data.n,data.batch,data.stride,data.local,GetBlockNum())) {
+            GM_ADDR work=GetUserWorkspace(workspace);
+            GM_ADDR status=work+pinv_dsl::WindowWorkFloats(data.batch,data.cols,data.stride,GetBlockNum())*sizeof(float);
+            PvStageWindow(A,A_pinv,work,status,GetBlockNum(),data.cols,data.batch,data.stride,data.local,data.atol,data.rtol,0,0);
+            AscendC::GlobalTensor<float> flags;
+            flags.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(status));
+            bool admitted=true;
+            for(uint32_t b=0;b<data.batch;++b) {
+                AscendC::DataCacheCleanAndInvalid<float,AscendC::CacheLine::SINGLE_CACHE_LINE,AscendC::DcciDst::CACHELINE_OUT>(flags[b*512+16]);
+                if(!(flags.GetValue(b*512+16)>0.5f))admitted=false;
+            }
+            if(admitted)return;
+            {
+                AscendC::TPipe continuation_barrier;
+                AscendC::SyncAll<false>();
+                continuation_barrier.Destroy();
+            }
         }
     }
     if constexpr (GROUP && PIPELINE && CUBE && !WINDOW && !WAVE) {
