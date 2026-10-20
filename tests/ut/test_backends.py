@@ -90,7 +90,7 @@ class JitBuildIdentity(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         docs = {}
-        for strategy in ("compact", "local", "rectangular", "peer_pipeline"):
+        for strategy in ("compact", "local", "rectangular", "peer_pipeline", "window_cube"):
             lib, receipt = jit.artifacts(self.root, strategy)
             lib.parent.mkdir(parents=True, exist_ok=True)
             lib.write_bytes(b"a real binary is required on device; this is a unit fixture")
@@ -127,8 +127,28 @@ class JitBuildIdentity(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "probes"):
             jit.verify(self.root)
 
+    def test_window_dispatch_uses_runtime_geometry_and_scratch_limits(self):
+        from code_dsl.op_host.recovery_layout import scratch
+        for n,window,stride in [(128,64,320),(256,96,576),(256,128,576)]:
+            for batch,blocks in [(batch,blocks) for batch in [1,2,4] for blocks in [20,24]]:
+                plan=SimpleNamespace(strategy="window_cube",blocks=blocks,
+                    geometry=SimpleNamespace(m=n,n=n,batch=batch,shape=(batch,n,n)),
+                    fields={"local":window,"stride":stride})
+                with self.subTest(n=n,window=window,batch=batch,blocks=blocks):
+                    self.assertEqual(jit.select_strategy(plan),"window_cube")
+                    layout=scratch(n,batch,stride,blocks)
+                    self.assertGreater(layout["words"],layout["offset"]+layout["fallback_status"]+batch*32-1)
+                    self.assertEqual(layout["status_words"],batch*512+128)
+        plan.blocks=32
+        with self.assertRaises(jit.UnsupportedStrategy):
+            jit.select_strategy(plan)
+        plan.blocks=24
+        plan.fields["local"]=255
+        with self.assertRaises(jit.UnsupportedStrategy):
+            jit.select_strategy(plan)
+
     def test_unported_shapes_never_dispatch_to_ascend(self):
-        plan = SimpleNamespace(strategy="window_cube", geometry=SimpleNamespace(m=256, n=256, shape=(256, 256)))
+        plan = SimpleNamespace(strategy="distributed", geometry=SimpleNamespace(m=512, n=512, shape=(512, 512)))
         with self.assertRaises(jit.UnsupportedStrategy):
             jit.select_strategy(plan)
         plan.strategy = "local"

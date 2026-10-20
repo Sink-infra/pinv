@@ -6,6 +6,7 @@ from pathlib import Path
 
 def main(argv=None):
     import tilelang
+    tilelang.disable_cache()
     from code_dsl.op_kernel.parallel_components import rows_kernel,peer_producer_kernel,parallel_device_functions,pipeline_kernel
     from code_dsl.op_kernel.components import COMPONENTS,component_kernel,device_functions
     from code_dsl.op_kernel.backend import vector_only_backend,jit_compiler_options

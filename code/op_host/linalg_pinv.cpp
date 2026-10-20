@@ -1,4 +1,3 @@
-#include "../op_kernel/pinv_dsl_workspace.h"
 #include "tiling/tiling_api.h"
 #include "register/op_def_registry.h"
 #include "tiling/platform/platform_ascendc.h"
@@ -290,6 +289,12 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     } else if(GROUP && PIPELINE && CUBE && !WINDOW && !WAVE) {
         uint64_t dslWords=pinv_dsl::WorkFloats(batch,t->rows,t->cols,t->stride)+batch*32;
         ws[0]=std::max<uint64_t>(ws[0],platform.GetLibApiWorkSpaceSize()+dslWords*sizeof(float));
+    }
+    if(GROUP && PIPELINE && WINDOW && CUBE && !WAVE &&
+       pinv_dsl::WindowSupported(t->m,t->n,t->batch,t->stride,t->local,context->GetBlockDim())) {
+        uint64_t words=pinv_dsl::WindowWorkFloats(t->batch,t->cols,t->stride,context->GetBlockDim())
+                       +pinv_dsl::WindowStatusFloats(t->batch);
+        ws[0]=std::max<uint64_t>(ws[0],platform.GetLibApiWorkSpaceSize()+words*sizeof(float));
     }
     uint32_t RECT=0;
     ASCENDC_TPL_SEL_PARAM(context, DT_A, COMPACT, TAIL, WAVE, LOCAL, GROUP, PIPELINE, WINDOW, CUBE, RECT);
