@@ -1,0 +1,109 @@
+#pragma once
+#include <cstdint>
+// Tiling key bits follow the public AscendC template declaration order.
+#define PINV_KEY_COMPACT 256UL
+#define PINV_KEY_TAIL 512UL
+#define PINV_KEY_WAVE 1024UL
+#define PINV_KEY_LOCAL 2048UL
+#define PINV_KEY_GROUP 4096UL
+#define PINV_KEY_PIPELINE 8192UL
+#define PINV_KEY_WINDOW 16384UL
+#define PINV_KEY_CUBE 32768UL
+
+#if defined(__NPU_ARCH__)
+#define PINV_LAYOUT_FN __aicore__ inline
+#else
+#define PINV_LAYOUT_FN inline
+#endif
+namespace pinv {
+constexpr float kSplitFactor = 4097.0f; // 2^12+1 splits an FP32 significand.
+constexpr float kUnitRoundoff = 5.9604644775390625e-8f; // 2^-24, round-to-nearest.
+constexpr float kTripleRoundoff = 2.117582368135751e-22f; // 2^-72 for posterior accumulation.
+constexpr float kWideRoundoff = 3.552713678800501e-15f; // 2^-48 before operation factors.
+constexpr float kScaleLimit = 1.7014118e38f; // 2^127: a finite power-of-two guard.
+constexpr float kDirectGateSquared = 0.81f; // Conservative 0.9 inverse-norm cutoff.
+constexpr float kGapGateSquared = 81.0f; // 9^2; discarded sigma is at most cutoff/10.
+constexpr float kDirectConditionLimit = 3.6e9f; // Empirical FP32 route; not an error proof.
+constexpr float kRefineConditionLimit = 4.0e11f; // Refinement admission still requires a certificate.
+constexpr float kOutputAtol = 1.0e-4f;
+constexpr float kOutputRtol = 1.0e-4f;
+
+constexpr uint32_t kJacobiSweeps = 40;
+constexpr uint32_t kRectRobustSweeps = 120;
+constexpr float kFp32Orthogonality = 1.0e-6f;
+constexpr float kRectWideOrthogonality = 2.0e-13f;
+constexpr float kFp32OrthogonalitySquared = 1.0e-12f;
+constexpr float kJacobiDiscardMargin = 1.0e-8f;
+constexpr float kJacobiRoundoffFloor = 1.0e-14f;
+constexpr float kJacobiNormCacheRatio = 0.35f;
+constexpr float kJacobiLargeTau = 1.0e8f; // The omitted reciprocal term is below the Wide unit.
+constexpr float kRectMaxGramDefect = 0.25f; // Polar correction requires a defect below one.
+constexpr float kNormSlack = 1.001f; // Covers FP32 positive norm and bound aggregation.
+constexpr float kResidualSlack = 1.002f; // Positive residual-bound aggregation margin.
+constexpr float kRectBoundSlack = 1.01f;
+constexpr float kRectOpFactor = 8.0f;
+constexpr float kRectPairRoundOps = 32.0f;
+constexpr float kRectDotCompressOps = 8.0f;
+constexpr uint32_t kRectDotOverhead = 4;
+constexpr uint32_t kRectNormOverhead = 8;
+
+// All metadata indices below are float elements, not byte offsets.
+// Pivot selection, Jacobi norms, and pipeline packets are distinct phases.
+// Their regions may alias only after the preceding phase has synchronized.
+constexpr uint32_t kMetadataFloats = 8192;
+constexpr uint32_t kPeerStride = 8;
+constexpr uint32_t kPivotIndex = 256;
+constexpr uint32_t kJacobiNorm = 512;
+constexpr uint32_t kGroupFlags = 1024;
+constexpr uint32_t kPrepared = 1032;
+constexpr uint32_t kGroupStatus = 2048;
+constexpr uint32_t kPeerExchange = 3072;
+constexpr uint32_t kCubeControlFloats = 512;
+constexpr uint32_t kCubePlanes = 5;
+constexpr float kCubeInputScale = 8.0f; // Initial balanced digit fits INT8.
+constexpr float kCubeResidualUnit = 3.552713678800501e-15f; // 256^-6 after five digit planes.
+constexpr float kCubeRadix = 256.0f;
+constexpr float kCubeReciprocalRadix = 0.00390625f;
+constexpr float kCubeLeadingWeight = 1.0f / 65536.0f;
+constexpr uint32_t kCubeAlignFloats = 128;
+
+PINV_LAYOUT_FN constexpr uint64_t MatrixPairFloats(uint32_t batch, uint32_t cols, uint32_t stride) {
+    return uint64_t(2) * batch * cols * stride;
+}
+PINV_LAYOUT_FN constexpr uint64_t MetadataOffset(uint32_t batch, uint32_t cols, uint32_t stride, uint32_t index) {
+    return MatrixPairFloats(batch, cols, stride) + uint64_t(index) * kMetadataFloats;
+}
+PINV_LAYOUT_FN constexpr uint64_t CubeOffsetFloats(uint32_t batch, uint32_t cols, uint32_t stride) {
+    return (MetadataOffset(batch, cols, stride, batch) + kCubeAlignFloats - 1) / kCubeAlignFloats * kCubeAlignFloats;
+}
+PINV_LAYOUT_FN constexpr uint64_t CubePlaneElements(uint32_t cols) {
+    return uint64_t(kCubePlanes)*cols*cols;
+}
+PINV_LAYOUT_FN constexpr uint64_t CubeProductOffset(uint32_t cols) {
+    return 2*CubePlaneElements(cols)*sizeof(int8_t)/sizeof(int32_t);
+}
+PINV_LAYOUT_FN constexpr uint64_t CubeStorageBytes(uint32_t cols) {
+    // Two 5*n*n INT8 arrays, one (5*n)*(5*n) INT32 array, and FP32 control.
+    return uint64_t(kCubeControlFloats) * sizeof(float)
+        + uint64_t(cols) * cols * (2 * kCubePlanes * sizeof(int8_t)
+        + kCubePlanes * kCubePlanes * sizeof(int32_t));
+}
+PINV_LAYOUT_FN constexpr uint32_t RectAxis(uint32_t size) {
+    return size<=8?8:(size<=16?16:(size<=32?32:(size<=64?64:(size<=128?128:(size<=256?256:512)))));
+}
+PINV_LAYOUT_FN constexpr uint32_t RectWidth(uint32_t rows,uint32_t cols) {
+    return RectAxis(rows)+RectAxis(cols);
+}
+PINV_LAYOUT_FN constexpr uint64_t RectWorkspaceFloats(uint32_t batch,uint32_t rows,uint32_t cols) {
+    return uint64_t(2)*batch*cols*RectWidth(rows,cols);
+}
+PINV_LAYOUT_FN constexpr uint32_t RectLocalFloats(uint32_t rows,uint32_t cols) {
+    return 20*RectWidth(rows,cols)+32+8*rows+3*RectAxis(cols);
+}
+static_assert(sizeof(float)==sizeof(int32_t), "Cube product word size changed");
+static_assert(kCubePlanes==5, "exact residual precision requires five digit planes");
+static_assert(kPrepared + kPeerStride <= kGroupStatus, "prepared metadata exceeds its phase");
+static_assert(kGroupStatus + 128 * kPeerStride <= kPeerExchange, "group status exceeds its phase");
+static_assert(kPeerExchange < kMetadataFloats, "peer exchange must fit metadata");
+}
+#undef PINV_LAYOUT_FN

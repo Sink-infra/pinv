@@ -13,6 +13,7 @@ tests/
 ├── common/                 # 用例加载、矩阵构造、FP64 参考和文件组件
 ├── st/
 │   ├── cases/              # coverage、correctness、mock JSON 定义
+│   ├── backends/            # CANN/ACLNN 与 TileLang JIT 后端及设备传输
 │   ├── scripts/
 │       ├── gen_data.py     # 套件选择与数据生成
 │       ├── verify_result.py # 二进制输出校验
@@ -36,8 +37,59 @@ python3 -m tests --details
 Mock 数据构造使用 NumPy 1.26.4 和 2 个 BLAS 线程；设备测试命令使用同一环境。
 单元测试检查输入契约、数学参考、生成文件和校验逻辑，不调用设备算子。
 Correctness 包含条件数约 95 的双向矩形、低秩小尺度矩形、显式截断、混合批量秩与尺度，
-以及独立的小尺度矩形。数值路径和后验误差界见 [数值说明](../code/NUMERICS.md)。
+以及独立的小尺度矩形。原生路径和后验误差界见 [原生数值说明](../docs/cann/NUMERICS.md)，
+当前 DSL 生成路径的实现与验证见 [DSL 说明](../code_dsl/README.md)。
 `python3 -m tests` 只读取用例定义，不依赖 NumPy。
+
+## 统一后端与配对比较
+
+统一入口 `python3 -m tests run` 的 `--backend ascend|jit|both` 选择 CANN/ACLNN、真实 TileLang JIT，或两者配对。
+两条路径共用 `tests/common/workloads.py` 的用例生成、`observations.py` 的逐元素比较、
+首末输出检查、`profiling.py` 的设备采样解析及同一份结果协议。
+`both` 只生成一份输入和 FP64 参考，先运行 JIT，再运行 AscendC；不会为后端分别生成数据。
+
+```bash
+python3 -m tests build --backend jit --build-dir build/tests/backends/jit
+python3 -m tests build --backend ascend --build-dir build/tests/backends/ascend
+python3 -m tests run --backend jit --suite correctness \
+  --build-dir build/tests/backends/jit --no-build --allow-unsupported \
+  --transport npu-session --output build/tests/jit-correctness
+python3 -m tests run --backend both --suite mock \
+  --build-dir build/tests/backends --no-build --allow-unsupported \
+  --processes 3 --warmup 1000 --repeats 9 --profile --profiler-backend task \
+  --transport npu-session --output build/tests/paired-mock
+```
+
+Ascend 后端仅需 NumPy 和 CANN；JIT 构建额外需要项目使用的 tilelang-ascend
+`0.1.1.010+e909216995c2acc527bdb252039ec93a920c052c`。
+JIT 构建器编译 compact/local/rectangular 模块、带完整数值继续路径的 peer 模块，以及只处理
+形状和启动参数的 host planner。运行时加载真实 JIT 动态库，使用实际 SoC 的调度数据。
+`--no-build` 校验 DSL、生成源码、动态库、planner、测试执行代码和 SDK 的身份。
+中断后的 JIT 构建可用 `build --backend jit --resume` 重试；仅复用已校验的当前 DSL 模块，重新构建 planner。
+JIT 默认构建位置为 `build/tests/jit`，Ascend 默认位置为 `build/tests/npu`；`both` 使用
+`build/tests/backends/jit` 和 `build/tests/backends/ascend`。
+
+当前 JIT 尚未完成全部策略：Mock 3、9 等配置报告 `Unsupported`，不会暗中改用 Ascend 后端。
+默认遇到不支持的配置会使套件返回失败；`--allow-unsupported` 可运行已支持范围，但报告仍保留
+`complete=false`、`passed=false` 和不支持用例名，仅 `scoped_passed` 表示已支持范围是否通过。
+不能把阶段检查当作完整移植验收。
+
+`--processes N` 为每例启动 N 个独立子进程。`both` 输出每个后端的 `result.json` 和根目录的
+`comparison.json`，逐例校验输入/参考摘要、属性、输出初始化策略及实际硬件环境相同。
+性能比较只使用内核 Task Duration，先取进程中位数，再跨进程取中位数；ACL Event 指标单独保留。
+默认每例最多减速 5%，须至少三进程、每进程至少九项稳定样本，才能标为性能验收通过。
+缺失策略、非稳态、错误输出和单进程采样都不能获得完整性能通过状态。
+
+共享 NPU 服务环境使用 `--transport npu-session`，所有设备子进程和 profiler 均经过
+`NpuSession.run`，无需修改服务或全局替换 `subprocess.run`。独占设备环境可使用默认的
+`--transport direct`；两种传输使用同一套后端与结果处理。
+
+日常正确性与配对性能测试使用上述统一入口。专用诊断命令位于 `tests/st/scripts/`，
+可继续读取旧格式回执；[DSL 导出器](../code_dsl/README.md#导出与原生模板)与测试后端
+通过 `code_dsl/source.py` 共用源码摘要，并使用 `tests/common/provenance.py` 校验 JIT 验收。
+构建、采样、CSV 和历史回执均为运行产物，放入已忽略的 `build/` 或 `code_dsl/results/`。
+`code/project_manifest.json` 是被 Git 忽略的本地转换清单，构建摘要、源码拷贝和产物校验均不依赖它。
+旧构建回执需要重新生成，以使用当前源码与测试逻辑的身份校验。
 
 ## 用例选择与数据生成
 
@@ -97,20 +149,22 @@ Coverage 和 Correctness 的有效构造同时检查保留与舍弃奇异值之�
 设备开发和测试使用 CANNJudge 的远程命令入口。
 
 ```bash
-python3 -m tests.st.scripts.build --jobs 8
-OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2 python3 -m tests.st.scripts.run_tests --suite coverage \
+python3 -m tests build --jobs 8
+OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2 python3 -m tests run --suite coverage \
   --no-build --output build/tests/coverage-run
-OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2 python3 -m tests.st.scripts.run_tests --suite correctness \
+OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2 python3 -m tests run --suite correctness \
   --no-build --output build/tests/correctness-run
 OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2 python3 -m tests.st.scripts.profile_mock_workloads \
   --no-build --output build/tests/mock-profile
 ```
 
 `build.py` 构建当前 `code/`、本地 tiling 包和直接链接 ACLNN 的设备 runner。
+当前 `code/` 包含已导出的 AscendC 源码，测试构建与运行无需安装 TileLang，
+也无需预先运行 DSL 导出脚本；所需的项目头文件均随 `code/` 提供。
 默认构建目录为 `build/tests/npu`；`--build-dir` 可指定其他构建目录。
 `build.py --source-layout project` 构建完整工程。
 `--source-layout standalone` 将完整 `code/` 文件集合复制到独立源码目录后构建，
-包括公共头文件、实现片段和数值说明，用于检查源码的自包含性。
+包括公共头文件、实现片段和项目清单，用于检查源码的自包含性。
 构建目录中的 `tests/source.json` 记录布局与实际参与构建的文件摘要。
 构建记录检查源码、SDK、算子库、tiling 库和 runner 的一致性。
 `run_tests.py` 默认执行构建；`--no-build` 要求已有匹配的构建，不能复用不一致的产物。
@@ -120,7 +174,7 @@ OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2 python3 -m tests.st.scripts.profile_moc
 每个用例在独立进程中运行。设备 runner 持有同一设备的独占文件锁，
 覆盖设备初始化、执行和资源清理；采样器的主机准备和文件解析可并行。
 
-`--device` 默认为 0，`--warmup` 默认为 3，`--repeats` 默认为 7。
+`--device` 默认为 0，`--warmup` 默认为 3，`--repeats` 默认为 9。
 预热样本不进入计时统计。runner 使用 ACL Event 记录算子执行区间，
 汇总样本、均值、中位数和最小/最大值；主机文件操作及数据传输不在该区间内。
 `--output-init auto` 按套件和用例声明选择输出缓冲区策略。
