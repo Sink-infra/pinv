@@ -41,14 +41,14 @@ def execute(args, report):
             library_path, _ = artifacts(args.build_dir, strategy)
             library = C.CDLL(str(library_path.resolve()))
             blocks = report["blocks"]
-            if strategy == "peer_pipeline":
+            if strategy in {"peer_pipeline", "window_cube"}:
                 if 2 * blocks % g.batch or 2 * blocks // g.batch < 3:
                     raise ValueError("invalid collective peer geometry")
-                library.call.argtypes = [C.c_void_p] * 4 + [C.c_int32] * 5 + [C.c_float] * 2 + [C.c_void_p]
+                library.call.argtypes = [C.c_void_p] * 4 + [C.c_int32] * 5 + [C.c_float] * 2 + ([C.c_int32] if strategy=="window_cube" else []) + [C.c_void_p]
                 library.call.restype = None
                 def launch(buffers):
-                    library.call(*buffers, blocks, g.n, g.batch, plan.fields["stride"], 0,
-                                 g.atol, g.rtol, runtime.stream)
+                    library.call(*buffers, blocks, g.n, g.batch, plan.fields["stride"], (plan.fields["local"] if strategy=="window_cube" else 0),
+                                 g.atol, g.rtol, *([1] if strategy=="window_cube" else []), runtime.stream)
             else:
                 call = bind_launch(library, module=True)
                 def launch(buffers):

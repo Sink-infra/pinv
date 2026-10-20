@@ -2,7 +2,7 @@
 
 `op_kernel/` 用 TileLang 表达分解、重建、截断、访存、布局与同步；`op_host/` 只处理形状和启动调度。
 独立 AscendC 工程位于 `../code/`，原目录迁移备份为 `../backup/`。形状、批量、步长和阈值通过运行时参数传入，
-三个共享入口为 compact、local 和 peer pipeline。转换会生成一份本地清单
+共享策略为 compact、local、rectangular、peer pipeline 和 window Cube。转换会生成一份本地清单
 `code/project_manifest.json`，记录来源和文件摘要；该产物被 Git 忽略。
 
 正确性与性能测试由 [tests](../tests/README.md) 统一管理。`tests/st/backends/` 实现后端构建身份、设备启动、
@@ -19,14 +19,16 @@ python3 -m tests run --backend both --suite mock \
   --profile --profiler-backend task --output build/tests/paired-mock
 ```
 
-当前 JIT 仅覆盖已实现策略；Mock 3、9 的 256 阶路径等配置会明确报告 `Unsupported`，不混入原生后端。
-之前授权的阶段范围为 Mock 1、2、4、5、6、7、8、10、11、12，每项最多减速 5%，完整 DSL 移植仍待完成。
+当前 JIT 覆盖全部 12 个 Mock 路径，256 阶窗口策略包含整数分解残差、Cube 修正和误差验收。
+尚未移植的非 Mock 配置仍明确报告 `Unsupported`，完整 DSL 移植尚未完成。
 高精度消元和 Jacobi 继续由 DSL 生成，快速路径拒绝时调用；数值计算没有 CPU 回退。
-compact 使用四分之一 AIV 的共享调度策略，local 沿用原生调度；这些计算与调度在本次测试整合中保持不变。
+compact 使用四分之一 AIV 的共享调度策略，local 沿用原生调度。
+窗口策略拒绝快速结果时，独立 JIT 使用 DSL Jacobi 继续计算；导出的 CANN 包保留原生数值回退，
+避免串行 DSL Jacobi 在大矩阵上的高开销。两者都保留阈值截断。
 
 ## 导出与原生模板
 
-`convert/stage_export.py` 将经过验证的实际 JIT 源码导出为 CANN 工程；它只适配声明、启动元数据和 include，
+`convert/window_export.py` 将全部 Mock 路径经过验证的实际 JIT 源码导出为 CANN 工程；它只适配声明、启动元数据和 include，
 不手改求解器。导出仍要求对应 DSL 版本已通过先行 JIT 门槛，不能使用旧版本的通过回执。
 转换专用的 CANN 启动适配文本也保存在 `convert/`；`op_host/schedule.py` 只负责 JIT 运行时调度。
 模块整理会改变 DSL 源码摘要，后续转换仍须使用对应当前摘要的 JIT 验收记录。
@@ -37,8 +39,9 @@ compact 使用四分之一 AIV 的共享调度策略，local 沿用原生调度�
 数值设计说明保存在 [docs/cann/NUMERICS.md](../docs/cann/NUMERICS.md)。
 
 ```bash
-python3 -m code_dsl.convert.stage_export \
+python3 -m code_dsl.convert.window_export \
   --module-build build/tests/backends/jit/module --peer-build build/tests/backends/jit/peer \
+  --window-build build/tests/backends/jit/window \
   --acceptance build/jit-validation/acceptance.json --output code \
   --framework-common /path/to/tilelang/src/tl_templates/ascend/common.h
 ```

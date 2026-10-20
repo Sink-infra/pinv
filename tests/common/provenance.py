@@ -58,3 +58,44 @@ def require_stage_acceptance(path,*,dsl_sha256):
         if not 0<row.get('jit_over_native',0)<=MAX_JIT_OVER_NATIVE:raise ValueError('JIT exceeds 5%')
         if len(row.get('jit_measurements',[]))<3:raise ValueError('missing raw measurements')
     return {'path':str(path),'sha256':sha256(path.read_bytes()).hexdigest(),'scope':'partial rollout, ten Mock cases; native paths retained'}
+
+
+def require_mock_path_acceptance(path,*,dsl_sha256):
+    """All Mock paths, with explicit non-Mock coverage limits and a CAC gain gate."""
+    path=Path(path);report=json.loads(path.read_text())
+    if report.get('stage')!='tilelang_jit_mock_paths_acceptance' or report.get('passed') is not True:
+        raise ValueError('all-Mock JIT path acceptance is required')
+    if report.get('dsl_sha256')!=dsl_sha256:
+        raise ValueError('DSL revision changed')
+    rows=report.get('cases',[])
+    if len(rows)!=12 or {r.get('case') for r in rows}!=MOCK_CASES:
+        raise ValueError('all twelve Mock paths are required')
+    if report.get('full_dsl_acceptance') is not False or report.get('native_mock_cases')!=[]:
+        raise ValueError('Mock-only scope must remain explicit')
+    if report.get('gain_reference_commit')!='cac1192a095d2485c47b5c881b59eda12c01784f':
+        raise ValueError('the requested CAC gain reference is required')
+    gain=False
+    for row in rows:
+        if row.get('status')!='Pass' or not row.get('steady') or row.get('processes',0)<3:
+            raise ValueError('correct, steady, independent-process measurements are required')
+        if not 0<row.get('jit_over_ascend',0)<=MAX_JIT_OVER_NATIVE:
+            raise ValueError('JIT exceeds the accepted 5% slowdown')
+        evidence=row.get('measurement_evidence',[])
+        if len(evidence)<3 or row.get('current_provenance',{}).get('dsl_sha256')!=dsl_sha256:
+            raise ValueError('current JIT provenance is required')
+        for ref in evidence:
+            measured=Path(ref['path'])
+            if sha256(measured.read_bytes()).hexdigest()!=ref['sha256']:
+                raise ValueError('measurement changed')
+            document=json.loads(measured.read_text())
+            if document.get('status')!='Pass' or document.get('steady') is not True:
+                raise ValueError('failed or unstable raw measurement')
+            if document['provenance']['library_sha256']!=row['current_provenance']['library_sha256']:
+                raise ValueError('measurement binary changed')
+        gain=gain or (row.get('cac_steady') is True and 0<row.get('jit_over_cac',0)<.9)
+    if not gain:
+        raise ValueError('no Mock saves more than 10% against the requested CAC reference')
+    if {r.get('suite') for r in report.get('checks',[])}!={'coverage','correctness'}:
+        raise ValueError('Coverage and Correctness results must be disclosed')
+    return {'path':str(path),'sha256':sha256(path.read_bytes()).hexdigest(),
+            'scope':'all Mock paths; remaining native strategies are explicitly retained'}
