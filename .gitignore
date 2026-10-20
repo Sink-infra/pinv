@@ -4,3 +4,5 @@ __pycache__/
 .venv/
 build/
 .work/
+/code_dsl/results/
+/code/project_manifest.json

@@ -27,31 +27,31 @@ __aicore__ inline float PinvCubeQuantize(LocalTensor<float> values,LocalTensor<f
     GlobalTensor<int8_t> digits,uint32_t n,uint32_t owned,uint32_t core,uint32_t cores,float scale){
     uint32_t count=owned*n;
     auto integers=scratch[0].ReinterpretCast<int32_t>();auto temp=scratch[0],rounded=scratch[1],carry=scratch[2];
-    LocalTensor<half> planes[5];
-    for(uint32_t limb=0;limb<5;++limb)planes[limb]=scratch[4+limb/2].ReinterpretCast<half>()[(limb%2)*count];
-    Muls(values,values,256.0f/scale,count);PipeBarrier<PIPE_V>();
-    for(uint32_t limb=0;limb<5;++limb){
+    LocalTensor<half> planes[pinv::kCubePlanes];
+    for(uint32_t limb=0;limb<pinv::kCubePlanes;++limb)planes[limb]=scratch[4+limb/2].ReinterpretCast<half>()[(limb%2)*count];
+    Muls(values,values,pinv::kCubeRadix/scale,count);PipeBarrier<PIPE_V>();
+    for(uint32_t limb=0;limb<pinv::kCubePlanes;++limb){
         Cast(integers,values,RoundMode::CAST_RINT,count);PipeBarrier<PIPE_V>();
         Cast(rounded,integers,RoundMode::CAST_RINT,count);PipeBarrier<PIPE_V>();
-        Sub(values,values,rounded,count);PipeBarrier<PIPE_V>();Muls(values,values,256.0f,count);PipeBarrier<PIPE_V>();
+        Sub(values,values,rounded,count);PipeBarrier<PIPE_V>();Muls(values,values,pinv::kCubeRadix,count);PipeBarrier<PIPE_V>();
         Cast(planes[limb],rounded,RoundMode::CAST_NONE,count);PipeBarrier<PIPE_V>();
     }
-    for(uint32_t limb=4;limb>0;--limb){
+    for(uint32_t limb=pinv::kCubePlanes-1;limb>0;--limb){
         Cast(rounded,planes[limb],RoundMode::CAST_NONE,count);PipeBarrier<PIPE_V>();
         Adds(carry,rounded,-127.0f,count);PipeBarrier<PIPE_V>();Maxs(carry,carry,0.0f,count);PipeBarrier<PIPE_V>();
         Mins(carry,carry,1.0f,count);PipeBarrier<PIPE_V>();
-        Muls(temp,carry,256.0f,count);PipeBarrier<PIPE_V>();Sub(rounded,rounded,temp,count);PipeBarrier<PIPE_V>();
+        Muls(temp,carry,pinv::kCubeRadix,count);PipeBarrier<PIPE_V>();Sub(rounded,rounded,temp,count);PipeBarrier<PIPE_V>();
         Cast(planes[limb],rounded,RoundMode::CAST_NONE,count);PipeBarrier<PIPE_V>();
         Cast(rounded,planes[limb-1],RoundMode::CAST_NONE,count);PipeBarrier<PIPE_V>();
         Add(rounded,rounded,carry,count);PipeBarrier<PIPE_V>();
         Cast(planes[limb-1],rounded,RoundMode::CAST_NONE,count);PipeBarrier<PIPE_V>();
     }
     auto small=scratch[3].ReinterpretCast<int8_t>();
-    for(uint32_t limb=0;limb<5;++limb){
+    for(uint32_t limb=0;limb<pinv::kCubePlanes;++limb){
         Cast(small,planes[limb],RoundMode::CAST_RINT,count);
         SetFlag<HardEvent::V_MTE3>(0);WaitFlag<HardEvent::V_MTE3>(0);
-        uint32_t destination=RIGHT?core*5*n+limb*n:limb*n*n+core*n;
-        uint32_t step=RIGHT?(cores*5-1)*n:(cores-1)*n;
+        uint32_t destination=RIGHT?core*pinv::kCubePlanes*n+limb*n:limb*n*n+core*n;
+        uint32_t step=RIGHT?(cores*pinv::kCubePlanes-1)*n:(cores-1)*n;
         DataCopyPad(digits[destination],small,DataCopyExtParams{static_cast<uint16_t>(owned),n,0,step,0});
         SetFlag<HardEvent::MTE3_V>(0);WaitFlag<HardEvent::MTE3_V>(0);
     }

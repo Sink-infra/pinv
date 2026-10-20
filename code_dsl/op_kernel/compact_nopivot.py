@@ -1,0 +1,81 @@
+"""Guarded fixed-row trial before the pivoted compact continuation."""
+from code_dsl.op_kernel.intrinsics import emit
+from code_dsl.op_kernel.normalization import ceil_power_bits
+
+
+def make_nopivot_macro():
+    import tilelang.language as T
+    @T.macro
+    def operation(A,X,ub,indices,order,accepted,offset,n,atol,rtol):
+        count=n*40
+        valid=T.alloc_var('int32');valid=1
+        emit('pv_fill',ub.access_ptr('w'),T.float32(0),count)
+        T.pipe_barrier('V')
+        T.set_flag('V','MTE2',0);T.wait_flag('V','MTE2',0)
+        emit('pv_load_rows',ub.access_ptr('w'),A.access_ptr('r',offset=offset),n,n,0,24,n%8!=0)
+        T.set_flag('MTE2','V',0);T.wait_flag('MTE2','V',0)
+        emit('pv_abs',ub.access_ptr('w',offset=640),ub.access_ptr('r'),count)
+        T.pipe_barrier('V')
+        emit('pv_reduce_max',ub.access_ptr('w',offset=1368),ub.access_ptr('r',offset=640),ub.access_ptr('rw',offset=1336),count)
+        T.set_flag('V','S',0);T.wait_flag('V','S',0)
+        magnitude=ub[1368]
+        power=T.alloc_var('float32');power=T.float32(1)
+        if not (magnitude>=T.float32(0.1) and magnitude<T.float32(1.7014118e38)):valid=0
+        if valid!=0:
+            power_word=T.alloc_var('uint32')
+            power_word=ceil_power_bits(magnitude)
+            power=T.reinterpret('float32',power_word)
+            emit('pv_scale',ub.access_ptr('w'),ub.access_ptr('r'),T.float32(1)/power,count)
+            T.pipe_barrier('V')
+            emit('pv_mul',ub.access_ptr('w',offset=640),ub.access_ptr('r'),ub.access_ptr('r'),count)
+            T.pipe_barrier('V')
+            emit('pv_reduce_sum',ub.access_ptr('w',offset=1368),ub.access_ptr('r',offset=640),ub.access_ptr('rw',offset=1336),count)
+            T.set_flag('V','S',0);T.wait_flag('V','S',0)
+            total=ub[1368]
+            for i in T.serial(n):
+                ub[i*40+16+i]=T.float32(1)
+                indices[i]=T.Cast('uint32',i*160)
+            emit('pv_fill',ub.access_ptr('w',offset=1416),T.float32(0),16)
+            T.set_flag('S','V',0);T.wait_flag('S','V',0)
+            for column in T.serial(n):
+                emit('pv_gather',ub.access_ptr('w',offset=1416),ub.access_ptr('r'),indices.access_ptr('r'),column*4,n)
+                T.set_flag('V','S',0);T.wait_flag('V','S',0)
+                divisor=ub[1416+column]
+                if not (T.max(divisor,-divisor)>T.float32(0.0078125)):
+                    valid=0
+                    T.loop_break()
+                emit('pv_scale',ub.access_ptr('w',offset=column*40),ub.access_ptr('r',offset=column*40),T.float32(-1)/divisor,32)
+                ub[1416+column]=T.float32(0)
+                T.set_flag('S','V',0);T.wait_flag('S','V',0)
+                emit('pv_brcb_rows',ub.access_ptr('w',offset=640),ub.access_ptr('r',offset=1416),16,40)
+                T.pipe_barrier('V')
+                emit('pv_gj_update',ub.access_ptr('rw'),ub.access_ptr('r',offset=column*40),ub.access_ptr('r',offset=640),32,n,40)
+                T.pipe_barrier('V')
+            if valid!=0:
+                emit('pv_fill',ub.access_ptr('w',offset=640),T.float32(0),count)
+                T.pipe_barrier('V')
+                emit('pv_square_padded_rows',ub.access_ptr('w',offset=640),ub.access_ptr('r',offset=16),16,n,40)
+                T.pipe_barrier('V')
+                emit('pv_reduce_sum',ub.access_ptr('w',offset=1368),ub.access_ptr('r',offset=640),ub.access_ptr('rw',offset=1336),count)
+                T.set_flag('V','S',0);T.wait_flag('V','S',0)
+                inverse_total=ub[1368]
+                ub[1368]=total
+                T.set_flag('S','V',0);T.wait_flag('S','V',0)
+                emit('pv_sqrt',ub.access_ptr('w',offset=1368),ub.access_ptr('r',offset=1368),1)
+                T.set_flag('V','S',0);T.wait_flag('V','S',0)
+                cutoff=T.max(ub[1368]*rtol,atol/power)
+                if not (inverse_total>T.float32(0) and inverse_total*cutoff*cutoff<T.float32(0.81)):valid=0
+                if valid!=0:
+                    emit('pv_scale',ub.access_ptr('w'),ub.access_ptr('r'),T.float32(-1)/power,count)
+                    T.pipe_barrier('V')
+                    if n==15:
+                        emit('pv_pack15',ub.access_ptr('w',offset=640),ub.access_ptr('r',offset=16),n,40)
+                        T.pipe_barrier('V')
+                    T.set_flag('V','MTE3',0);T.wait_flag('V','MTE3',0)
+                    T.set_flag('S','MTE3',0);T.wait_flag('S','MTE3',0)
+                    if n==15:emit('pv_store_rows',X.access_ptr('w',offset=offset),ub.access_ptr('r',offset=640),1,n*n,0,0)
+                    else:emit('pv_store_rows',X.access_ptr('w',offset=offset),ub.access_ptr('r',offset=16),n,n,24,0)
+                    T.set_flag('MTE3','V',0);T.wait_flag('MTE3','V',0)
+                    T.set_flag('MTE3','MTE2',0);T.wait_flag('MTE3','MTE2',0)
+        accepted[0]=valid
+    return operation
