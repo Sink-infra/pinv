@@ -144,7 +144,15 @@ def composed_kernel(strategy,component_source,unroll=1,factor_pitch=8):
     maximum=32 if strategy=='compact' else 64
     if strategy=='compact':
         from code_dsl.op_kernel.compact import make_light_macro
-        fast=make_light_macro(unroll=unroll,scalar_admission=True)
+        pivoted=make_light_macro(unroll=unroll,scalar_admission=True)
+        from code_dsl.op_kernel.compact_nopivot import make_nopivot_macro
+        trial=make_nopivot_macro()
+        @T.macro
+        def fast(A,X,pool,indices,order,accepted,offset,n,atol,rtol):
+            if n%8!=0:
+                        trial(A,X,pool,indices,order,accepted,offset,n,atol,rtol)
+            if accepted[0]==0:
+                pivoted(A,X,pool,indices,order,accepted,offset,n,atol,rtol)
     else:
         from code_dsl.op_kernel.local import make_local_quick_macro
         fast=make_local_quick_macro(unroll=unroll,factor_pitch=factor_pitch)
