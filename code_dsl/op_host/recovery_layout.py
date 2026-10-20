@@ -15,7 +15,7 @@ def supported(plan):
         return False
     k=(n+7)//8*8
     wide=(k+63)//64*64
-    producer=max(n*window,(n-window)*((n-window+7)//8*8))
+    producer=n*window
     producer+=4096+10*k+2*wide+64+(n+15)//16*64
     owned=(n+group-2)//(group-1)
     factor_rows=(owned+7)//8*8

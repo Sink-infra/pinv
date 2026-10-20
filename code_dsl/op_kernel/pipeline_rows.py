@@ -45,6 +45,8 @@ def make_pipeline_rows_macro():
         T.set_flag('S','V',0);T.wait_flag('S','V',0)
         valid=T.alloc_var('int32');valid=1
         power=T.alloc_var('float32');power=T.float32(1)
+        window_end=T.alloc_var('uint32');window_end=n
+        if window>0:window_end=T.min(n,window)
         for panel in T.serial(T.ceildiv(n,16)):
             first=panel*16
             rows=T.min(n-first,16)
@@ -113,19 +115,20 @@ def make_pipeline_rows_macro():
                     for chunk in T.serial(T.ceildiv(live_limit-live_begin,64)):
                         col=live_begin+chunk*64
                         emit('pv_mad_strided',pool.access_ptr('rw',offset=col),pool.access_ptr('r',offset=packets+column*packet_stride+col-first),pool.access_ptr('r',offset=factors),T.min(live_limit-col,64),owned,1,1,0,stride//8,0,1)
-            if window>0 and first+rows==window:
+            if window>0 and first+rows==window_end and window_end<n:
                 emit('pv_all_barrier',pool.access_ptr('rw'))
                 emit('pv_cross_set0',pool.access_ptr('rw'),3)
                 emit('pv_cross_wait',pool.access_ptr('rw'),3)
                 if valid!=0:
                     T.set_flag('V','MTE3',0);T.wait_flag('V','MTE3',0)
-                    for i in T.serial(owned):
-                        emit('pv_store_rows',W.access_ptr('w',offset=work+(core+i*cores)*k+window),pool.access_ptr('r',offset=i*stride+window),1,n-window,0,0)
+                    next_columns=T.min(window,n-window_end)
+                    emit('pv_store_rows',W.access_ptr('w',offset=work+core*k+window_end),pool.access_ptr('r',offset=window_end),owned,next_columns,stride-next_columns,cores*k-next_columns)
                 emit('pv_all_barrier',pool.access_ptr('rw'))
                 emit('pv_cross_set0',pool.access_ptr('rw'),2)
                 emit('pv_cross_wait',pool.access_ptr('rw'),2)
                 emit('pv_cross_set0',pool.access_ptr('rw'),4)
                 emit('pv_cross_wait',pool.access_ptr('rw'),4)
+                window_end=T.min(n,window_end+window)
         inverse=T.alloc_var('float32');inverse=T.float32(0)
         if valid!=0:
             T.set_flag('V','S',0);T.wait_flag('V','S',0)

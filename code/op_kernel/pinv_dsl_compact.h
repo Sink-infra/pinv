@@ -50,14 +50,14 @@ __aicore__ inline void PvStageCompact( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_
       accepted = 0;
       if ((m == n) && (n <= 32)) {
         if ((15 <= n) && (n <= 16)) {
-          if (0 < (dimension % 8)) {
+          if (0 < dimension) {
             int32_t count = (dimension * 40);
             valid = 1;
             tl::ascend::pv_fill(pool[0], pool[0], pool[0], 0.000000e+00f, count);
             AscendC::PipeBarrier<PIPE_V>();
             AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(0);
             AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(0);
-            tl::ascend::pv_load_rows(pool[0], A[offset], pool[0], dimension, dimension, 0, 24, (bool)1);
+            tl::ascend::pv_load_rows(pool[0], A[offset], pool[0], dimension, dimension, 0, 24, (0 < (dimension % 8)));
             AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(0);
             AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(0);
             tl::ascend::pv_abs(pool[640], pool[0], pool[640], count);
@@ -93,7 +93,7 @@ __aicore__ inline void PvStageCompact( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_
                 AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
                 AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
                 float divisor = pool.GetValue((((int64_t)column) + (int64_t)1416));
-                if (max(divisor, (divisor * -1.000000e+00f)) <= 7.812500e-03f) {
+                if (max(divisor, (divisor * -1.000000e+00f)) <= 3.906250e-03f) {
                   valid = 0;
                   break;
                 }

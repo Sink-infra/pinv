@@ -366,6 +366,7 @@ __aicore__ inline void PvDslPipelineRows( GM_ADDR A_handle,  GM_ADDR X_handle,  
   auto pool = ascend_ub.GetWithOffset<float>(49088, 0);
   int valid = 0;
   float power = 0.000000e+00f;
+  uint32_t window_end = (uint32_t)0;
   float inverse = 0.000000e+00f;
   auto vid = AscendC::GetSubBlockIdx();
   if ASCEND_IS_AIV {
@@ -417,6 +418,10 @@ __aicore__ inline void PvDslPipelineRows( GM_ADDR A_handle,  GM_ADDR X_handle,  
     AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
     valid = 1;
     power = 1.000000e+00f;
+    window_end = n;
+    if ((uint32_t)0 < window) {
+      window_end = min(n, window);
+    }
     for (uint32_t panel = (uint32_t)0; panel < (((n + (uint32_t)16) - (uint32_t)1) / (uint32_t)16); ++panel) {
       uint32_t first = (panel * (uint32_t)16);
       uint32_t rows = min((n - first), (uint32_t)16);
@@ -520,22 +525,22 @@ __aicore__ inline void PvDslPipelineRows( GM_ADDR A_handle,  GM_ADDR X_handle,  
           }
         }
       }
-      if (((uint32_t)0 < window) && ((first + rows) == window)) {
+      if ((((uint32_t)0 < window) && ((first + rows) == window_end)) && (window_end < n)) {
         tl::ascend::pv_all_barrier(pool[0], pool[0], pool[0]);
         tl::ascend::pv_cross_set0(pool[0], pool[0], pool[0], 3);
         tl::ascend::pv_cross_wait(pool[0], pool[0], pool[0], 3);
         if (valid != 0) {
           AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(0);
           AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(0);
-          for (uint32_t i_2 = (uint32_t)0; i_2 < owned; ++i_2) {
-            tl::ascend::pv_store_rows(W[((work + ((uint64_t)((core + (i_2 * cores)) * k))) + ((uint64_t)window))], pool[((i_2 * stride) + window)], W[((work + ((uint64_t)((core + (i_2 * cores)) * k))) + ((uint64_t)window))], 1, (n - window), 0, 0);
-          }
+          uint32_t next_columns = min(window, (n - window_end));
+          tl::ascend::pv_store_rows(W[((work + ((uint64_t)(core * k))) + ((uint64_t)window_end))], pool[window_end], W[((work + ((uint64_t)(core * k))) + ((uint64_t)window_end))], owned, next_columns, (stride - next_columns), ((cores * k) - next_columns));
         }
         tl::ascend::pv_all_barrier(pool[0], pool[0], pool[0]);
         tl::ascend::pv_cross_set0(pool[0], pool[0], pool[0], 2);
         tl::ascend::pv_cross_wait(pool[0], pool[0], pool[0], 2);
         tl::ascend::pv_cross_set0(pool[0], pool[0], pool[0], 4);
         tl::ascend::pv_cross_wait(pool[0], pool[0], pool[0], 4);
+        window_end = min(n, (window_end + window));
       }
     }
     inverse = 0.000000e+00f;
@@ -550,10 +555,10 @@ __aicore__ inline void PvDslPipelineRows( GM_ADDR A_handle,  GM_ADDR X_handle,  
       AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
       tl::ascend::pv_fill(pool[accumulator], pool[accumulator], pool[accumulator], 0.000000e+00f, wide);
       AscendC::PipeBarrier<PIPE_V>();
-      for (uint32_t i_3 = (uint32_t)0; i_3 < owned; ++i_3) {
-        tl::ascend::pv_gather_offsets(pool[(output + (i_3 * k))], pool[((i_3 * stride) + k)], pool[mapping], 0, n);
+      for (uint32_t i_2 = (uint32_t)0; i_2 < owned; ++i_2) {
+        tl::ascend::pv_gather_offsets(pool[(output + (i_2 * k))], pool[((i_2 * stride) + k)], pool[mapping], 0, n);
         AscendC::PipeBarrier<PIPE_V>();
-        tl::ascend::pv_mul(pool[product], pool[(output + (i_3 * k))], pool[(output + (i_3 * k))], n);
+        tl::ascend::pv_mul(pool[product], pool[(output + (i_2 * k))], pool[(output + (i_2 * k))], n);
         AscendC::PipeBarrier<PIPE_V>();
         tl::ascend::pv_add(pool[accumulator], pool[accumulator], pool[product], n);
         AscendC::PipeBarrier<PIPE_V>();
@@ -562,13 +567,13 @@ __aicore__ inline void PvDslPipelineRows( GM_ADDR A_handle,  GM_ADDR X_handle,  
       AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
       AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
       inverse = pool.GetValue(red);
-      for (uint32_t i_4 = (uint32_t)0; i_4 < owned; ++i_4) {
-        tl::ascend::pv_scale(pool[(output + (i_4 * k))], pool[(output + (i_4 * k))], pool[(output + (i_4 * k))], (1.000000e+00f / power), k);
+      for (uint32_t i_3 = (uint32_t)0; i_3 < owned; ++i_3) {
+        tl::ascend::pv_scale(pool[(output + (i_3 * k))], pool[(output + (i_3 * k))], pool[(output + (i_3 * k))], (1.000000e+00f / power), k);
         AscendC::PipeBarrier<PIPE_V>();
-        int32_t target = (((int32_t)(pool.GetValue(((norms + core) + (i_4 * cores))) * -1.000000e+00f)) - 1);
+        int32_t target = (((int32_t)(pool.GetValue(((norms + core) + (i_3 * cores))) * -1.000000e+00f)) - 1);
         AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(0);
         AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(0);
-        tl::ascend::pv_store_rows(X[(((((uint64_t)job) * ((uint64_t)n)) * ((uint64_t)n)) + ((uint64_t)(((uint32_t)target) * n)))], pool[(output + (i_4 * k))], X[(((((uint64_t)job) * ((uint64_t)n)) * ((uint64_t)n)) + ((uint64_t)(((uint32_t)target) * n)))], 1, n, 0, 0);
+        tl::ascend::pv_store_rows(X[(((((uint64_t)job) * ((uint64_t)n)) * ((uint64_t)n)) + ((uint64_t)(((uint32_t)target) * n)))], pool[(output + (i_3 * k))], X[(((((uint64_t)job) * ((uint64_t)n)) * ((uint64_t)n)) + ((uint64_t)(((uint32_t)target) * n)))], 1, n, 0, 0);
       }
       tl::ascend::pv_all_barrier(pool[0], pool[0], pool[0]);
     }
