@@ -1,3 +1,4 @@
+from code_dsl.op_kernel.intrinsics import emit
 """Runtime batched FP32 products with cached K16 L1 tiles; primitive only."""
 def block_gemm():
  import tilelang.language as T
@@ -19,7 +20,7 @@ def block_gemm():
       if job!=previous_job or col!=previous_column:
        for kk in T.serial(K//16):T.copy(P[job*K+kk*16,col*128],b[kk,:,:])
        previous_job=job;previous_column=col
-      for kk in T.serial(K//16):T.copy(A[job*M+row*64,kk*16],a[kk,:,:])
+      emit('br_load_a',a.access_ptr('w'),A.access_ptr('r',offset=(job*M+row*64)*K),K,K)
       T.barrier_all()
       for kk in T.serial(K//16):
        clear=T.alloc_var('int32');clear=0
