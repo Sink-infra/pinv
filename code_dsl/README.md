@@ -2,8 +2,7 @@
 
 `op_kernel/` 用 TileLang 表达分解、重建、截断、访存、布局与同步；`op_host/` 只处理形状和启动调度。
 独立 AscendC 工程位于 `../code/`，原目录迁移备份为 `../backup/`。形状、批量、步长和阈值通过运行时参数传入，
-共享策略为 compact、local、rectangular、peer pipeline、window Cube 和 block Cube。
-后两者共享数值组件，由运行时资源条件选择独立入口；形状和批次仍为运行时参数。转换会生成一份本地清单
+共享策略为 compact、local、rectangular、peer pipeline 和 window Cube。转换会生成一份本地清单
 `code/project_manifest.json`，记录来源和文件摘要；该产物被 Git 忽略。
 
 正确性与性能测试由 [tests](../tests/README.md) 统一管理。`tests/st/backends/` 实现后端构建身份、设备启动、
