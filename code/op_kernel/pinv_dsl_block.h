@@ -786,4 +786,41 @@ __aicore__ inline void BlockFinish( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADD
 
 }
 #define bf_finish(d,a,b,bl,n,ba,st) BlockFinish((GM_ADDR)fr.input.GetPhyAddr(),(GM_ADDR)fr.output.GetPhyAddr(),(GM_ADDR)d.GetPhyAddr(),(GM_ADDR)fr.status.GetPhyAddr(),bl,n,ba,st,fftsAddr),tl::ascend::FrRestorePipe(&pipe)
+namespace tl::ascend {
+__aicore__ inline void BlockAccumulate( GM_ADDR W_handle, int32_t blocks, int32_t n, int32_t batch, uint64_t fftsAddr) {
+  AscendC::TPipe pipe;
+
+  AscendC::GlobalTensor<float> W;
+  W.SetGlobalBuffer((__gm__ float*)W_handle);
+
+  AscendC::TBuf<AscendC::TPosition::VECCALC> ascend_ub; pipe.InitBuffer(ascend_ub, 32768);
+  auto bid = AscendC::GetBlockIdx();
+  if ASCEND_IS_AIV {
+    }
+  auto pool = ascend_ub.GetWithOffset<float>(8192, 0);
+  auto vid = AscendC::GetSubBlockIdx();
+  if ASCEND_IS_AIV {
+    for (int32_t iteration = 0; iteration < ((((blocks * 2) + (((batch * n) * n) / 4096)) - 1) / (blocks * 2)); ++iteration) {
+      if ((((iteration * blocks) * 8192) + (bid * 4096)) < ((batch * n) * n)) {
+        AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(0);
+        AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(0);
+        tl::ascend::pv_load_rows(pool[0], W[((((iteration * blocks) * 8192) + (bid * 4096)) + (((batch * n) * n) * 9))], pool[0], 1, 4096, 0, 0);
+        tl::ascend::pv_load_rows(pool[4096], W[((((iteration * blocks) * 8192) + (bid * 4096)) + (((batch * n) * n) * 11))], pool[4096], 1, 4096, 0, 0);
+        AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(0);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(0);
+        tl::ascend::pv_add(pool[0], pool[0], pool[4096], 4096);
+        AscendC::PipeBarrier<PIPE_V>();
+        AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(0);
+        AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(0);
+        tl::ascend::pv_store_rows(W[((((iteration * blocks) * 8192) + (bid * 4096)) + (((batch * n) * n) * 9))], pool[0], W[((((iteration * blocks) * 8192) + (bid * 4096)) + (((batch * n) * n) * 9))], 1, 4096, 0, 0);
+        AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(0);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(0);
+      }
+    }
+  }
+  pipe.Destroy();
+}
+
+}
+#define bf_accumulate(d,a,b,bl,n,ba) BlockAccumulate((GM_ADDR)d.GetPhyAddr(),bl,n,ba,fftsAddr),tl::ascend::FrRestorePipe(&pipe)
 // END DSL block strategy

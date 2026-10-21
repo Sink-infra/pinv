@@ -26,6 +26,12 @@ def window_recovery_kernel(component_source):
         emit('pv_cross_wait2',W.access_ptr('rw'),8)
         emit('br_gemm',W.access_ptr('rw'),2*batch*n*n,8*batch*n*n,4*batch*n*n,blocks,batch,n,n,n)
         T.barrier_all();emit('pc_done',W.access_ptr('rw'))
+        # Third Neumann term prepared from the first residual: R1 = R0*R0 is
+        # added into R0 on the Vector pipe, so the single correction product
+        # below delivers Y0*(R0 + R0^2) and the residual becomes R0^3.
+        emit('pv_cross_wait2',W.access_ptr('rw'),8)
+        emit('br_gemm',W.access_ptr('rw'),9*batch*n*n,9*batch*n*n,11*batch*n*n,blocks,batch,n,n,n)
+        T.barrier_all();emit('pc_done',W.access_ptr('rw'))
         emit('pv_cross_wait2',W.access_ptr('rw'),8)
         emit('br_gemm',W.access_ptr('rw'),8*batch*n*n,9*batch*n*n,10*batch*n*n,blocks,batch,n,n,n)
         T.barrier_all();emit('pc_done',W.access_ptr('rw'))
@@ -49,6 +55,8 @@ def window_recovery_kernel(component_source):
         emit('bf_pack',W.access_ptr('rw'),blocks,n,batch)
         emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10);emit('pv_sync_all',W.access_ptr('rw'))
         emit('bf_decode',W.access_ptr('rw'),blocks,n,batch)
+        emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10);emit('pv_sync_all',W.access_ptr('rw'))
+        emit('bf_accumulate',W.access_ptr('rw'),blocks,n,batch)
         emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10);emit('pv_sync_all',W.access_ptr('rw'))
         emit('bf_finish',W.access_ptr('rw'),blocks,n,batch,stride)
        else:
@@ -79,7 +87,10 @@ def window_recovery_kernel(component_source):
         cutoff=T.max(pool[3648]*rtol,atol/power)
         if not (inverse>T.float32(0) and inverse*cutoff*cutoff<T.float32(81) and inverse*total<T.float32(1e16)):valid=0
         refine=T.alloc_var('int32');refine=0
-        if valid!=0 and inverse*total>=T.float32(3.6e9):refine=1
+        # The block strategy now delivers the R0^3 residual through its own
+        # Cube correction, so exact digit recovery is reserved for inputs the
+        # Frobenius gate itself cannot admit.
+        if valid!=0 and inverse*total>=T.float32(1e15):refine=1
         sy=T.alloc_var('float32');sy=T.float32(1)
         sa=power*T.float32(8)
         if refine!=0:
