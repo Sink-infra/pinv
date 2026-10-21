@@ -20,6 +20,7 @@ python3 -m tests run --backend both --suite mock \
 ```
 
 当前 JIT 覆盖全部 12 个 Mock 路径，256 阶窗口策略包含整数分解残差、Cube 修正和误差验收。
+满足工作量与资源边界的窗口配置采用 64 阶分块求逆、拆分残差和 FP32 Newton 修正；形状与批量仍为运行时参数。
 尚未移植的非 Mock 配置仍明确报告 `Unsupported`，完整 DSL 移植尚未完成。
 高精度消元和 Jacobi 继续由 DSL 生成，快速路径拒绝时调用；数值计算没有 CPU 回退。
 compact 使用四分之一 AIV 的共享调度策略，local 沿用原生调度。

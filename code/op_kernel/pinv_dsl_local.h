@@ -24,6 +24,7 @@ __aicore__ inline void PvStageLocal( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_AD
   auto accepted_slot = ascend_ub.GetWithOffset<int>(8, 0);
   int count = 0;
   int dma_pad = 0;
+  float condition = 0.000000e+00f;
   int valid = 0;
   auto pool = ascend_ub.GetWithOffset<float>(19136, 32);
   float power = 0.000000e+00f;
@@ -32,11 +33,13 @@ __aicore__ inline void PvStageLocal( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_AD
   auto order = ascend_ub.GetWithOffset<uint32_t>(128, 76832);
   int count_1 = 0;
   int dma_pad_1 = 0;
+  float condition_1 = 0.000000e+00f;
   int valid_1 = 0;
   float power_1 = 0.000000e+00f;
   uint32_t power_word_1 = (uint32_t)0;
   int count_2 = 0;
   int dma_pad_2 = 0;
+  float condition_2 = 0.000000e+00f;
   int valid_2 = 0;
   float power_2 = 0.000000e+00f;
   uint32_t power_word_2 = (uint32_t)0;
@@ -87,6 +90,7 @@ __aicore__ inline void PvStageLocal( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_AD
             int32_t n_1 = dimension;
             count = (n_1 * 120);
             dma_pad = (((n_1 + 7) / 8) * 8);
+            condition = 1.000000e+30f;
             valid = 1;
             tl::ascend::pv_fill(pool[0], pool[0], pool[0], 0.000000e+00f, count);
             AscendC::PipeBarrier<PIPE_V>();
@@ -205,6 +209,7 @@ __aicore__ inline void PvStageLocal( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_AD
             if (dimension == 64) {
               count_1 = 8704;
               dma_pad_1 = 64;
+              condition_1 = 1.000000e+30f;
               valid_1 = 1;
               tl::ascend::pv_fill(pool[0], pool[0], pool[0], 0.000000e+00f, count_1);
               AscendC::PipeBarrier<PIPE_V>();
@@ -326,6 +331,7 @@ __aicore__ inline void PvStageLocal( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_AD
               int32_t n_2 = dimension;
               count_2 = (n_2 * 136);
               dma_pad_2 = (((n_2 + 7) / 8) * 8);
+              condition_2 = 1.000000e+30f;
               valid_2 = 1;
               tl::ascend::pv_fill(pool[0], pool[0], pool[0], 0.000000e+00f, count_2);
               AscendC::PipeBarrier<PIPE_V>();

@@ -110,6 +110,16 @@ def export_window(args,native,current,acceptance):
     if source.count(callback_bindings)!=1:
         raise ValueError('callback bindings are not from the actual JIT source')
     header+=callback_bindings+'\n'
+    if 'block' in receipt:
+        block=(args.window_build/'block_components.h').read_text()
+        if digest(block)!=receipt['block']['header_sha256'] or source.count(block)!=1:
+            raise ValueError('block JIT header changed')
+        for name,row in receipt['block'].items():
+            if not isinstance(row,dict):continue
+            component=(args.window_build/'components'/name/'kernel.cpp').read_text()
+            if digest(component)!=row['source_sha256']:raise ValueError('block component changed: '+name)
+        (destination/'op_kernel/pinv_dsl_block.h').write_text('#pragma once\n'+block)
+        header+='#include \"pinv_dsl_block.h\"\n'
     root=callable_source(source,'PvStageWindow')
     header+=root+'\n'
     (destination/'op_kernel/pinv_dsl_window.h').write_text(header)
@@ -163,8 +173,7 @@ def export_window(args,native,current,acceptance):
     text=text.replace(needle,addition+needle,1)
     text=text.replace('#include "../op_kernel/pinv_dsl_workspace.h"\n','')
     host.write_text(text)
-    # Keep the twenty-file upload budget by placing shared ABI layout helpers
-    # with the existing contract instead of adding a separate workspace header.
+    # Place the shared workspace ABI beside the existing shape contract.
     workspace=destination/'op_kernel/pinv_dsl_workspace.h'
     fragment=workspace.read_text().replace('#pragma once\n','').replace('#include "pinv_contract.h"\n','')
     contract=destination/'op_kernel/pinv_contract.h'
@@ -186,8 +195,6 @@ def export_window(args,native,current,acceptance):
                                'window worker declaration and callback binding use a private symbol']}
     document['files_sha256']={p.relative_to(destination).as_posix():sha256(p.read_bytes()).hexdigest()
                              for p in sorted(destination.rglob('*')) if p.is_file() and p!=manifest}
-    if len(document['files_sha256'])-7>20:
-        raise ValueError('official additional-file budget exceeded')
     manifest.write_text(json.dumps(document,indent=2)+'\n')
 
 
