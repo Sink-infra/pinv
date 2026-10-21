@@ -5,6 +5,7 @@ from code_dsl.op_kernel.intrinsics import emit
 def window_recovery_kernel(component_source):
     import tilelang.language as T
     from code_dsl.op_kernel.prepared_layout import use_prepared
+    from code_dsl.op_kernel.block_layout import use_block
     header=component_source
     @T.prim_func
     def kernel(A:T.Tensor((1,),'float32'),X:T.Tensor((1,),'float32'),W:T.Tensor((1,),'float32'),S:T.Tensor((1,),'float32'),
@@ -16,8 +17,18 @@ def window_recovery_kernel(component_source):
       extent=n*n
       off=T.ceildiv(2*batch*n*stride+batch*8192,128)*128
       qa=0;qy=5*extent//4;pr=5*extent//2;rr=pr+25*extent;yh=rr+extent;rh=yh+extent//2;co=rh+extent//2;pa=co+extent;qn=pa+blocks*2*n
+      blocked=T.alloc_var('int32');blocked=0
+      if use_block(n,stride,batch,blocks):blocked=1
+      if blocked!=0:emit('bf_block',A.access_ptr('r'),X.access_ptr('rw'),W.access_ptr('rw'),blocks,n,batch)
       with T.Scope('C'):
        emit('pv_sync_init',W.access_ptr('rw'))
+       if blocked!=0:
+        emit('pv_cross_wait2',W.access_ptr('rw'),8)
+        emit('br_gemm',W.access_ptr('rw'),2*batch*n*n,8*batch*n*n,4*batch*n*n,blocks,batch,n,n,n)
+        T.barrier_all();emit('pc_done',W.access_ptr('rw'))
+        emit('pv_cross_wait2',W.access_ptr('rw'),8)
+        emit('br_gemm',W.access_ptr('rw'),8*batch*n*n,9*batch*n*n,10*batch*n*n,blocks,batch,n,n,n)
+        T.barrier_all();emit('pc_done',W.access_ptr('rw'))
        running=T.alloc_var('int32');running=1
        while running!=0:
         emit('pv_cross_wait2',W.access_ptr('rw'),8)
@@ -34,10 +45,17 @@ def window_recovery_kernel(component_source):
       with T.Scope('V'):
        T.reads(A[0],W[0],S[0]);T.writes(X[0],W[0],S[0])
        emit('fr_bind',A.access_ptr('r'),X.access_ptr('rw'),W.access_ptr('rw'))
-       if use_prepared(n,stride,batch,blocks,window):
-        emit('fr_prepared_raw',W.access_ptr('rw'),blocks,n,batch,stride,window,atol,rtol,off+qn+blocks*32)
+       if blocked!=0:
+        emit('bf_pack',W.access_ptr('rw'),blocks,n,batch)
+        emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10);emit('pv_sync_all',W.access_ptr('rw'))
+        emit('bf_decode',W.access_ptr('rw'),blocks,n,batch)
+        emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10);emit('pv_sync_all',W.access_ptr('rw'))
+        emit('bf_finish',W.access_ptr('rw'),blocks,n,batch,stride)
        else:
-        emit('fr_raw',W.access_ptr('rw'),blocks,n,batch,stride,window,atol,rtol,off+qn+blocks*32)
+        if use_prepared(n,stride,batch,blocks,window):
+         emit('fr_prepared_raw',W.access_ptr('rw'),blocks,n,batch,stride,window,atol,rtol,off+qn+blocks*32)
+        else:
+         emit('fr_raw',W.access_ptr('rw'),blocks,n,batch,stride,window,atol,rtol,off+qn+blocks*32)
        cores=blocks*2
        group_size=cores//batch
        for job in T.serial(batch):

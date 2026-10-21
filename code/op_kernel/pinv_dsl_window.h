@@ -21,6 +21,10 @@ __aicore__ inline void copy_l1_to_l0b(LocalTensor<T>d,LocalTensor<T>s,unsigned r
  if constexpr(sizeof(T)==1){
   LoadData2dTransposeParams p;p.startIndex=0;p.repeatTimes=cols/32;p.srcStride=K/32;p.dstGap=1;p.dstFracGap=0;
   for(unsigned i=0;i<rows/32;++i)LoadDataWithTranspose(d[i*cols*32],s[i*1024],p);
+ }else if constexpr(sizeof(T)==4){
+  static_assert(K==16);
+  LoadData2dTransposeParams p;p.startIndex=0;p.repeatTimes=N/16;p.srcStride=1;p.dstGap=0;p.dstFracGap=N/16-1;
+  LoadDataWithTranspose(d,s,p);
  }else{
   LoadData2DParams p;p.startIndex=0;p.repeatTimes=cols/16;p.srcStride=K/16;p.sid=0;p.dstGap=0;p.ifTranspose=true;p.addrMode=0;
   for(unsigned i=0;i<rows/16;++i)LoadData(d[i*cols*16],s[i*256],p);
@@ -28,11 +32,12 @@ __aicore__ inline void copy_l1_to_l0b(LocalTensor<T>d,LocalTensor<T>s,unsigned r
 }
 template<class T,class U,unsigned M,unsigned N>
 __aicore__ inline void mma(LocalTensor<T>a,LocalTensor<T>b,LocalTensor<U>c,bool init,unsigned k,unsigned char=0){
+ if constexpr(sizeof(T)==4)SetHF32Mode(HF32Mode::DISABLE);
  MmadParams p;p.m=M;p.n=N;p.k=k;p.cmatrixInitVal=init;Mmad(c,a,b,p);
 }
 template<class T,class U,unsigned M,unsigned N,unsigned K,bool TA=false,bool TB=false>
 __aicore__ inline void gemm_v0(LocalTensor<T> const&a,LocalTensor<T> const&b,LocalTensor<U> const&c,TBuf<TPosition::A2>&ab,TBuf<TPosition::B2>&bb,bool init){
- static_assert(K==128 && !TA && !TB);
+ static_assert((K==128 || (K==16 && sizeof(T)==4)) && !TA && !TB);
  auto aa=ab.Get<T>();auto ba=bb.Get<T>();
  SetFlag<HardEvent::MTE2_MTE1>(0);WaitFlag<HardEvent::MTE2_MTE1>(0);
  SetFlag<HardEvent::FIX_M>(0);WaitFlag<HardEvent::FIX_M>(0);
@@ -1652,7 +1657,7 @@ __aicore__ inline void FusedDecode( GM_ADDR P_handle,  GM_ADDR Y_handle,  GM_ADD
     AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
     weight = (scale_a * 3.906250e-03f);
     weight = (weight * (scale_y * 3.906250e-03f));
-    for (int32_t diagonal = 0; diagonal < 9; ++diagonal) {
+    for (int32_t diagonal = 0; diagonal < 6; ++diagonal) {
       AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(0);
       AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(0);
       tl::ascend::rd_load(raw[0], P[(((diagonal * n) + core) * n)], raw[0], ((((n + blocks) - core) - 1) / blocks), n, ((blocks - 1) * n));
@@ -1764,6 +1769,7 @@ __aicore__ inline void FusedInteger( GM_ADDR A_handle,  GM_ADDR B_handle,  GM_AD
   auto bid = AscendC::GetBlockIdx();
   if ASCEND_IS_AIV {
     }
+  int diagonals = 0;
   auto a = ascend_l1.GetWithOffset<int8_t>(40960, 0);
   auto b = ascend_l1.GetWithOffset<int8_t>(163840, 40960);
   int first = 0;
@@ -1781,7 +1787,11 @@ __aicore__ inline void FusedInteger( GM_ADDR A_handle,  GM_ADDR B_handle,  GM_AD
           }
         }
         AscendC::PipeBarrier<PIPE_ALL>();
-        for (int32_t diagonal = 0; diagonal < ((planes * 2) - 1); ++diagonal) {
+        diagonals = ((planes * 2) - 1);
+        if (6 < diagonals) {
+          diagonals = 6;
+        }
+        for (int32_t diagonal = 0; diagonal < diagonals; ++diagonal) {
           first = 0;
           last = planes;
           if (planes <= diagonal) {
@@ -1931,6 +1941,7 @@ __aicore__ inline void FusedCertify( GM_ADDR Y_handle,  GM_ADDR C_handle,  GM_AD
   float da = 0.000000e+00f;
   float dy = 0.000000e+00f;
   float rr = 0.000000e+00f;
+  float tail = 0.000000e+00f;
   float eta_a = 0.000000e+00f;
   float eta_b = 0.000000e+00f;
   float unit = 0.000000e+00f;
@@ -2002,7 +2013,16 @@ __aicore__ inline void FusedCertify( GM_ADDR Y_handle,  GM_ADDR C_handle,  GM_AD
     rr = (rr * 3.906250e-03f);
     rr = (rr * 3.906250e-03f);
     rr = (rr * 3.906250e-03f);
-    da = (((((((da * yf) + (dy * af)) + (da * dy)) + rr) + ((((2.000000e+00f * rf) * 3.906250e-03f) * 3.906250e-03f) * 3.906250e-03f)) + (((float)n) * 1.000000e-33f)) * 1.250000e+00f);
+    tail = (scale_a * 1.525879e-05f);
+    tail = (tail * (scale_y * 1.525879e-05f));
+    tail = (tail * (((float)n) * ((float)n)));
+    tail = (tail * 1.638400e+04f);
+    tail = (tail * 3.906250e-03f);
+    tail = (tail * 3.906250e-03f);
+    tail = (tail * 3.906250e-03f);
+    tail = (tail * 3.906250e-03f);
+    tail = (tail * 3.020000e+00f);
+    da = ((((((((da * yf) + (dy * af)) + (da * dy)) + rr) + ((((2.000000e+00f * rf) * 3.906250e-03f) * 3.906250e-03f) * 3.906250e-03f)) + (((float)n) * 1.000000e-33f)) + tail) * 1.250000e+00f);
     eta_a = (stat.GetValue(10) * scale_y);
     eta_b = (stat.GetValue(10) * 1.562500e-02f);
     eta_b = (eta_b * 1.562500e-02f);
@@ -2129,6 +2149,7 @@ struct FusedBuffers { AscendC::GlobalTensor<float> input,output,work,status; };
 
 
 
+#include "pinv_dsl_block.h"
 __aicore__ inline void PvStageWindow( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_ADDR W_handle,  GM_ADDR S_handle, int32_t blocks, int32_t n, int32_t batch, int32_t stride, int32_t window, float atol, float rtol, int32_t fallback_enabled, uint64_t fftsAddr) {
 
   AscendC::GlobalTensor<float> A;
@@ -2143,6 +2164,7 @@ __aicore__ inline void PvStageWindow( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_A
   auto bid = AscendC::GetBlockIdx();
   if ASCEND_IS_AIV {
     }
+  int blocked = 0;
   int running = 0;
   float inverse = 0.000000e+00f;
   float peak_cached = 0.000000e+00f;
@@ -2151,8 +2173,25 @@ __aicore__ inline void PvStageWindow( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_A
   float sy = 0.000000e+00f;
   float corrected = 0.000000e+00f;
   auto vid = AscendC::GetSubBlockIdx();
+  blocked = 0;
+  if (((((((((256 <= n) && (n <= 256)) && ((n % 128) == 0)) && (batch <= 16)) && (((blocks * 2) % batch) == 0)) && (((batch * n) / 64) <= (blocks * 2))) && ((batch * n) <= 2561)) && ((((batch * n) * n) * 11) <= ((((((((((batch * 8256) + (blocks * 32)) + ((n * n) * 27)) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2)) + 127) / 128) * 128) + (((((batch * n) * stride) + 63) / 64) * 128)))) && (15 <= ((n - 1) / max((((blocks * 2) / batch) - 1), 1)))) {
+    blocked = 1;
+  }
+  if (blocked != 0) {
+    tl::ascend::bf_block(A[0], X[0], W[0], blocks, n, batch);
+  }
   if ASCEND_IS_AIC {
     tl::ascend::pv_sync_init(W[0], W[0], W[0]);
+    if (blocked != 0) {
+      tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 8);
+      tl::ascend::br_gemm(W[0], W[0], W[0], (((batch * n) * n) * 2), (((batch * n) * n) * 8), (((batch * n) * n) * 4), blocks, batch, n, n, n);
+      AscendC::PipeBarrier<PIPE_ALL>();
+      tl::ascend::pc_done(W[0], W[0], W[0]);
+      tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 8);
+      tl::ascend::br_gemm(W[0], W[0], W[0], (((batch * n) * n) * 8), (((batch * n) * n) * 9), (((batch * n) * n) * 10), blocks, batch, n, n, n);
+      AscendC::PipeBarrier<PIPE_ALL>();
+      tl::ascend::pc_done(W[0], W[0], W[0]);
+    }
     running = 1;
     while (1) {
       if (!((running != 0))) { break; }
@@ -2177,10 +2216,24 @@ __aicore__ inline void PvStageWindow( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_A
     AscendC::TBuf<AscendC::TPosition::VECCALC> ascend_ub; pipe.InitBuffer(ascend_ub, 16384);
     auto pool = ascend_ub.GetWithOffset<float>(4096, 0);
     tl::ascend::fr_bind(A[0], X[0], W[0]);
-    if (((((((2 < ((blocks * 2) / batch)) && ((n % 16) == 0)) && (0 < window)) && ((window % 16) == 0)) && (((((((((n + 63) / 64) * 320) + (((n + 7) / 8) * 136)) + (max(((((n - 1) / max((((blocks * 2) / batch) - 2), 1)) / 8) + 1), 2) * 64)) + ((((n - 1) / max((((blocks * 2) / batch) - 2), 1)) / 8) * 8)) + max((max(((((n - 1) / max((((blocks * 2) / batch) - 2), 1)) + 1) * ((n + 7) / 8)), 64) * 8), ((((((n - 1) / max((((blocks * 2) / batch) - 2), 1)) / 8) * 1024) + (((n - 1) / max((((blocks * 2) / batch) - 2), 1)) * 16)) + 1296))) + ((((n - 1) / max((((blocks * 2) / batch) - 2), 1)) + 1) * stride)) <= 48712)) && (((((((n + 63) / 64) * 192) + (((n + 7) / 8) * 80)) + (((n + 15) / 16) * 64)) + (n * window)) <= 44416)) && (window < ((((n - 1) / max((((blocks * 2) / batch) - 1), 1)) * 4) + 4))) {
-      tl::ascend::fr_prepared_raw(W[0], W[0], W[0], blocks, n, batch, stride, window, atol, rtol, (((((((batch * 8192) + (((((batch * n) * stride) + 63) / 64) * 128)) + (blocks * 32)) + ((n * n) * 27)) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2)));
+    if (blocked != 0) {
+      tl::ascend::bf_pack(W[0], W[0], W[0], blocks, n, batch);
+      tl::ascend::pv_sync_all(W[0], W[0], W[0]);
+      tl::ascend::pv_cross_set2(W[0], W[0], W[0], 8);
+      tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 10);
+      tl::ascend::pv_sync_all(W[0], W[0], W[0]);
+      tl::ascend::bf_decode(W[0], W[0], W[0], blocks, n, batch);
+      tl::ascend::pv_sync_all(W[0], W[0], W[0]);
+      tl::ascend::pv_cross_set2(W[0], W[0], W[0], 8);
+      tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 10);
+      tl::ascend::pv_sync_all(W[0], W[0], W[0]);
+      tl::ascend::bf_finish(W[0], W[0], W[0], blocks, n, batch, stride);
     } else {
-      tl::ascend::fr_raw(W[0], W[0], W[0], blocks, n, batch, stride, window, atol, rtol, (((((((batch * 8192) + (((((batch * n) * stride) + 63) / 64) * 128)) + (blocks * 32)) + ((n * n) * 27)) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2)));
+      if (((((((2 < ((blocks * 2) / batch)) && ((n % 16) == 0)) && (0 < window)) && ((window % 16) == 0)) && (((((((((n + 63) / 64) * 320) + (((n + 7) / 8) * 136)) + (max(((((n - 1) / max((((blocks * 2) / batch) - 2), 1)) / 8) + 1), 2) * 64)) + ((((n - 1) / max((((blocks * 2) / batch) - 2), 1)) / 8) * 8)) + max((max(((((n - 1) / max((((blocks * 2) / batch) - 2), 1)) + 1) * ((n + 7) / 8)), 64) * 8), ((((((n - 1) / max((((blocks * 2) / batch) - 2), 1)) / 8) * 1024) + (((n - 1) / max((((blocks * 2) / batch) - 2), 1)) * 16)) + 1296))) + ((((n - 1) / max((((blocks * 2) / batch) - 2), 1)) + 1) * stride)) <= 48712)) && (((((((n + 63) / 64) * 192) + (((n + 7) / 8) * 80)) + (((n + 15) / 16) * 64)) + (n * window)) <= 44416)) && (window < ((((n - 1) / max((((blocks * 2) / batch) - 1), 1)) * 4) + 4))) {
+        tl::ascend::fr_prepared_raw(W[0], W[0], W[0], blocks, n, batch, stride, window, atol, rtol, (((((((batch * 8192) + (((((batch * n) * stride) + 63) / 64) * 128)) + (blocks * 32)) + ((n * n) * 27)) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2)));
+      } else {
+        tl::ascend::fr_raw(W[0], W[0], W[0], blocks, n, batch, stride, window, atol, rtol, (((((((batch * 8192) + (((((batch * n) * stride) + 63) / 64) * 128)) + (blocks * 32)) + ((n * n) * 27)) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2)));
+      }
     }
     for (int32_t job = 0; job < batch; ++job) {
       tl::ascend::pv_load_rows(pool[0], W[(((job * 8192) + (((batch * n) * stride) * 2)) + 2048)], pool[0], 1, (((blocks * 2) / batch) * 8), 0, 0);
