@@ -59,6 +59,9 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
                 # Gather consumes exactly n offsets; padded slots are never
                 # read. An unconditional ramp also avoids a per-lane branch.
                 indices[i]=T.Cast('uint32',i*pitch*4)
+                if pad>=56 and not full_tile:
+                    if i>=n:
+                        order[i]=T.Cast('uint32',0);order[pad+i]=T.Cast('uint32',0)
             emit('pv_fill',pool.access_ptr('w',offset=norms),T.float32(0),pad)
             T.pipe_barrier('V')
             emit('pv_mask_begin',pool.access_ptr('rw'),n)
@@ -82,7 +85,7 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
                         T.loop_break()
                     emit('pv_mask_remove', pool.access_ptr('rw'), pivot)
                     order[pivot] = T.Cast('uint32',p*4)
-                    if full_tile:order[pad+p]=T.Cast('uint32',(pivot*pitch+pad)*4)
+                    if pad>=56:order[pad+p]=T.Cast('uint32',(pivot*pitch+pad)*4)
                     consumed = T.alloc_var('int32')
                     consumed = 0
                     base = T.alloc_var('int32')
@@ -129,7 +132,7 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
                         T.loop_break()
                     emit('pv_mask_remove', pool.access_ptr('rw'), pivot)
                     order[pivot] = T.Cast('uint32',p*4)
-                    if full_tile:order[pad+p]=T.Cast('uint32',(pivot*pitch+pad)*4)
+                    if pad>=56:order[pad+p]=T.Cast('uint32',(pivot*pitch+pad)*4)
                     consumed = T.alloc_var('int32')
                     consumed = 0
                     base = T.alloc_var('int32')
@@ -176,7 +179,7 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
                 else:
                     emit('pv_scale',pool.access_ptr('w'),pool.access_ptr('r'),T.float32(-1)/power,count)
                     T.pipe_barrier('V')
-                    if full_tile:
+                    if pad>=56:
                         # Output and offset tiles fit the dead space before factors.
                         T.set_flag('S','V',0);T.wait_flag('S','V',0)
                         emit('bl_index_brcb',pool.access_ptr('w',offset=factors),order.access_ptr('r',offset=pad),pad)
@@ -186,7 +189,7 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
                         emit('bl_gather',pool.access_ptr('w',offset=lo),pool.access_ptr('r'),pool.access_ptr('r',offset=lo+pad*pad),pad*pad)
                         T.pipe_barrier('V')
                         T.set_flag('V','MTE3',0);T.wait_flag('V','MTE3',0)
-                        emit('pv_store_rows',X.access_ptr('w',offset=offset),pool.access_ptr('r',offset=lo),n,n,0,0)
+                        emit('pv_store_rows',X.access_ptr('w',offset=offset),pool.access_ptr('r',offset=lo),n,n,pad-dma_pad,0)
                         T.set_flag('MTE3','V',0);T.wait_flag('MTE3','V',0)
                         T.set_flag('MTE3','MTE2',0);T.wait_flag('MTE3','MTE2',0)
                     else:

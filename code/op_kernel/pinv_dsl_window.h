@@ -1418,8 +1418,8 @@ __aicore__ inline void FusedQuant( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADDR
   auto high = ascend_ub.GetWithOffset<float>(2048, 16384);
   auto low = ascend_ub.GetWithOffset<float>(2048, 24576);
   auto temp = ascend_ub.GetWithOffset<float>(2048, 32768);
-  auto carry = ascend_ub.GetWithOffset<float>(2048, 40960);
-  auto rounded = ascend_ub.GetWithOffset<float>(2048, 49152);
+  auto carry = ascend_ub.GetWithOffset<float>(2048, 49152);
+  auto rounded = ascend_ub.GetWithOffset<float>(2048, 40960);
   auto half_buf = ascend_ub.GetWithOffset<half>(2048, 57344);
   auto small = ascend_ub.GetWithOffset<int8_t>(2048, 61440);
   auto vid = AscendC::GetSubBlockIdx();
@@ -1919,8 +1919,8 @@ __aicore__ inline void FusedCertify( GM_ADDR Y_handle,  GM_ADDR C_handle,  GM_AD
   auto yy = ascend_ub.GetWithOffset<float>(2048, 69632);
   auto cc = ascend_ub.GetWithOffset<float>(2048, 77824);
   auto columns = ascend_ub.GetWithOffset<float>(256, 86016);
-  auto red = ascend_ub.GetWithOffset<float>(32, 88064);
-  auto scratch = ascend_ub.GetWithOffset<float>(256, 87040);
+  auto red = ascend_ub.GetWithOffset<float>(32, 87040);
+  auto scratch = ascend_ub.GetWithOffset<float>(256, 87168);
   auto colnorm = ascend_ub.GetWithOffset<float>(256, 88192);
   float factor = 0.000000e+00f;
   auto sums = ascend_ub.GetWithOffset<float>(2048, 89216);
