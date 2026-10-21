@@ -110,6 +110,16 @@ def export_window(args,native,current,acceptance):
     if source.count(callback_bindings)!=1:
         raise ValueError('callback bindings are not from the actual JIT source')
     header+=callback_bindings+'\n'
+    if 'block' in receipt:
+        block=(args.window_build/'block_components.h').read_text()
+        if digest(block)!=receipt['block']['header_sha256'] or source.count(block)!=1:
+            raise ValueError('block JIT header changed')
+        for name,row in receipt['block'].items():
+            if not isinstance(row,dict):continue
+            component=(args.window_build/'components'/name/'kernel.cpp').read_text()
+            if digest(component)!=row['source_sha256']:raise ValueError('block component changed: '+name)
+        (destination/'op_kernel/pinv_dsl_block.h').write_text('#pragma once\n'+block)
+        header+='#include \"pinv_dsl_block.h\"\n'
     root=callable_source(source,'PvStageWindow')
     header+=root+'\n'
     (destination/'op_kernel/pinv_dsl_window.h').write_text(header)
@@ -163,13 +173,22 @@ def export_window(args,native,current,acceptance):
     text=text.replace(needle,addition+needle,1)
     text=text.replace('#include "../op_kernel/pinv_dsl_workspace.h"\n','')
     host.write_text(text)
-    # Keep the twenty-file upload budget by placing shared ABI layout helpers
-    # with the existing contract instead of adding a separate workspace header.
+    # Place the shared workspace ABI beside the existing shape contract.
     workspace=destination/'op_kernel/pinv_dsl_workspace.h'
     fragment=workspace.read_text().replace('#pragma once\n','').replace('#include "pinv_contract.h"\n','')
     contract=destination/'op_kernel/pinv_contract.h'
     contract.write_text(contract.read_text()+'\n'+fragment+'\n'+CPP)
     workspace.unlink()
+    # Keep generated strategies separate within the official file budget.
+    # Expand this shared native class-method fragment at its include sites.
+    leaf=destination/'op_kernel/pinv_full_precision.h'
+    include='#include "pinv_full_precision.h"'
+    for name in ['pinv_stable.h','pinv_local.h','pinv_compact.h']:
+        parent=destination/'op_kernel'/name
+        text=parent.read_text()
+        if text.count(include)!=1:raise ValueError('unexpected native precision include: '+name)
+        parent.write_text(text.replace(include,leaf.read_text(),1))
+    leaf.unlink()
     for name in CMAKE_FILES:
         if (destination/name).read_bytes()!=(native/name).read_bytes():
             raise ValueError('CMake changed')

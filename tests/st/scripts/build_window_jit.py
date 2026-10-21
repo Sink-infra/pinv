@@ -66,6 +66,9 @@ def main(argv=None):
         print('lowering',name,flush=True)
         sources[name]=lower(name,function,cube=name in {'integer','half'})
     source,records=recovery_device_functions(sources)
+    from code_dsl.op_kernel.block_components import append_block
+    block_source,block_records=append_block(root,lower,digest)
+    source+='\n'+block_source
     (root/'components.h').write_text(source)
     function=window_recovery_kernel(source).with_attr('pinv.dsl.sha256',digest)
     (root/'kernel.tir').write_text(function.script())
@@ -83,7 +86,7 @@ def main(argv=None):
     receipt={'producer':'TileLang JIT','dsl_sha256':digest,'strategy':'window_cube',
              'complete_continuation':True,'scope':'window inverse, certified recovery and DSL Jacobi continuation',
              'optimization_level':3,'jit_compiler_commands':compiler.commands,
-             'components':records,'lowering':component_records,'pipeline':protocol,
+             'components':records,'block':block_records,'lowering':component_records,'pipeline':protocol,
              'runtime_header_sha256':sha256(Path(__file__).parents[3].joinpath('code_dsl/op_kernel/recovery_instructions.h').read_bytes()).hexdigest(),
              'artifacts':{'window_cube_module':{'source_sha256':sha256(emitted.encode()).hexdigest(),
                  'library_sha256':sha256((root/'kernel.so').read_bytes()).hexdigest(),
