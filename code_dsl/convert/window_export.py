@@ -123,6 +123,20 @@ def export_window(args,native,current,acceptance):
         header+='#include \"pinv_dsl_block.h\"\n'
     root=callable_source(source,'PvStageWindow')
     header+=root+'\n'
+    block_source=(args.window_build/'block/kernel.cpp').read_text()
+    block_artifact=receipt['artifacts']['block_cube_module']
+    if (digest(block_source)!=block_artifact['source_sha256'] or
+        sha256((args.window_build/'block/kernel.so').read_bytes()).hexdigest()!=block_artifact['library_sha256']):
+        raise ValueError('block strategy JIT artifact changed')
+    components=(args.window_build/'components.h').read_text()
+    from code_dsl.op_kernel.kernels import FLAT_TENSOR_METADATA
+    # The mixed backend moves the flat tensor metadata ahead of its runtime
+    # include; every remaining byte of the shared components stays intact.
+    component_body=components.removeprefix(FLAT_TENSOR_METADATA)
+    if component_body==components or source.count(component_body)!=1 or block_source.count(component_body)!=1:
+        raise ValueError('block strategy must share the validated numerical components')
+    block_root=callable_source(block_source,'PvStageBlock')
+    header+=block_root+'\n'
     (destination/'op_kernel/pinv_dsl_window.h').write_text(header)
     entry=destination/'op_kernel/linalg_pinv.cpp'
     text=entry.read_text()
@@ -134,7 +148,10 @@ def export_window(args,native,current,acceptance):
         if(pinv_dsl::WindowSupported(data.m,data.n,data.batch,data.stride,data.local,GetBlockNum())) {
             GM_ADDR work=GetUserWorkspace(workspace);
             GM_ADDR status=work+pinv_dsl::WindowWorkFloats(data.batch,data.cols,data.stride,GetBlockNum())*sizeof(float);
-            PvStageWindow(A,A_pinv,work,status,GetBlockNum(),data.cols,data.batch,data.stride,data.local,data.atol,data.rtol,0,0);
+            if constexpr (BLOCK)
+                PvStageBlock(A,A_pinv,work,status,GetBlockNum(),data.cols,data.batch,data.stride,data.local,data.atol,data.rtol,0,0);
+            else
+                PvStageWindow(A,A_pinv,work,status,GetBlockNum(),data.cols,data.batch,data.stride,data.local,data.atol,data.rtol,0,0);
             AscendC::GlobalTensor<float> flags;
             flags.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(status));
             bool admitted=true;
@@ -153,6 +170,9 @@ def export_window(args,native,current,acceptance):
 """
     if text.count(needle)!=1:raise ValueError('unexpected dispatch')
     text=text.replace(needle,addition+needle,1)
+    signature='template <typename DT_A, bool COMPACT, bool TAIL, bool WAVE, bool LOCAL, bool GROUP, bool PIPELINE, bool WINDOW, bool CUBE, bool RECT>\n__global__'
+    if text.count(signature)!=1:raise ValueError('unexpected public strategy signature')
+    text=text.replace(signature,signature.replace('bool RECT>','bool RECT, bool BLOCK>'),1)
     old='    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIV_1_0);'
     if text.count(old)!=1:raise ValueError('unexpected task metadata')
     text=text.replace(old,"""#if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & PINV_KEY_WINDOW) && (TILING_KEY_VAR & PINV_KEY_CUBE)
@@ -176,7 +196,26 @@ def export_window(args,native,current,acceptance):
     launch='        context->SetBlockDim(context->GetBlockDim()/2);\n'
     if text.count(launch)!=1:raise ValueError('unexpected Cube grid planning')
     text=text.replace(launch,'        context->SetBlockDim(pinv_dsl::BlockLaunch(t->cols,t->stride,t->batch,t->local,context->GetBlockDim()/2));\n',1)
+    early='uint32_t DT_A=static_cast<uint32_t>(ge::DT_FLOAT),COMPACT=0,TAIL=0,WAVE=0,LOCAL=0,GROUP=0,PIPELINE=0,WINDOW=0,CUBE=0,RECT=1;'
+    if text.count(early)!=1:raise ValueError('unexpected rectangular planning signature')
+    text=text.replace(early,early[:-1]+',BLOCK=0;',1)
+    block_plan='''    uint32_t BLOCK=GROUP && PIPELINE && WINDOW && CUBE && !WAVE &&
+        pinv_dsl::WindowSupported(t->m,t->n,t->batch,t->stride,t->local,context->GetBlockDim()) &&
+        pinv_dsl::BlockGridCompatible(t->cols,t->stride,t->batch,context->GetBlockDim());
+'''
+    text=text.replace('    uint32_t RECT=0;\n',block_plan+'    uint32_t RECT=0;\n',1)
+    text=re.sub(r'(ASCENDC_TPL_SEL_PARAM\(context,[^;]+),\s*RECT\);',r'\1,RECT,BLOCK);',text)
     host.write_text(text)
+    keys=destination/'op_kernel/tiling_key_linalg_pinv.h'
+    text=keys.read_text()
+    text=text.replace('ASCENDC_TPL_BOOL_DECL(RECT, 0, 1),','ASCENDC_TPL_BOOL_DECL(RECT, 0, 1),\n    ASCENDC_TPL_BOOL_DECL(BLOCK, 0, 1),',1)
+    lines=[]
+    for line in text.splitlines():
+        if 'ASCENDC_TPL_ARGS_SEL(' in line:
+            block='0, 1' if ('ASCENDC_TPL_BOOL_SEL(WINDOW, 1)' in line and 'ASCENDC_TPL_BOOL_SEL(CUBE, 1)' in line) else '0'
+            line=line.replace('ASCENDC_TPL_KERNEL_TYPE_SEL(',f'ASCENDC_TPL_BOOL_SEL(BLOCK, {block}), ASCENDC_TPL_KERNEL_TYPE_SEL(',1)
+        lines.append(line)
+    keys.write_text('\n'.join(lines)+'\n')
     # Place the shared workspace ABI beside the existing shape contract.
     workspace=destination/'op_kernel/pinv_dsl_workspace.h'
     fragment=workspace.read_text().replace('#pragma once\n','').replace('#include "pinv_contract.h"\n','')
@@ -207,6 +246,10 @@ def export_window(args,native,current,acceptance):
                 'shared':'identical Jacobi continuation; window worker retains its own generated epilogue',
                 'abi_changes':['device callback declaration','remove launch metadata','relative runtime include',
                                'window worker declaration and callback binding use a private symbol']}
+    document['strategies']['block_cube']={'source':'op_kernel/pinv_dsl_window.h','entry':'PvStageBlock',
+                'jit_source_sha256':block_artifact['source_sha256'],'jit_library_sha256':block_artifact['library_sha256'],
+                'callable_body_sha256':digest(block_root[block_root.index('{'):]),
+                'shared':'identical numerical callbacks; resource-based host strategy specialization'}
     document['files_sha256']={p.relative_to(destination).as_posix():sha256(p.read_bytes()).hexdigest()
                              for p in sorted(destination.rglob('*')) if p.is_file() and p!=manifest}
     if len(document['files_sha256'])-7>20:
