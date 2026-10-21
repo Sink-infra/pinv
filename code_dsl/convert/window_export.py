@@ -179,6 +179,16 @@ def export_window(args,native,current,acceptance):
     contract=destination/'op_kernel/pinv_contract.h'
     contract.write_text(contract.read_text()+'\n'+fragment+'\n'+CPP)
     workspace.unlink()
+    # Keep generated strategies separate within the official file budget.
+    # Expand this shared native class-method fragment at its include sites.
+    leaf=destination/'op_kernel/pinv_full_precision.h'
+    include='#include "pinv_full_precision.h"'
+    for name in ['pinv_stable.h','pinv_local.h','pinv_compact.h']:
+        parent=destination/'op_kernel'/name
+        text=parent.read_text()
+        if text.count(include)!=1:raise ValueError('unexpected native precision include: '+name)
+        parent.write_text(text.replace(include,leaf.read_text(),1))
+    leaf.unlink()
     for name in CMAKE_FILES:
         if (destination/name).read_bytes()!=(native/name).read_bytes():
             raise ValueError('CMake changed')
@@ -195,6 +205,8 @@ def export_window(args,native,current,acceptance):
                                'window worker declaration and callback binding use a private symbol']}
     document['files_sha256']={p.relative_to(destination).as_posix():sha256(p.read_bytes()).hexdigest()
                              for p in sorted(destination.rglob('*')) if p.is_file() and p!=manifest}
+    if len(document['files_sha256'])-7>20:
+        raise ValueError('official additional-file budget exceeded')
     manifest.write_text(json.dumps(document,indent=2)+'\n')
 
 
