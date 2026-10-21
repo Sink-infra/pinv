@@ -19,6 +19,10 @@ __aicore__ inline void copy_l1_to_l0b(LocalTensor<T>d,LocalTensor<T>s,unsigned r
  if constexpr(sizeof(T)==1){
   LoadData2dTransposeParams p;p.startIndex=0;p.repeatTimes=cols/32;p.srcStride=K/32;p.dstGap=1;p.dstFracGap=0;
   for(unsigned i=0;i<rows/32;++i)LoadDataWithTranspose(d[i*cols*32],s[i*1024],p);
+ }else if constexpr(sizeof(T)==4){
+  static_assert(K==16);
+  LoadData2dTransposeParams p;p.startIndex=0;p.repeatTimes=N/16;p.srcStride=1;p.dstGap=0;p.dstFracGap=N/16-1;
+  LoadDataWithTranspose(d,s,p);
  }else{
   LoadData2DParams p;p.startIndex=0;p.repeatTimes=cols/16;p.srcStride=K/16;p.sid=0;p.dstGap=0;p.ifTranspose=true;p.addrMode=0;
   for(unsigned i=0;i<rows/16;++i)LoadData(d[i*cols*16],s[i*256],p);
@@ -26,11 +30,12 @@ __aicore__ inline void copy_l1_to_l0b(LocalTensor<T>d,LocalTensor<T>s,unsigned r
 }
 template<class T,class U,unsigned M,unsigned N>
 __aicore__ inline void mma(LocalTensor<T>a,LocalTensor<T>b,LocalTensor<U>c,bool init,unsigned k,unsigned char=0){
+ if constexpr(sizeof(T)==4)SetHF32Mode(HF32Mode::DISABLE);
  MmadParams p;p.m=M;p.n=N;p.k=k;p.cmatrixInitVal=init;Mmad(c,a,b,p);
 }
 template<class T,class U,unsigned M,unsigned N,unsigned K,bool TA=false,bool TB=false>
 __aicore__ inline void gemm_v0(LocalTensor<T> const&a,LocalTensor<T> const&b,LocalTensor<U> const&c,TBuf<TPosition::A2>&ab,TBuf<TPosition::B2>&bb,bool init){
- static_assert(K==128 && !TA && !TB);
+ static_assert((K==128 || (K==16 && sizeof(T)==4)) && !TA && !TB);
  auto aa=ab.Get<T>();auto ba=bb.Get<T>();
  SetFlag<HardEvent::MTE2_MTE1>(0);WaitFlag<HardEvent::MTE2_MTE1>(0);
  SetFlag<HardEvent::FIX_M>(0);WaitFlag<HardEvent::FIX_M>(0);
