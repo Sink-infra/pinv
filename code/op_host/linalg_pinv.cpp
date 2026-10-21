@@ -42,8 +42,8 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
         context->SetBlockDim(std::min<uint64_t>(batch,platform.GetCoreNumAiv()));
         auto ws=context->GetWorkspaceSizes(1);
         ws[0]=platform.GetLibApiWorkSpaceSize()+pinv::RectWorkspaceFloats(batch,t->rows,t->cols)*sizeof(float);
-        uint32_t DT_A=static_cast<uint32_t>(ge::DT_FLOAT),COMPACT=0,TAIL=0,WAVE=0,LOCAL=0,GROUP=0,PIPELINE=0,WINDOW=0,CUBE=0,RECT=1;
-        ASCENDC_TPL_SEL_PARAM(context,DT_A,COMPACT,TAIL,WAVE,LOCAL,GROUP,PIPELINE,WINDOW,CUBE,RECT);
+        uint32_t DT_A=static_cast<uint32_t>(ge::DT_FLOAT),COMPACT=0,TAIL=0,WAVE=0,LOCAL=0,GROUP=0,PIPELINE=0,WINDOW=0,CUBE=0,RECT=1,BLOCK=0;
+        ASCENDC_TPL_SEL_PARAM(context,DT_A,COMPACT,TAIL,WAVE,LOCAL,GROUP,PIPELINE,WINDOW,CUBE,RECT,BLOCK);
         return ge::GRAPH_SUCCESS;
     }
     uint64_t inverseBytes = (2 * uint64_t(t->cols) * t->stride + 4 * t->stride + 4 * r8 + 8 * t->rows + k8 + 32 + 8 * (r8 + k8)) * 4;
@@ -296,8 +296,11 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
                        +pinv_dsl::WindowStatusFloats(t->batch);
         ws[0]=std::max<uint64_t>(ws[0],platform.GetLibApiWorkSpaceSize()+words*sizeof(float));
     }
+    uint32_t BLOCK=GROUP && PIPELINE && WINDOW && CUBE && !WAVE &&
+        pinv_dsl::WindowSupported(t->m,t->n,t->batch,t->stride,t->local,context->GetBlockDim()) &&
+        pinv_dsl::BlockGridCompatible(t->cols,t->stride,t->batch,context->GetBlockDim());
     uint32_t RECT=0;
-    ASCENDC_TPL_SEL_PARAM(context, DT_A, COMPACT, TAIL, WAVE, LOCAL, GROUP, PIPELINE, WINDOW, CUBE, RECT);
+    ASCENDC_TPL_SEL_PARAM(context, DT_A, COMPACT, TAIL, WAVE, LOCAL, GROUP, PIPELINE, WINDOW, CUBE,RECT,BLOCK);
     return ge::GRAPH_SUCCESS;
 }
 }

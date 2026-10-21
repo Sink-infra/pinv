@@ -70,27 +70,33 @@ def main(argv=None):
     block_source,block_records=append_block(root,lower,digest)
     source+='\n'+block_source
     (root/'components.h').write_text(source)
-    function=window_recovery_kernel(source).with_attr('pinv.dsl.sha256',digest)
-    (root/'kernel.tir').write_text(function.script())
-    with composition_backend(),jit_compiler_options(3) as compiler:
-        compiler.destination=root
-        print('compiling complete window strategy',flush=True)
-        result=tilelang.compile(function,target='ascendc',platform='A2',out_idx=[],pass_configs=config)
-        if not compiler.commands:
-            raise RuntimeError('fresh compiler invocation required')
-        emitted=result.get_kernel_source()
-        (root/'kernel.cpp').write_text(emitted)
-        shutil.copy2(result.adapter.lib._name,root/'kernel.so')
+    artifacts={};commands={}
+    for strategy,block_only in [('window_cube',False),('block_cube',True)]:
+        destination=root/'block' if block_only else root
+        destination.mkdir(parents=True,exist_ok=True)
+        function=window_recovery_kernel(source,block_only=block_only).with_attr('pinv.dsl.sha256',digest)
+        (destination/'kernel.tir').write_text(function.script())
+        with composition_backend(),jit_compiler_options(3) as compiler:
+            compiler.destination=destination
+            print('compiling complete',strategy,flush=True)
+            result=tilelang.compile(function,target='ascendc',platform='A2',out_idx=[],pass_configs=config)
+            if not compiler.commands:
+                raise RuntimeError('fresh compiler invocation required')
+            emitted=result.get_kernel_source()
+            (destination/'kernel.cpp').write_text(emitted)
+            shutil.copy2(result.adapter.lib._name,destination/'kernel.so')
+            commands[strategy]=compiler.commands
+        artifacts[strategy+'_module']={'source_sha256':sha256(emitted.encode()).hexdigest(),
+                 'library_sha256':sha256((destination/'kernel.so').read_bytes()).hexdigest(),
+                 'tir_sha256':sha256(function.script().encode()).hexdigest()}
     if dsl_digest()!=digest:
         raise RuntimeError('DSL sources changed during compilation')
     receipt={'producer':'TileLang JIT','dsl_sha256':digest,'strategy':'window_cube',
              'complete_continuation':True,'scope':'window inverse, certified recovery and DSL Jacobi continuation',
-             'optimization_level':3,'jit_compiler_commands':compiler.commands,
+             'optimization_level':3,'jit_compiler_commands':commands,
              'components':records,'block':block_records,'lowering':component_records,'pipeline':protocol,
              'runtime_header_sha256':sha256(Path(__file__).parents[3].joinpath('code_dsl/op_kernel/recovery_instructions.h').read_bytes()).hexdigest(),
-             'artifacts':{'window_cube_module':{'source_sha256':sha256(emitted.encode()).hexdigest(),
-                 'library_sha256':sha256((root/'kernel.so').read_bytes()).hexdigest(),
-                 'tir_sha256':sha256(function.script().encode()).hexdigest()}}}
+             'artifacts':artifacts}
     (root/'build-receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')
     print('complete window JIT built',flush=True)
 
