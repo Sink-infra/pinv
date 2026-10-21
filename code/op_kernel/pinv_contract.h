@@ -159,3 +159,27 @@ PV_WINDOW_LAYOUT_FN uint64_t WindowStatusFloats(uint32_t batch) {
 }
 }
 #undef PV_WINDOW_LAYOUT_FN
+
+#if !defined(__NPU_ARCH__)
+namespace pinv_dsl {
+inline bool BlockGridCompatible(uint32_t n,uint32_t stride,uint32_t batch,uint32_t blocks) {
+    if(!blocks || !batch || n/64<4 || n>256 || n%128 || batch>16)return false;
+    uint64_t cores=2*uint64_t(blocks),group=cores/batch;
+    return !(cores%batch) && group>1 && uint64_t(batch)*n/64<=cores &&
+           uint64_t(batch)*n/2<=1280 &&
+           11*uint64_t(batch)*n*n<=WindowWorkFloats(batch,n,stride,blocks) &&
+           (n+group-2)/(group-1)>=16;
+}
+inline uint32_t BlockLaunch(uint32_t n,uint32_t stride,uint32_t batch,
+                           uint32_t window,uint32_t blocks) {
+    if(!BlockGridCompatible(n,stride,batch,blocks))return blocks;
+    uint64_t tiles=uint64_t(batch)*(n/64)*(n/128);
+    uint64_t rounds=(tiles+blocks-1)/blocks,balance=batch%2?batch:batch/2;
+    uint64_t target=(tiles+rounds-1)/rounds;
+    target=(target+balance-1)/balance*balance;
+    if(!target || target>=blocks || !BlockGridCompatible(n,stride,batch,target) ||
+       !WindowSupported(n,n,batch,stride,window,target))return blocks;
+    return uint32_t(target);
+}
+}
+#endif
