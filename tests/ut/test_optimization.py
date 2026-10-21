@@ -67,6 +67,24 @@ class OptimizationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "before CANN"):
             self.package()
 
+    def test_stable_small_gain_is_retained_but_cannot_submit(self):
+        self.new_jit, self.new_cann, self.new_manifest = reports(97, "candidate")
+        report = self.package()
+        self.assertTrue(report["passed"])
+        self.assertFalse(report["official_submission_ready"])
+        self.assertEqual(report["official_gain_cases"], [])
+
+    def test_submission_requires_more_than_ten_percent_in_both_paths_same_case(self):
+        self.new_jit, self.new_cann, self.new_manifest = reports(90, "candidate")
+        self.assertFalse(self.package()["official_submission_ready"])
+        duration(self.new_jit, "mock_03", 89)
+        duration(self.new_cann, "mock_09", 89)
+        self.assertFalse(self.package()["official_submission_ready"])
+        duration(self.new_cann, "mock_03", 89)
+        report = self.package()
+        self.assertTrue(report["official_submission_ready"])
+        self.assertEqual(report["official_gain_cases"], ["mock_03"])
+
     def test_one_lucky_process_and_unstable_samples_do_not_qualify(self):
         for row in self.new_jit["cases"]:
             if row["process"] == 3:
@@ -128,10 +146,39 @@ class OptimizationTests(unittest.TestCase):
             with redirect_stdout(io.StringIO()):
                 self.assertEqual(main(jit_args), 0)
                 self.assertEqual(main(package_args), 0)
+                official_args = package_args.copy()
+                official_args[1] = "official"
+                self.assertEqual(main(official_args), 0)
                 raw = Path(self.new_cann["cases"][0]["measurement"])
                 raw.write_text(raw.read_text().replace('"Pass"', '"Wrong Answer"'))
                 self.assertEqual(main(package_args), 1)
             self.assertIn("raw measurement", json.loads((root / "package.json").read_text())["reason"])
+
+    def test_official_cli_rejects_retained_small_gain_with_nonzero_exit(self):
+        self.new_jit, self.new_cann, self.new_manifest = reports(97, "candidate")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            documents = dict(baseline_jit=self.old_jit, candidate_jit=self.new_jit,
+                             baseline_cann=self.old_cann, candidate_cann=self.new_cann,
+                             baseline_manifest=self.old_manifest, candidate_manifest=self.new_manifest)
+            for key, document in documents.items():
+                for index, row in enumerate(document.get("cases", [])):
+                    raw = root / f"{key}-{index}.json"
+                    raw.write_text(json.dumps(row))
+                    row["measurement"] = str(raw)
+                (root / (key + ".json")).write_text(json.dumps(document))
+            args = ["--stage", "official", "--jit-acceptance", str(root / "jit.json"),
+                    "--output", str(root / "official.json")]
+            for key in documents:
+                args += ["--" + key.replace("_", "-"), str(root / (key + ".json"))]
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(main(["--stage", "jit", "--baseline-jit", str(root / "baseline_jit.json"),
+                                       "--candidate-jit", str(root / "candidate_jit.json"),
+                                       "--output", str(root / "jit.json")]), 0)
+                self.assertEqual(main(args), 1)
+            result = json.loads((root / "official.json").read_text())
+            self.assertTrue(result["local_benefit_passed"])
+            self.assertFalse(result["passed"])
 
 
 if __name__ == "__main__":

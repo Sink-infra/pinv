@@ -3,6 +3,7 @@ from tests.common.measurements import require_same_environment
 from tests.common.official_gains import local_case
 
 MOCK_NAMES = {f"mock_{number:02d}" for number in range(1, 13)}
+OFFICIAL_GAIN_THRESHOLD_PCT = 10.0
 WORKLOAD_FIELDS = ("shape", "input_sha256", "reference_sha256", "attributes", "output_init", "device")
 
 
@@ -100,9 +101,15 @@ def qualify_package(baseline_jit, candidate_jit, baseline_cann, candidate_cann,
         raise ValueError("unchanged CANN source cannot establish this round's benefit")
     rows = _pair(baseline_cann, candidate_cann)
     common = [r["name"] for r in rows if r["stable_new_gain"] and r["name"] in jit["new_gain_cases"]]
-    return {"stage": "new_jit_and_cann_benefit", "passed": bool(common) and
-            all(r["steady"] and r["within_limit"] for r in rows), "jit": jit, "cann_cases": rows,
+    passed = bool(common) and all(r["steady"] and r["within_limit"] for r in rows)
+    jit_gains = {r["name"]: r["gain_pct"] for r in jit["cases"]}
+    official = [r["name"] for r in rows if r["name"] in common and
+                min(r["gain_pct"], jit_gains[r["name"]]) > OFFICIAL_GAIN_THRESHOLD_PCT]
+    return {"stage": "new_jit_and_cann_benefit", "passed": passed,
+            "official_submission_ready": passed and bool(official),
+            "official_gain_threshold_pct": OFFICIAL_GAIN_THRESHOLD_PCT,
+            "official_gain_cases": official, "jit": jit, "cann_cases": rows,
             "new_gain_cases": common,
             "baseline_source_sha256": baseline_cann["build"]["source_sha256"],
             "candidate_source_sha256": candidate_cann["build"]["source_sha256"],
-            "scope": "new paired local benefit only; CAC qualification and official acceptance remain separate"}
+            "scope": "new paired local benefit; official submission also requires a same-Case gain above 10% in both paths against the current retained baseline, plus CAC qualification"}
