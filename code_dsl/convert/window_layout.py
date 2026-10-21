@@ -28,7 +28,9 @@ PV_WINDOW_LAYOUT_FN uint64_t WindowWorkFloats(uint32_t batch,uint32_t n,
     uint64_t extent=uint64_t(n)*n,cores=uint64_t(blocks)*2;
     uint64_t offset=(2*uint64_t(batch)*n*stride+uint64_t(batch)*8192+127)/128*128;
     uint64_t words=offset+61*extent/2+cores*n+cores*16+uint64_t(batch)*64;
-    return (words+127)/128*128;
+    // The block strategy keeps thirteen batch-sized correction planes.
+    uint64_t block=13*uint64_t(batch)*extent;
+    return ((words>block?words:block)+127)/128*128;
 }
 PV_WINDOW_LAYOUT_FN uint64_t WindowStatusFloats(uint32_t batch) {
     return uint64_t(batch)*512+128;

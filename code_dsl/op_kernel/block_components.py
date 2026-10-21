@@ -21,7 +21,7 @@ def append_block(root,lower,digest):
  from code_dsl.op_kernel.block_local import quick_kernel
  from code_dsl.op_kernel.block_gemm import block_gemm
  from code_dsl.op_kernel.block_inverse import raw_kernel
- from code_dsl.op_kernel.block_continuation import pack_kernel,decode_kernel,finish_kernel
+ from code_dsl.op_kernel.block_continuation import pack_kernel,decode_kernel,finish_kernel,accumulate_kernel
  from code_dsl.op_kernel.block_products import product_kernel
  from code_dsl.op_kernel.kernels import instruction_source
  from code_dsl.op_kernel.recovery_backend import composition_backend
@@ -31,7 +31,7 @@ def append_block(root,lower,digest):
  header=instructions+'\nusing uint=unsigned int;using uchar=unsigned char;using ushort=unsigned short;\n'
  def add(name,function,**kwargs):
   source=lower(name,function,**kwargs)
-  symbol={'block_quick':'BlockQuick','block_gemm':'BlockGemm','block_pack':'BlockPack','block_product':'BlockProduct','block_decode':'BlockDecode','block_finish':'BlockFinish'}[name]
+  symbol={'block_quick':'BlockQuick','block_gemm':'BlockGemm','block_pack':'BlockPack','block_product':'BlockProduct','block_decode':'BlockDecode','block_finish':'BlockFinish','block_accumulate':'BlockAccumulate'}[name]
   body=adapt(source,symbol)
   records[name]={'source_sha256':sha256(source.encode()).hexdigest(),'callable_body_sha256':sha256(body[body.index('{'):].encode()).hexdigest()}
   return source,body
@@ -64,7 +64,7 @@ def append_block(root,lower,digest):
  def callback(name,function,macro,formal,mapping,**kwargs):
   nonlocal header
   source,body=add(name,function,**kwargs)
-  symbol={'block_pack':'BlockPack','block_product':'BlockProduct','block_decode':'BlockDecode','block_finish':'BlockFinish'}[name]
+  symbol={'block_pack':'BlockPack','block_product':'BlockProduct','block_decode':'BlockDecode','block_finish':'BlockFinish','block_accumulate':'BlockAccumulate'}[name]
   parameters=body[body.index('(')+1:body.index(')')].split(',')
   names=[re.search(r'(\w+)\s*$',part).group(1) for part in parameters]
   if not set(names)<=set(mapping):raise ValueError('block ABI changed: '+str(names))
@@ -74,6 +74,7 @@ def append_block(root,lower,digest):
  callback('block_product',product_kernel(),'bf_product','bl,n,ba',dict(shared,A_handle=ptr('2*'+all),Y_handle=ptr('3*'+all),P_handle=ptr('4*'+all)),cube=True)
  callback('block_decode',decode_kernel(instructions),'bf_decode','bl,n,ba',dict(shared,P_handle=ptr('4*'+all),R_handle=ptr('9*'+all)))
  callback('block_finish',finish_kernel(instructions),'bf_finish','bl,n,ba,st',dict(shared,A_handle='(GM_ADDR)fr.input.GetPhyAddr()',Y_handle='(GM_ADDR)fr.output.GetPhyAddr()',W_handle='(GM_ADDR)d.GetPhyAddr()',S_handle='(GM_ADDR)fr.status.GetPhyAddr()',stride='st'))
+ callback('block_accumulate',accumulate_kernel(instructions),'bf_accumulate','bl,n,ba',dict(shared,W_handle='(GM_ADDR)d.GetPhyAddr()'))
  header=BEGIN+header+END
  (root/'block_components.h').write_text(header)
  records['header_sha256']=sha256(header.encode()).hexdigest()
