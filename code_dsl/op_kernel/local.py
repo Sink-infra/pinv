@@ -9,7 +9,7 @@ from code_dsl.op_kernel.control import admission_writer
 from code_dsl.op_kernel.normalization import ceil_power_bits
 
 
-def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_admission=False):
+def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_admission=False,condition_metric=False,minimum_magnitude=0.1):
     import tilelang.language as T
     store_admission=admission_writer(scalar_admission)
 
@@ -31,6 +31,7 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
         scratch=18496
         red=19008
         norms=19040
+        condition=T.alloc_var('float32');condition=T.float32(1e30)
         valid=T.alloc_var('int32');valid=1
         emit('pv_fill',pool.access_ptr('w'),T.float32(0),count)
         T.pipe_barrier('V')
@@ -42,7 +43,7 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
         emit('pv_reduce_max',pool.access_ptr('w',offset=red),pool.access_ptr('r',offset=lo),pool.access_ptr('rw',offset=scratch),count)
         T.set_flag('V','S',0);T.wait_flag('V','S',0)
         magnitude=pool[red]
-        if not (magnitude>=T.float32(0.1) and magnitude<T.float32(1.7014118e38)):valid=0
+        if not (magnitude>=T.float32(minimum_magnitude) and magnitude<T.float32(1.7014118e38)):valid=0
         power=T.alloc_var('float32');power=T.float32(1)
         if valid!=0:
             power_word=T.alloc_var('uint32')
@@ -169,6 +170,7 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
                 emit('pv_reduce_sum',pool.access_ptr('w',offset=red),pool.access_ptr('r',offset=lo),pool.access_ptr('rw',offset=scratch),count)
                 T.set_flag('V','S',0);T.wait_flag('V','S',0)
                 inverse_total=pool[red]
+                if condition_metric:condition=total*inverse_total
                 pool[red]=total
                 T.set_flag('S','V',0);T.wait_flag('S','V',0)
                 emit('pv_sqrt',pool.access_ptr('w',offset=red),pool.access_ptr('r',offset=red),1)
@@ -211,6 +213,7 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
                         T.set_flag('MTE3','V',0);T.wait_flag('MTE3','V',0)
                         T.set_flag('MTE3','MTE2',0);T.wait_flag('MTE3','MTE2',0)
         store_admission(accepted,valid)
+        if condition_metric:accepted[1]=T.reinterpret('int32',condition)
     return quick
 
 
