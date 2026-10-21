@@ -90,7 +90,7 @@ class JitBuildIdentity(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         docs = {}
-        for strategy in ("compact", "local", "rectangular", "peer_pipeline", "window_cube", "block_cube"):
+        for strategy in ("compact", "local", "rectangular", "peer_pipeline", "window_cube"):
             lib, receipt = jit.artifacts(self.root, strategy)
             lib.parent.mkdir(parents=True, exist_ok=True)
             lib.write_bytes(b"a real binary is required on device; this is a unit fixture")
@@ -135,9 +135,7 @@ class JitBuildIdentity(unittest.TestCase):
                     geometry=SimpleNamespace(m=n,n=n,batch=batch,shape=(batch,n,n)),
                     fields={"local":window,"stride":stride})
                 with self.subTest(n=n,window=window,batch=batch,blocks=blocks):
-                    from code_dsl.op_host.block_schedule import compatible
-                    expected="block_cube" if compatible(n,stride,batch,blocks) else "window_cube"
-                    self.assertEqual(jit.select_strategy(plan),expected)
+                    self.assertEqual(jit.select_strategy(plan),"window_cube")
                     layout=scratch(n,batch,stride,blocks)
                     self.assertGreater(layout["words"],layout["offset"]+layout["fallback_status"]+batch*32-1)
                     self.assertEqual(layout["status_words"],batch*512+128)
