@@ -1657,7 +1657,7 @@ __aicore__ inline void FusedDecode( GM_ADDR P_handle,  GM_ADDR Y_handle,  GM_ADD
     AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
     weight = (scale_a * 3.906250e-03f);
     weight = (weight * (scale_y * 3.906250e-03f));
-    for (int32_t diagonal = 0; diagonal < 9; ++diagonal) {
+    for (int32_t diagonal = 0; diagonal < 6; ++diagonal) {
       AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(0);
       AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(0);
       tl::ascend::rd_load(raw[0], P[(((diagonal * n) + core) * n)], raw[0], ((((n + blocks) - core) - 1) / blocks), n, ((blocks - 1) * n));
@@ -1769,6 +1769,7 @@ __aicore__ inline void FusedInteger( GM_ADDR A_handle,  GM_ADDR B_handle,  GM_AD
   auto bid = AscendC::GetBlockIdx();
   if ASCEND_IS_AIV {
     }
+  int diagonals = 0;
   auto a = ascend_l1.GetWithOffset<int8_t>(40960, 0);
   auto b = ascend_l1.GetWithOffset<int8_t>(163840, 40960);
   int first = 0;
@@ -1786,7 +1787,11 @@ __aicore__ inline void FusedInteger( GM_ADDR A_handle,  GM_ADDR B_handle,  GM_AD
           }
         }
         AscendC::PipeBarrier<PIPE_ALL>();
-        for (int32_t diagonal = 0; diagonal < ((planes * 2) - 1); ++diagonal) {
+        diagonals = ((planes * 2) - 1);
+        if (6 < diagonals) {
+          diagonals = 6;
+        }
+        for (int32_t diagonal = 0; diagonal < diagonals; ++diagonal) {
           first = 0;
           last = planes;
           if (planes <= diagonal) {
@@ -1936,6 +1941,7 @@ __aicore__ inline void FusedCertify( GM_ADDR Y_handle,  GM_ADDR C_handle,  GM_AD
   float da = 0.000000e+00f;
   float dy = 0.000000e+00f;
   float rr = 0.000000e+00f;
+  float tail = 0.000000e+00f;
   float eta_a = 0.000000e+00f;
   float eta_b = 0.000000e+00f;
   float unit = 0.000000e+00f;
@@ -2007,7 +2013,16 @@ __aicore__ inline void FusedCertify( GM_ADDR Y_handle,  GM_ADDR C_handle,  GM_AD
     rr = (rr * 3.906250e-03f);
     rr = (rr * 3.906250e-03f);
     rr = (rr * 3.906250e-03f);
-    da = (((((((da * yf) + (dy * af)) + (da * dy)) + rr) + ((((2.000000e+00f * rf) * 3.906250e-03f) * 3.906250e-03f) * 3.906250e-03f)) + (((float)n) * 1.000000e-33f)) * 1.250000e+00f);
+    tail = (scale_a * 1.525879e-05f);
+    tail = (tail * (scale_y * 1.525879e-05f));
+    tail = (tail * (((float)n) * ((float)n)));
+    tail = (tail * 1.638400e+04f);
+    tail = (tail * 3.906250e-03f);
+    tail = (tail * 3.906250e-03f);
+    tail = (tail * 3.906250e-03f);
+    tail = (tail * 3.906250e-03f);
+    tail = (tail * 3.020000e+00f);
+    da = ((((((((da * yf) + (dy * af)) + (da * dy)) + rr) + ((((2.000000e+00f * rf) * 3.906250e-03f) * 3.906250e-03f) * 3.906250e-03f)) + (((float)n) * 1.000000e-33f)) + tail) * 1.250000e+00f);
     eta_a = (stat.GetValue(10) * scale_y);
     eta_b = (stat.GetValue(10) * 1.562500e-02f);
     eta_b = (eta_b * 1.562500e-02f);
