@@ -70,7 +70,16 @@ def certificate_kernels():
        for step in T.unroll(6):da/=T.float32(256);dy/=T.float32(256)
        rr=T.alloc_var('float32');rr=(af+da+scale_a*T.Cast('float32',n)/T.float32(255))*(yf+dy+scale_y*T.Cast('float32',n)/T.float32(255))*T.float32(1024)
        for step in T.unroll(6):rr/=T.float32(256)
-       er=T.alloc_var('float32');er=(da*yf+dy*af+da*dy+rr+T.float32(2)*rf/T.float32(256)/T.float32(256)/T.float32(256)+T.Cast('float32',n)*T.float32(1e-33))*T.float32(1.25)
+       # Balanced digits have Frobenius norm at most 128*n.
+       # Omitted diagonals 6,7,8 contain 3,2,1 products respectively.
+       # 3.02 exceeds (3+2/256+1/65536), including rounding slack.
+       tail=T.alloc_var('float32');tail=scale_a/T.float32(65536)
+       tail*=scale_y/T.float32(65536)
+       tail*=T.Cast('float32',n)*T.Cast('float32',n)
+       tail*=T.float32(16384)
+       for step in T.unroll(4):tail/=T.float32(256)
+       tail*=T.float32(3.02)
+       er=T.alloc_var('float32');er=(da*yf+dy*af+da*dy+rr+T.float32(2)*rf/T.float32(256)/T.float32(256)/T.float32(256)+T.Cast('float32',n)*T.float32(1e-33)+tail)*T.float32(1.25)
        eta_a=T.alloc_var('float32');eta_a=stat[10]*scale_y
        eta_b=T.alloc_var('float32');eta_b=stat[10]/T.float32(64);eta_b/=T.float32(64)
        unit=T.alloc_var('float32');unit=T.float32(1)

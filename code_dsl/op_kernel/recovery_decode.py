@@ -41,7 +41,7 @@ def decode_kernel():
        T.set_flag('S','V',0);T.wait_flag('S','V',0)
        weight=T.alloc_var('float32');weight=scale_a/T.float32(256)
        weight*=scale_y/T.float32(256)
-       for diagonal in T.serial(9):
+       for diagonal in T.serial(6):
         T.set_flag('V','MTE2',0);T.wait_flag('V','MTE2',0)
         emit('rd_load',raw.access_ptr('w'),P.access_ptr('r',offset=(diagonal*n+core)*n),owned,n,(blocks-1)*n)
         T.set_flag('MTE2','V',0);T.wait_flag('MTE2','V',0)

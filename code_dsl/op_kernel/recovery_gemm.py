@@ -23,7 +23,9 @@ def integer_gemm_kernel():
         T.copy(A[i*N+row*32,kk*128],a[i,kk,:,:])
         T.copy(B[kk*128,i*N+col*128],b[i,kk,:,:])
       T.barrier_all()
-      for diagonal in T.serial(2*P-1):
+      diagonals=T.alloc_var('int32');diagonals=2*P-1
+      if diagonals>6:diagonals=6
+      for diagonal in T.serial(diagonals):
        first=T.alloc_var('int32');first=0
        last=T.alloc_var('int32');last=P
        if diagonal>=P:first=diagonal-P+1
