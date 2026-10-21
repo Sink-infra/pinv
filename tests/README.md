@@ -91,6 +91,32 @@ JIT 默认构建位置为 `build/tests/jit`，Ascend 默认位置为 `build/test
 `code/project_manifest.json` 是被 Git 忽略的本地转换清单，构建摘要、源码拷贝和产物校验均不依赖它。
 旧构建回执需要重新生成，以使用当前源码与测试逻辑的身份校验。
 
+## 本地与官方收益校准
+
+每轮官方结果返回后，逐 Case 比较相对于同一基线的本地和官方耗时降幅，使用绝对耗时，
+不使用分数或 TBest。正确性、提交资格、本轮新增收益分别验收；历史收益不能为本轮退化背书。
+
+```bash
+python3 -m tests.st.scripts.audit_official_gains \
+  --baseline-local build/baseline/result.json --candidate-local build/candidate/result.json \
+  --baseline-official build/official-baseline.json --candidate-official build/official-candidate.json \
+  --output build/calibration/comparison.json
+```
+
+本地 A/B 必须使用同一输入、属性、硬件与完整 Task 口径；每例至少三个独立进程，
+每进程至少三个样本，小 Case（矩阵维度不超过 64）至少五个样本。报告保留进程中位数、
+样本范围和 MAD。官方输入无需与本地相同，也不能据此声称复现了官方张量。
+报告绑定四份原始回执的路径和摘要；缺少采样、非稳态和降幅偏差超过 3 个百分点均返回非零状态。
+
+这一规则同样用于复查历史优化。每个超限项保持开放，直到有绑定源码、产物与计时协议的
+本地复现实验、原因证据、修复及修复后的验证。恢复旧路径或另一 Case 提速不能关闭问题。
+尚未完成这些步骤时，不将该路径的本地收益作为已经兑现的优化推进。
+
+原型与统一入口必须读取同一计时域。`tests.common.task_trace.complete_task_records` 按
+device/stream/task 标识关联 `op_summary` 和底层 `task_time`，始终返回前者的完整 Task 时长。
+混合 Vector 内核的底层记录可能漏掉启动前后各约 1 μs；不能把这段内核主体时间标成完整 Task。
+此类原型的旧收益必须从保留的完整 Task 表重新计算，不能用硬编码补时修正。
+
 ## 用例选择与数据生成
 
 ```bash
