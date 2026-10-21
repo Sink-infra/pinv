@@ -2174,7 +2174,7 @@ __aicore__ inline void PvStageWindow( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_A
   float corrected = 0.000000e+00f;
   auto vid = AscendC::GetSubBlockIdx();
   blocked = 0;
-  if (((((((((256 <= n) && (n <= 256)) && ((n % 128) == 0)) && (batch <= 16)) && (((blocks * 2) % batch) == 0)) && (((batch * n) / 64) <= (blocks * 2))) && ((batch * n) <= 2561)) && ((((batch * n) * n) * 11) <= ((((((((((batch * 8256) + (blocks * 32)) + ((n * n) * 27)) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2)) + 127) / 128) * 128) + (((((batch * n) * stride) + 63) / 64) * 128)))) && (15 <= ((n - 1) / max((((blocks * 2) / batch) - 1), 1)))) {
+  if (((((((((256 <= n) && (n <= 256)) && ((n % 128) == 0)) && (batch <= 16)) && (((blocks * 2) % batch) == 0)) && (((batch * n) / 64) <= (blocks * 2))) && ((batch * n) <= 2561)) && (((((batch * n) * n) * 11) <= ((((((((((batch * 8256) + (blocks * 32)) + ((n * n) * 27)) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2)) + 127) / 128) * 128) + (((((batch * n) * stride) + 63) / 64) * 128))) || (0 <= ((batch * n) * n)))) && (15 <= ((n - 1) / max((((blocks * 2) / batch) - 1), 1)))) {
     blocked = 1;
   }
   if (blocked != 0) {
@@ -2185,6 +2185,10 @@ __aicore__ inline void PvStageWindow( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_A
     if (blocked != 0) {
       tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 8);
       tl::ascend::br_gemm(W[0], W[0], W[0], (((batch * n) * n) * 2), (((batch * n) * n) * 8), (((batch * n) * n) * 4), blocks, batch, n, n, n);
+      AscendC::PipeBarrier<PIPE_ALL>();
+      tl::ascend::pc_done(W[0], W[0], W[0]);
+      tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 8);
+      tl::ascend::br_gemm(W[0], W[0], W[0], (((batch * n) * n) * 9), (((batch * n) * n) * 9), (((batch * n) * n) * 11), blocks, batch, n, n, n);
       AscendC::PipeBarrier<PIPE_ALL>();
       tl::ascend::pc_done(W[0], W[0], W[0]);
       tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 8);
@@ -2223,6 +2227,11 @@ __aicore__ inline void PvStageWindow( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_A
       tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 10);
       tl::ascend::pv_sync_all(W[0], W[0], W[0]);
       tl::ascend::bf_decode(W[0], W[0], W[0], blocks, n, batch);
+      tl::ascend::pv_sync_all(W[0], W[0], W[0]);
+      tl::ascend::pv_cross_set2(W[0], W[0], W[0], 8);
+      tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 10);
+      tl::ascend::pv_sync_all(W[0], W[0], W[0]);
+      tl::ascend::bf_accumulate(W[0], W[0], W[0], blocks, n, batch);
       tl::ascend::pv_sync_all(W[0], W[0], W[0]);
       tl::ascend::pv_cross_set2(W[0], W[0], W[0], 8);
       tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 10);
@@ -2266,7 +2275,7 @@ __aicore__ inline void PvStageWindow( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_A
         valid = 0;
       }
       refine = 0;
-      if ((valid != 0) && (3.600000e+09f <= (inverse * total))) {
+      if ((valid != 0) && (1.000000e+15f <= (inverse * total))) {
         refine = 1;
       }
       sy = 1.000000e+00f;
