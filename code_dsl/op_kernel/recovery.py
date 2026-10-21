@@ -2,7 +2,7 @@
 from hashlib import sha256
 from code_dsl.op_kernel.intrinsics import emit
 
-def window_recovery_kernel(component_source,*,block_only=False):
+def window_recovery_kernel(component_source):
     import tilelang.language as T
     from code_dsl.op_kernel.prepared_layout import use_prepared
     from code_dsl.op_kernel.block_layout import use_block
@@ -17,10 +17,8 @@ def window_recovery_kernel(component_source,*,block_only=False):
       extent=n*n
       off=T.ceildiv(2*batch*n*stride+batch*8192,128)*128
       qa=0;qy=5*extent//4;pr=5*extent//2;rr=pr+25*extent;yh=rr+extent;rh=yh+extent//2;co=rh+extent//2;pa=co+extent;qn=pa+blocks*2*n
-      blocked=T.alloc_var('int32');blocked=1
-      if not block_only:
-       blocked=0
-       if use_block(n,stride,batch,blocks):blocked=1
+      blocked=T.alloc_var('int32');blocked=0
+      if use_block(n,stride,batch,blocks):blocked=1
       if blocked!=0:emit('bf_block',A.access_ptr('r'),X.access_ptr('rw'),W.access_ptr('rw'),blocks,n,batch)
       with T.Scope('C'):
        emit('pv_sync_init',W.access_ptr('rw'))
@@ -138,4 +136,4 @@ def window_recovery_kernel(component_source,*,block_only=False):
         emit('pv_store_rows',S.access_ptr('w',offset=batch*512),pool.access_ptr('r',offset=3600),1,16,0,0)
        emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10);emit('pv_sync_all',W.access_ptr('rw'))
       T.barrier_all()
-    return kernel.with_attr("pinv.strategy","block_cube" if block_only else "window_cube").with_attr("pinv.complete_continuation",True).with_attr("pinv.component_source.sha256",sha256(header.encode()).hexdigest()).with_attr("pinv.jit.optimization_level",3)
+    return kernel.with_attr("pinv.strategy","window_cube").with_attr("pinv.complete_continuation",True).with_attr("pinv.component_source.sha256",sha256(header.encode()).hexdigest()).with_attr("pinv.jit.optimization_level",3)

@@ -30,23 +30,20 @@ def select_strategy(plan):
         return strategy
     if strategy == "window_cube":
         from code_dsl.op_host.recovery_layout import supported
-        from code_dsl.op_host.block_schedule import compatible
-        if supported(plan):
-            g=plan.geometry
-            return "block_cube" if compatible(g.n,plan.fields['stride'],g.batch,plan.blocks) else strategy
+        if supported(plan):return strategy
     raise UnsupportedStrategy(f"TileLang JIT has no validated {strategy} implementation for {plan.geometry.shape}")
 
 
 def artifacts(build_dir, strategy):
-    root = Path(build_dir) / {"peer_pipeline":"peer","window_cube":"window","block_cube":"window"}.get(strategy,"module")
-    library = root / "block/kernel.so" if strategy=="block_cube" else root / "kernel.so" if strategy in {"peer_pipeline","window_cube"} else root / strategy / "kernel.so"
+    root = Path(build_dir) / {"peer_pipeline":"peer","window_cube":"window"}.get(strategy,"module")
+    library = root / "kernel.so" if strategy in {"peer_pipeline","window_cube"} else root / strategy / "kernel.so"
     return library, root / "build-receipt.json"
 
 
 def module_identity(build_dir):
     build_dir = Path(build_dir)
     libraries = {}
-    for strategy in ("compact", "local", "rectangular", "peer_pipeline", "window_cube", "block_cube"):
+    for strategy in ("compact", "local", "rectangular", "peer_pipeline", "window_cube"):
         library, receipt = artifacts(build_dir, strategy)
         from tests.common.provenance import jit_provenance
         provenance = jit_provenance(library, receipt, strategy)
@@ -56,7 +53,7 @@ def module_identity(build_dir):
         source = library.with_suffix(".cpp")
         if sha256_file(source) != provenance["source_sha256"]:
             raise ValueError("JIT generated source changed")
-        if strategy in {"peer_pipeline","window_cube","block_cube"} and document.get("complete_continuation") is not True:
+        if strategy in {"peer_pipeline","window_cube"} and document.get("complete_continuation") is not True:
             raise ValueError("communication-only probes cannot be tested as operators")
         libraries[strategy] = provenance
     return libraries
