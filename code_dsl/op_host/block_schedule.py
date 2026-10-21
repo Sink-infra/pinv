@@ -8,7 +8,7 @@ def compatible(n,stride,batch,blocks):
     cores=2*blocks
     group=cores//batch
     return (cores%batch==0 and group>1 and batch*n//64<=cores and batch*n//2<=1280
-            and 11*batch*n*n<=scratch(n,batch,stride,blocks)['words']
+            and 13*batch*n*n<=scratch(n,batch,stride,blocks)['words']
             and (n+group-2)//(group-1)>=16)
 
 def select_blocks(n,stride,batch,window,blocks):
@@ -31,7 +31,7 @@ inline bool BlockGridCompatible(uint32_t n,uint32_t stride,uint32_t batch,uint32
     uint64_t cores=2*uint64_t(blocks),group=cores/batch;
     return !(cores%batch) && group>1 && uint64_t(batch)*n/64<=cores &&
            uint64_t(batch)*n/2<=1280 &&
-           11*uint64_t(batch)*n*n<=WindowWorkFloats(batch,n,stride,blocks) &&
+           13*uint64_t(batch)*n*n<=WindowWorkFloats(batch,n,stride,blocks) &&
            (n+group-2)/(group-1)>=16;
 }
 inline uint32_t BlockLaunch(uint32_t n,uint32_t stride,uint32_t batch,

@@ -41,6 +41,12 @@ def scratch(n,batch,stride,blocks):
     raw_status=quant_norms+2*blocks*16
     fallback_status=raw_status+batch*32
     words=(offset+fallback_status+batch*32+127)//128*128
+    block=13*batch*extent
+    if isinstance(words,int) and isinstance(block,int):
+        words=max(words,block)
+    else:
+        import tvm
+        words=tvm.tir.max(words,block)
     return {'words':words,'status_words':batch*512+128,'offset':offset,
             'qa':qa,'qy':qy,'product':product,'residual':residual,'half_y':half_y,
             'half_r':half_r,'correction':correction,'partials':partials,
