@@ -24,7 +24,7 @@ def window_recovery_kernel(component_source):
        emit('pv_sync_init',W.access_ptr('rw'))
        if blocked!=0:
         emit('pv_cross_wait2',W.access_ptr('rw'),8)
-        emit('bf_product',W.access_ptr('rw'),blocks,n,batch)
+        emit('br_gemm',W.access_ptr('rw'),2*batch*n*n,8*batch*n*n,4*batch*n*n,blocks,batch,n,n,n)
         T.barrier_all();emit('pc_done',W.access_ptr('rw'))
         emit('pv_cross_wait2',W.access_ptr('rw'),8)
         emit('br_gemm',W.access_ptr('rw'),8*batch*n*n,9*batch*n*n,10*batch*n*n,blocks,batch,n,n,n)

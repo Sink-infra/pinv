@@ -493,8 +493,8 @@ __aicore__ inline void BlockPack( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADDR 
   A.SetGlobalBuffer((__gm__ float*)A_handle);
   AscendC::GlobalTensor<float> Y;
   Y.SetGlobalBuffer((__gm__ float*)Y_handle);
-  AscendC::GlobalTensor<half> AH;
-  AH.SetGlobalBuffer((__gm__ half*)AH_handle);
+  AscendC::GlobalTensor<float> AH;
+  AH.SetGlobalBuffer((__gm__ float*)AH_handle);
   AscendC::GlobalTensor<half> YH;
   YH.SetGlobalBuffer((__gm__ half*)YH_handle);
   AscendC::GlobalTensor<float> YN;
@@ -502,14 +502,11 @@ __aicore__ inline void BlockPack( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADDR 
   AscendC::GlobalTensor<float> S;
   S.SetGlobalBuffer((__gm__ float*)S_handle);
 
-  AscendC::TBuf<AscendC::TPosition::VECCALC> ascend_ub; pipe.InitBuffer(ascend_ub, 57344);
+  AscendC::TBuf<AscendC::TPosition::VECCALC> ascend_ub; pipe.InitBuffer(ascend_ub, 16384);
   auto bid = AscendC::GetBlockIdx();
   if ASCEND_IS_AIV {
     }
   auto value = ascend_ub.GetWithOffset<float>(4096, 0);
-  auto half_buf = ascend_ub.GetWithOffset<half>(4096, 16384);
-  auto high = ascend_ub.GetWithOffset<float>(4096, 24576);
-  auto low = ascend_ub.GetWithOffset<float>(4096, 40960);
   auto vid = AscendC::GetSubBlockIdx();
   if ASCEND_IS_AIV {
     for (int32_t iteration = 0; iteration < ((((blocks * 2) + (((batch * n) * n) / 4096)) - 1) / (blocks * 2)); ++iteration) {
@@ -520,30 +517,10 @@ __aicore__ inline void BlockPack( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADDR 
         tl::ascend::pv_load_rows(value[0], A[(((iteration * blocks) * 8192) + (bid * 4096))], value[0], 1, 4096, 0, 0);
         AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(0);
         AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(0);
-        {
-        AscendC::Muls(value[0], value[0], (1.000000e+00f / power), 4096);
-        }
-        AscendC::PipeBarrier<PIPE_V>();
-        AscendC::Cast(half_buf[0], value[0], AscendC::RoundMode::CAST_NONE, 4096);
-        AscendC::PipeBarrier<PIPE_V>();
-        AscendC::Cast(high[0], half_buf[0], AscendC::RoundMode::CAST_NONE, 4096);
-        AscendC::PipeBarrier<PIPE_V>();
-        AscendC::Sub(low[0], value[0], high[0], 4096);
-        AscendC::PipeBarrier<PIPE_V>();
-        {
-        AscendC::Muls(low[0], low[0], 4.096000e+03f, 4096);
-        }
-        AscendC::PipeBarrier<PIPE_V>();
+        tl::ascend::pv_scale(value[0], value[0], value[0], (1.000000e+00f / power), 4096);
         AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(0);
         AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(0);
-        tl::ascend::bp_store_half(AH[(((iteration * blocks) * 8192) + (bid * 4096))], half_buf[0], AH[(((iteration * blocks) * 8192) + (bid * 4096))], 4096);
-        AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(0);
-        AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(0);
-        AscendC::Cast(half_buf[0], low[0], AscendC::RoundMode::CAST_NONE, 4096);
-        AscendC::PipeBarrier<PIPE_V>();
-        AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(0);
-        AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(0);
-        tl::ascend::bp_store_half(AH[((((iteration * blocks) * 8192) + (bid * 4096)) + ((batch * n) * n))], half_buf[0], AH[((((iteration * blocks) * 8192) + (bid * 4096)) + ((batch * n) * n))], 4096);
+        tl::ascend::pv_store_rows(AH[(((iteration * blocks) * 8192) + (bid * 4096))], value[0], AH[(((iteration * blocks) * 8192) + (bid * 4096))], 1, 4096, 0, 0);
         AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(0);
         AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(0);
         AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(0);
@@ -551,33 +528,10 @@ __aicore__ inline void BlockPack( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADDR 
         tl::ascend::pv_load_rows(value[0], Y[(((iteration * blocks) * 8192) + (bid * 4096))], value[0], 1, 4096, 0, 0);
         AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(0);
         AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(0);
-        {
-        AscendC::Muls(value[0], value[0], power, 4096);
-        }
-        AscendC::PipeBarrier<PIPE_V>();
+        tl::ascend::pv_scale(value[0], value[0], value[0], power, 4096);
         AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(0);
         AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(0);
         tl::ascend::pv_store_rows(YN[(((iteration * blocks) * 8192) + (bid * 4096))], value[0], YN[(((iteration * blocks) * 8192) + (bid * 4096))], 1, 4096, 0, 0);
-        AscendC::Cast(half_buf[0], value[0], AscendC::RoundMode::CAST_NONE, 4096);
-        AscendC::PipeBarrier<PIPE_V>();
-        AscendC::Cast(high[0], half_buf[0], AscendC::RoundMode::CAST_NONE, 4096);
-        AscendC::PipeBarrier<PIPE_V>();
-        AscendC::Sub(low[0], value[0], high[0], 4096);
-        AscendC::PipeBarrier<PIPE_V>();
-        {
-        AscendC::Muls(low[0], low[0], 4.096000e+03f, 4096);
-        }
-        AscendC::PipeBarrier<PIPE_V>();
-        AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(0);
-        AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(0);
-        tl::ascend::bp_store_half(YH[(((iteration * blocks) * 8192) + (bid * 4096))], half_buf[0], YH[(((iteration * blocks) * 8192) + (bid * 4096))], 4096);
-        AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(0);
-        AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(0);
-        AscendC::Cast(half_buf[0], low[0], AscendC::RoundMode::CAST_NONE, 4096);
-        AscendC::PipeBarrier<PIPE_V>();
-        AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(0);
-        AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(0);
-        tl::ascend::bp_store_half(YH[((((iteration * blocks) * 8192) + (bid * 4096)) + ((batch * n) * n))], half_buf[0], YH[((((iteration * blocks) * 8192) + (bid * 4096)) + ((batch * n) * n))], 4096);
         AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(0);
         AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(0);
       }
@@ -655,79 +609,33 @@ __aicore__ inline void BlockDecode( GM_ADDR P_handle,  GM_ADDR R_handle, int32_t
   AscendC::GlobalTensor<float> R;
   R.SetGlobalBuffer((__gm__ float*)R_handle);
 
-  AscendC::TBuf<AscendC::TPosition::VECCALC> ascend_ub; pipe.InitBuffer(ascend_ub, 131072);
+  AscendC::TBuf<AscendC::TPosition::VECCALC> ascend_ub; pipe.InitBuffer(ascend_ub, 32768);
   auto bid = AscendC::GetBlockIdx();
   if ASCEND_IS_AIV {
     }
-  auto high = ascend_ub.GetWithOffset<float>(4096, 0);
-  auto low = ascend_ub.GetWithOffset<float>(4096, 16384);
-  auto part = ascend_ub.GetWithOffset<float>(4096, 32768);
-  auto total = ascend_ub.GetWithOffset<float>(4096, 49152);
-  auto bv = ascend_ub.GetWithOffset<float>(4096, 65536);
-  auto av = ascend_ub.GetWithOffset<float>(4096, 81920);
-  auto error = ascend_ub.GetWithOffset<float>(4096, 98304);
-  auto alt = ascend_ub.GetWithOffset<float>(4096, 114688);
+  auto value = ascend_ub.GetWithOffset<float>(4096, 0);
+  auto identity = ascend_ub.GetWithOffset<float>(4096, 16384);
   auto vid = AscendC::GetSubBlockIdx();
   if ASCEND_IS_AIV {
     for (int32_t iteration = 0; iteration < ((((blocks * 2) + (((batch * n) * n) / 4096)) - 1) / (blocks * 2)); ++iteration) {
       if ((((iteration * blocks) * 8192) + (bid * 4096)) < ((batch * n) * n)) {
-        tl::ascend::pv_fill(high[0], high[0], high[0], 0.000000e+00f, 4096);
-        tl::ascend::pv_fill(low[0], low[0], low[0], 0.000000e+00f, 4096);
-        AscendC::PipeBarrier<PIPE_V>();
+        AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(0);
+        AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(0);
+        tl::ascend::pv_load_rows(value[0], P[(((iteration * blocks) * 8192) + (bid * 4096))], value[0], 1, 4096, 0, 0);
+        AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(0);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(0);
+        tl::ascend::pv_fill(identity[0], identity[0], identity[0], 0.000000e+00f, 4096);
         AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
         AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
         for (int32_t row = 0; row < (4096 / n); ++row) {
-          high.SetValue(((((int64_t)row) * ((int64_t)n)) + ((((((((int64_t)iteration) * ((int64_t)blocks)) * (int64_t)8192) + (((int64_t)bid) * (int64_t)4096)) / ((int64_t)n)) + ((int64_t)row)) % ((int64_t)n))), 1.000000e+00f);
+          identity.SetValue(((((int64_t)row) * ((int64_t)n)) + ((((((((int64_t)iteration) * ((int64_t)blocks)) * (int64_t)8192) + (((int64_t)bid) * (int64_t)4096)) / ((int64_t)n)) + ((int64_t)row)) % ((int64_t)n))), 1.000000e+00f);
         }
         AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
         AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
-        for (int32_t term = 0; term < 4; ++term) {
-          AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(0);
-          AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(0);
-          tl::ascend::pv_load_rows(part[0], P[((((iteration * blocks) * 8192) + (bid * 4096)) + (((term * batch) * n) * n))], part[0], 1, 4096, 0, 0);
-          AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(0);
-          AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(0);
-          if (term == 0) {
-            {
-            AscendC::Muls(part[0], part[0], -1.000000e+00f, 4096);
-            }
-          } else {
-            if (term == 3) {
-              {
-              AscendC::Muls(part[0], part[0], -2.441406e-04f, 4096);
-              }
-              AscendC::PipeBarrier<PIPE_V>();
-              {
-              AscendC::Muls(part[0], part[0], 2.441406e-04f, 4096);
-              }
-            } else {
-              {
-              AscendC::Muls(part[0], part[0], -2.441406e-04f, 4096);
-              }
-            }
-          }
-          AscendC::PipeBarrier<PIPE_V>();
-          AscendC::Add(total[0], high[0], part[0], 4096);
-          AscendC::PipeBarrier<PIPE_V>();
-          AscendC::Sub(bv[0], total[0], high[0], 4096);
-          AscendC::PipeBarrier<PIPE_V>();
-          AscendC::Sub(av[0], total[0], bv[0], 4096);
-          AscendC::PipeBarrier<PIPE_V>();
-          AscendC::Sub(error[0], high[0], av[0], 4096);
-          AscendC::Sub(alt[0], part[0], bv[0], 4096);
-          AscendC::PipeBarrier<PIPE_V>();
-          AscendC::Add(error[0], error[0], alt[0], 4096);
-          AscendC::PipeBarrier<PIPE_V>();
-          AscendC::Add(low[0], low[0], error[0], 4096);
-          AscendC::PipeBarrier<PIPE_V>();
-          tl::ascend::pv_copy(high[0], total[0], high[0], 4096);
-          AscendC::PipeBarrier<PIPE_V>();
-        }
-        AscendC::Add(high[0], high[0], low[0], 4096);
-        AscendC::PipeBarrier<PIPE_V>();
+        AscendC::Sub(value[0], identity[0], value[0], 4096);
         AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(0);
         AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(0);
-        tl::ascend::pv_store_rows(R[(((iteration * blocks) * 8192) + (bid * 4096))], high[0], R[(((iteration * blocks) * 8192) + (bid * 4096))], 1, 4096, 0, 0);
+        tl::ascend::pv_store_rows(R[(((iteration * blocks) * 8192) + (bid * 4096))], value[0], R[(((iteration * blocks) * 8192) + (bid * 4096))], 1, 4096, 0, 0);
         AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(0);
         AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(0);
       }

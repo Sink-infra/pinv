@@ -2169,7 +2169,7 @@ __aicore__ inline void PvStageWindow( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_A
     tl::ascend::pv_sync_init(W[0], W[0], W[0]);
     if (blocked != 0) {
       tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 8);
-      tl::ascend::bf_product(W[0], W[0], W[0], blocks, n, batch);
+      tl::ascend::br_gemm(W[0], W[0], W[0], (((batch * n) * n) * 2), (((batch * n) * n) * 8), (((batch * n) * n) * 4), blocks, batch, n, n, n);
       AscendC::PipeBarrier<PIPE_ALL>();
       tl::ascend::pc_done(W[0], W[0], W[0]);
       tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 8);
