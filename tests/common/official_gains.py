@@ -15,7 +15,7 @@ def local_case(report, name):
         raise ValueError("three distinct processes are required: " + name)
     require_same_environment(rows)
     medians, samples = [], []
-    for row in rows:
+    for row in sorted(rows, key=lambda r: r["process"]):
         minimum = 5 if max(row["shape"][-2:]) <= 64 else 3
         values = row.get("kernel", {}).get("samples_us", [])
         if row["status"] != "Pass" or len(values) < minimum or not all(map(_positive, values)):

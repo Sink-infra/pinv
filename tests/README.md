@@ -93,6 +93,28 @@ JIT 默认构建位置为 `build/tests/jit`，Ascend 默认位置为 `build/test
 
 ## 本地与官方收益校准
 
+每轮优化先相对**当前保留版本**验证 JIT 的新增收益，再导出并验证对应 CANN 包的新增收益。
+两条路径必须在同一 Mock Case 上均获得稳定收益；每个进程的中位数都要优于对应基线。
+JIT 快而 CANN 包不快、不同 Case 分别变快、历史 CAC 收益或正确性通过，都不能替代这一条件。
+所有十二个 Mock 都要通过并逐项报告，不能用同形状的一个 fixture 外推另一个。
+
+```bash
+python3 -m tests.st.scripts.accept_optimization --stage jit \
+  --baseline-jit build/retained/jit/result.json --candidate-jit build/candidate/jit/result.json \
+  --output build/candidate/new-jit-benefit.json
+# JIT 新增收益通过后，才进行转换、构建及 CANN 包 Mock 采样。
+python3 -m tests.st.scripts.accept_optimization --stage package \
+  --jit-acceptance build/candidate/new-jit-benefit.json \
+  --baseline-jit build/retained/jit/result.json --candidate-jit build/candidate/jit/result.json \
+  --baseline-cann build/retained/ascend/result.json --candidate-cann build/candidate/ascend/result.json \
+  --baseline-manifest build/retained/project_manifest.json --candidate-manifest code/project_manifest.json \
+  --output build/candidate/new-package-benefit.json
+```
+
+该入口核对原始采样与汇总一致性、输入与计时协议、三进程完整 Task，以及转换清单中的
+DSL/JIT 源码和二进制摘要与 CANN 构建回执的源码清单。清单及验收报告仍是被忽略的运行产物。
+这项验收与 CAC 提交门槛分别满足后才提交官方测试；官方结果返回前不宣称收益已兑现。
+
 每轮官方结果返回后，逐 Case 比较相对于同一基线的本地和官方耗时降幅，使用绝对耗时，
 不使用分数或 TBest。正确性、提交资格、本轮新增收益分别验收；历史收益不能为本轮退化背书。
 
