@@ -1,15 +1,16 @@
-"""Runtime block continuation: split residual, FP32 Newton and metadata."""
+"""Experimental first Newton residual in native FP32; certificate unchanged."""
 from code_dsl.op_kernel.intrinsics import emit
+
 def pack_kernel(header):
  import tilelang.language as T
  @T.prim_func
- def kernel(A:T.Tensor((1,),'float32'),Y:T.Tensor((1,),'float32'),AH:T.Tensor((1,),'float16'),YH:T.Tensor((1,),'float16'),YN:T.Tensor((1,),'float32'),S:T.Tensor((1,),'float32'),blocks:T.int32,n:T.int32,batch:T.int32):
+ def kernel(A:T.Tensor((1,),'float32'),Y:T.Tensor((1,),'float32'),AH:T.Tensor((1,),'float32'),YH:T.Tensor((1,),'float16'),YN:T.Tensor((1,),'float32'),S:T.Tensor((1,),'float32'),blocks:T.int32,n:T.int32,batch:T.int32):
   T.func_attr({'global_symbol':'linalg_pinv_tilelang'})
   with T.Kernel(blocks,threads=1,is_npu=True) as bid:
    T.import_source(header)
-   value=T.alloc_ub((4096,),'float32');high=T.alloc_ub((4096,),'float32');low=T.alloc_ub((4096,),'float32');half_buf=T.alloc_ub((4096,),'float16')
+   value=T.alloc_ub((4096,),'float32')
    with T.Scope('V'):
-    T.reads(A[0],Y[0],S[0]);T.writes(AH[0],YH[0],YN[0])
+    T.reads(A[0],Y[0],S[0]);T.writes(AH[0],YN[0])
     extent=n*n;all=batch*extent;cores=2*blocks
     for iteration in T.serial(T.ceildiv(all//4096,cores)):
      start=(bid+iteration*cores)*4096
@@ -20,94 +21,38 @@ def pack_kernel(header):
        if side==0:emit('pv_load_rows',value.access_ptr('w'),A.access_ptr('r',offset=start),1,4096,0,0)
        else:emit('pv_load_rows',value.access_ptr('w'),Y.access_ptr('r',offset=start),1,4096,0,0)
        T.set_flag('MTE2','V',0);T.wait_flag('MTE2','V',0)
-       if side==0:T.tile.mul(value,value,T.float32(1)/power)
-       else:T.tile.mul(value,value,power)
-       T.pipe_barrier('V')
-       if side==1:
-        T.set_flag('V','MTE3',0);T.wait_flag('V','MTE3',0)
-        emit('pv_store_rows',YN.access_ptr('w',offset=start),value.access_ptr('r'),1,4096,0,0)
-       T.tile.cast(half_buf,value,'CAST_NONE',4096);T.pipe_barrier('V')
-       T.tile.cast(high,half_buf,'CAST_NONE',4096);T.pipe_barrier('V')
-       T.tile.sub(low,value,high);T.pipe_barrier('V')
-       T.tile.mul(low,low,T.float32(4096));T.pipe_barrier('V')
+       if side==0:emit('pv_scale',value.access_ptr('w'),value.access_ptr('r'),T.float32(1)/power,4096)
+       else:emit('pv_scale',value.access_ptr('w'),value.access_ptr('r'),power,4096)
        T.set_flag('V','MTE3',0);T.wait_flag('V','MTE3',0)
-       if side==0:emit('bp_store_half',AH.access_ptr('w',offset=start),half_buf.access_ptr('r'),4096)
-       else:emit('bp_store_half',YH.access_ptr('w',offset=start),half_buf.access_ptr('r'),4096)
-       T.set_flag('MTE3','V',0);T.wait_flag('MTE3','V',0)
-       T.tile.cast(half_buf,low,'CAST_NONE',4096);T.pipe_barrier('V')
-       T.set_flag('V','MTE3',0);T.wait_flag('V','MTE3',0)
-       if side==0:emit('bp_store_half',AH.access_ptr('w',offset=all+start),half_buf.access_ptr('r'),4096)
-       else:emit('bp_store_half',YH.access_ptr('w',offset=all+start),half_buf.access_ptr('r'),4096)
+       if side==0:emit('pv_store_rows',AH.access_ptr('w',offset=start),value.access_ptr('r'),1,4096,0,0)
+       else:emit('pv_store_rows',YN.access_ptr('w',offset=start),value.access_ptr('r'),1,4096,0,0)
        T.set_flag('MTE3','V',0);T.wait_flag('MTE3','V',0)
  return kernel
 
-def product_kernel():
- import tilelang.language as T
- from tvm import tir
- B=tir.Var('batch','int32');N=tir.Var('n','int32')
- @T.prim_func
- def kernel(A:T.Tensor((2*B*N,N),'float16'),Y:T.Tensor((2*B*N,N),'float16'),P:T.Tensor((4*B*N,N),'float32'),blocks:T.int32):
-  T.func_attr({'global_symbol':'linalg_pinv_tilelang'})
-  with T.Kernel(blocks,threads=1,is_npu=True) as bid:
-   a=T.alloc_L1((2,32,128),'float16');b=T.alloc_L1((2,128,128),'float16');c=T.alloc_L0C((32,128),'float32')
-   with T.Scope('C'):
-    rt=N//32;ct=N//128;per=B*rt*ct
-    for iteration in T.serial(T.ceildiv(4*per,blocks)):
-     tile=bid+iteration*blocks
-     if tile<4*per:
-      term=tile//per;job=tile//(rt*ct)%B;row=tile//ct%rt;col=tile%ct
-      for kk in T.serial(N//128):
-       T.copy(A[(term//2)*B*N+job*N+row*32,kk*128],a[kk,:,:])
-       T.copy(Y[(term%2)*B*N+job*N+kk*128,col*128],b[kk,:,:])
-      T.barrier_all()
-      for kk in T.serial(N//128):
-       clear=T.alloc_var('int32');clear=0
-       if kk==0:clear=1
-       T.gemm_v0(a[kk,:,:],b[kk,:,:],c,init=(clear!=0));T.barrier_all()
-      T.copy(c,P[term*B*N+job*N+row*32,col*128]);T.barrier_all()
- hint=tir.Var('shape_hint','handle');hint_buffer=tir.decl_buffer((B,N),dtype='uint8',name='ShapeHint')
- buffers=dict(kernel.buffer_map);buffers[hint]=hint_buffer
- return tir.PrimFunc(list(kernel.params)+[hint],kernel.body,kernel.ret_type,buffers,kernel.attrs)
-
 def decode_kernel(header):
  import tilelang.language as T
- @T.macro
- def add(high,low,part,total,bv,av,error,alt):
-  T.tile.add(total,high,part);T.pipe_barrier('V')
-  T.tile.sub(bv,total,high);T.pipe_barrier('V')
-  T.tile.sub(av,total,bv);T.pipe_barrier('V')
-  T.tile.sub(error,high,av);T.tile.sub(alt,part,bv);T.pipe_barrier('V')
-  T.tile.add(error,error,alt);T.pipe_barrier('V')
-  T.tile.add(low,low,error);T.pipe_barrier('V')
-  emit('pv_copy',high.access_ptr('w'),total.access_ptr('r'),4096);T.pipe_barrier('V')
  @T.prim_func
  def kernel(P:T.Tensor((1,),'float32'),R:T.Tensor((1,),'float32'),blocks:T.int32,n:T.int32,batch:T.int32):
   T.func_attr({'global_symbol':'linalg_pinv_tilelang'})
   with T.Kernel(blocks,threads=1,is_npu=True) as bid:
    T.import_source(header)
-   high=T.alloc_ub((4096,),'float32');low=T.alloc_ub((4096,),'float32');part=T.alloc_ub((4096,),'float32');total=T.alloc_ub((4096,),'float32');bv=T.alloc_ub((4096,),'float32');av=T.alloc_ub((4096,),'float32');error=T.alloc_ub((4096,),'float32');alt=T.alloc_ub((4096,),'float32')
+   value=T.alloc_ub((4096,),'float32');identity=T.alloc_ub((4096,),'float32')
    with T.Scope('V'):
     T.reads(P[0]);T.writes(R[0])
-    all=batch*n*n;cores=blocks*2
+    all=batch*n*n;cores=2*blocks
     for iteration in T.serial(T.ceildiv(all//4096,cores)):
      start=(bid+iteration*cores)*4096
      if start<all:
-      emit('pv_fill',high.access_ptr('w'),T.float32(0),4096);emit('pv_fill',low.access_ptr('w'),T.float32(0),4096);T.pipe_barrier('V')
+      T.set_flag('V','MTE2',0);T.wait_flag('V','MTE2',0)
+      emit('pv_load_rows',value.access_ptr('w'),P.access_ptr('r',offset=start),1,4096,0,0)
+      T.set_flag('MTE2','V',0);T.wait_flag('MTE2','V',0)
+      emit('pv_fill',identity.access_ptr('w'),T.float32(0),4096)
       T.set_flag('V','S',0);T.wait_flag('V','S',0)
-      for row in T.serial(4096//n):high[row*n+(start//n+row)%n]=T.float32(1)
+      for row in T.serial(4096//n):identity[row*n+(start//n+row)%n]=T.float32(1)
       T.set_flag('S','V',0);T.wait_flag('S','V',0)
-      for term in T.serial(4):
-       T.set_flag('V','MTE2',0);T.wait_flag('V','MTE2',0)
-       emit('pv_load_rows',part.access_ptr('w'),P.access_ptr('r',offset=term*all+start),1,4096,0,0)
-       T.set_flag('MTE2','V',0);T.wait_flag('MTE2','V',0)
-       if term==0:T.tile.mul(part,part,T.float32(-1))
-       elif term==3:
-        T.tile.mul(part,part,T.float32(-1/4096));T.pipe_barrier('V');T.tile.mul(part,part,T.float32(1/4096))
-       else:T.tile.mul(part,part,T.float32(-1/4096))
-       T.pipe_barrier('V');add(high,low,part,total,bv,av,error,alt)
-      T.tile.add(high,high,low);T.pipe_barrier('V')
+      T.tile.sub(value,identity,value)
       T.set_flag('V','MTE3',0);T.wait_flag('V','MTE3',0)
-      emit('pv_store_rows',R.access_ptr('w',offset=start),high.access_ptr('r'),1,4096,0,0)
+      emit('pv_store_rows',R.access_ptr('w',offset=start),value.access_ptr('r'),1,4096,0,0)
       T.set_flag('MTE3','V',0);T.wait_flag('MTE3','V',0)
  return kernel
 
