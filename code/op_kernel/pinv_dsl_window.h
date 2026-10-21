@@ -1423,8 +1423,8 @@ __aicore__ inline void FusedQuant( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADDR
   auto high = ascend_ub.GetWithOffset<float>(2048, 16384);
   auto low = ascend_ub.GetWithOffset<float>(2048, 24576);
   auto temp = ascend_ub.GetWithOffset<float>(2048, 32768);
-  auto carry = ascend_ub.GetWithOffset<float>(2048, 40960);
-  auto rounded = ascend_ub.GetWithOffset<float>(2048, 49152);
+  auto carry = ascend_ub.GetWithOffset<float>(2048, 49152);
+  auto rounded = ascend_ub.GetWithOffset<float>(2048, 40960);
   auto half_buf = ascend_ub.GetWithOffset<half>(2048, 57344);
   auto small = ascend_ub.GetWithOffset<int8_t>(2048, 61440);
   auto vid = AscendC::GetSubBlockIdx();
@@ -2173,10 +2173,228 @@ __aicore__ inline void PvStageWindow( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_A
   float sy = 0.000000e+00f;
   float corrected = 0.000000e+00f;
   auto vid = AscendC::GetSubBlockIdx();
+  blocked = 1;
   blocked = 0;
   if (((((((((256 <= n) && (n <= 256)) && ((n % 128) == 0)) && (batch <= 16)) && (((blocks * 2) % batch) == 0)) && (((batch * n) / 64) <= (blocks * 2))) && ((batch * n) <= 2561)) && ((((batch * n) * n) * 11) <= ((((((((((batch * 8256) + (blocks * 32)) + ((n * n) * 27)) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2)) + 127) / 128) * 128) + (((((batch * n) * stride) + 63) / 64) * 128)))) && (15 <= ((n - 1) / max((((blocks * 2) / batch) - 1), 1)))) {
     blocked = 1;
   }
+  if (blocked != 0) {
+    tl::ascend::bf_block(A[0], X[0], W[0], blocks, n, batch);
+  }
+  if ASCEND_IS_AIC {
+    tl::ascend::pv_sync_init(W[0], W[0], W[0]);
+    if (blocked != 0) {
+      tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 8);
+      tl::ascend::br_gemm(W[0], W[0], W[0], (((batch * n) * n) * 2), (((batch * n) * n) * 8), (((batch * n) * n) * 4), blocks, batch, n, n, n);
+      AscendC::PipeBarrier<PIPE_ALL>();
+      tl::ascend::pc_done(W[0], W[0], W[0]);
+      tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 8);
+      tl::ascend::br_gemm(W[0], W[0], W[0], (((batch * n) * n) * 8), (((batch * n) * n) * 9), (((batch * n) * n) * 10), blocks, batch, n, n, n);
+      AscendC::PipeBarrier<PIPE_ALL>();
+      tl::ascend::pc_done(W[0], W[0], W[0]);
+    }
+    running = 1;
+    while (1) {
+      if (!((running != 0))) { break; }
+      tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 8);
+      tl::ascend::pc_invalidate(S[(batch * 512)], S[(batch * 512)], S[(batch * 512)]);
+      int32_t next_job = ((int32_t)S.GetValue((((int64_t)batch) * (int64_t)512)));
+      if (next_job < 0) {
+        running = 0;
+      } else {
+        tl::ascend::fr_integer(W[0], W[0], W[0], ((batch * 8192) + (((((batch * n) * stride) + 63) / 64) * 128)), 0, (((n * n) * 5) / 4), (((n * n) * 5) / 2), blocks, n);
+        AscendC::PipeBarrier<PIPE_ALL>();
+        tl::ascend::pc_done(W[0], W[0], W[0]);
+        tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 8);
+        tl::ascend::fr_half(W[0], W[0], W[0], ((batch * 8192) + (((((batch * n) * stride) + 63) / 64) * 128)), (((n * n) * 26) + (((n * n) * 5) / 2)), ((((n * n) * 26) + ((n * n) / 2)) + (((n * n) * 5) / 2)), ((((n * n) * 26) + (((n * n) / 2) * 2)) + (((n * n) * 5) / 2)), blocks, n);
+        AscendC::PipeBarrier<PIPE_ALL>();
+      }
+      tl::ascend::pc_done(W[0], W[0], W[0]);
+    }
+  }
+  if ASCEND_IS_AIV {
+    AscendC::TPipe pipe;
+    AscendC::TBuf<AscendC::TPosition::VECCALC> ascend_ub; pipe.InitBuffer(ascend_ub, 16384);
+    auto pool = ascend_ub.GetWithOffset<float>(4096, 0);
+    tl::ascend::fr_bind(A[0], X[0], W[0]);
+    if (blocked != 0) {
+      tl::ascend::bf_pack(W[0], W[0], W[0], blocks, n, batch);
+      tl::ascend::pv_sync_all(W[0], W[0], W[0]);
+      tl::ascend::pv_cross_set2(W[0], W[0], W[0], 8);
+      tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 10);
+      tl::ascend::pv_sync_all(W[0], W[0], W[0]);
+      tl::ascend::bf_decode(W[0], W[0], W[0], blocks, n, batch);
+      tl::ascend::pv_sync_all(W[0], W[0], W[0]);
+      tl::ascend::pv_cross_set2(W[0], W[0], W[0], 8);
+      tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 10);
+      tl::ascend::pv_sync_all(W[0], W[0], W[0]);
+      tl::ascend::bf_finish(W[0], W[0], W[0], blocks, n, batch, stride);
+    } else {
+      if (((((((2 < ((blocks * 2) / batch)) && ((n % 16) == 0)) && (0 < window)) && ((window % 16) == 0)) && (((((((((n + 63) / 64) * 320) + (((n + 7) / 8) * 136)) + (max(((((n - 1) / max((((blocks * 2) / batch) - 2), 1)) / 8) + 1), 2) * 64)) + ((((n - 1) / max((((blocks * 2) / batch) - 2), 1)) / 8) * 8)) + max((max(((((n - 1) / max((((blocks * 2) / batch) - 2), 1)) + 1) * ((n + 7) / 8)), 64) * 8), ((((((n - 1) / max((((blocks * 2) / batch) - 2), 1)) / 8) * 1024) + (((n - 1) / max((((blocks * 2) / batch) - 2), 1)) * 16)) + 1296))) + ((((n - 1) / max((((blocks * 2) / batch) - 2), 1)) + 1) * stride)) <= 48712)) && (((((((n + 63) / 64) * 192) + (((n + 7) / 8) * 80)) + (((n + 15) / 16) * 64)) + (n * window)) <= 44416)) && (window < ((((n - 1) / max((((blocks * 2) / batch) - 1), 1)) * 4) + 4))) {
+        tl::ascend::fr_prepared_raw(W[0], W[0], W[0], blocks, n, batch, stride, window, atol, rtol, (((((((batch * 8192) + (((((batch * n) * stride) + 63) / 64) * 128)) + (blocks * 32)) + ((n * n) * 27)) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2)));
+      } else {
+        tl::ascend::fr_raw(W[0], W[0], W[0], blocks, n, batch, stride, window, atol, rtol, (((((((batch * 8192) + (((((batch * n) * stride) + 63) / 64) * 128)) + (blocks * 32)) + ((n * n) * 27)) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2)));
+      }
+    }
+    for (int32_t job = 0; job < batch; ++job) {
+      tl::ascend::pv_load_rows(pool[0], W[(((job * 8192) + (((batch * n) * stride) * 2)) + 2048)], pool[0], 1, (((blocks * 2) / batch) * 8), 0, 0);
+      tl::ascend::pv_load_rows(pool[384], W[((job * 8192) + (((batch * n) * stride) * 2))], pool[384], 1, 64, 0, 0);
+      AscendC::SetFlag<AscendC::HardEvent::MTE2_S>(0);
+      AscendC::WaitFlag<AscendC::HardEvent::MTE2_S>(0);
+      inverse = 0.000000e+00f;
+      peak_cached = 0.000000e+00f;
+      valid = 1;
+      for (int32_t c = 0; c < ((blocks * 2) / batch); ++c) {
+        if (pool.GetValue((((int64_t)c) * (int64_t)8)) < 5.000000e-01f) {
+          valid = 0;
+        }
+        inverse = (inverse + pool.GetValue(((((int64_t)c) * (int64_t)8) + (int64_t)1)));
+        peak_cached = max(peak_cached, pool.GetValue(((((int64_t)c) * (int64_t)8) + (int64_t)2)));
+      }
+      float power = pool.GetValue(416);
+      float total = pool.GetValue(417);
+      pool.SetValue(3648, total);
+      pool.SetValue(3649, inverse);
+      AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
+      AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
+      tl::ascend::pv_sqrt(pool[3648], pool[3648], pool[3648], 2);
+      AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
+      AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
+      float af = ((pool.GetValue(3648) * power) * 1.001000e+00f);
+      float yf = ((pool.GetValue(3649) / power) * 1.001000e+00f);
+      float cutoff = max((pool.GetValue(3648) * rtol), (atol / power));
+      if (((inverse <= 0.000000e+00f) || (8.100000e+01f <= ((inverse * cutoff) * cutoff))) || (1.000000e+16f <= (inverse * total))) {
+        valid = 0;
+      }
+      refine = 0;
+      if ((valid != 0) && (3.600000e+09f <= (inverse * total))) {
+        refine = 1;
+      }
+      sy = 1.000000e+00f;
+      float sa = (power * 8.000000e+00f);
+      if (refine != 0) {
+        float peak = peak_cached;
+        if ((peak <= 0.000000e+00f) || (1.000000e+20f <= peak)) {
+          refine = 0;
+          valid = 0;
+        }
+        if (refine != 0) {
+          while (1) {
+            if (!((sy < (peak * 4.000000e+00f)))) { break; }
+            sy = (sy * 2.000000e+00f);
+          }
+          while (1) {
+            if (!(((0.000000e+00f < peak) && ((peak * 4.000000e+00f) <= (sy * 5.000000e-01f))))) { break; }
+            sy = (sy * 5.000000e-01f);
+          }
+          tl::ascend::fr_quant(W[0], W[0], W[0], ((batch * 8192) + (((((batch * n) * stride) + 63) / 64) * 128)), 0, (((n * n) * 5) / 4), (((((n * n) * 27) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2)), (blocks * 2), n, job, sa, sy);
+        }
+      }
+      if (bid == 0) {
+        pool.SetValue(3584, ((float)refine));
+        AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(0);
+        AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(0);
+        tl::ascend::pv_store_rows(S[(job * 512)], pool[3584], S[(job * 512)], 1, 8, 0, 0);
+      }
+      if (refine != 0) {
+        if (bid == 0) {
+          pool.SetValue(3600, ((float)job));
+          AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(0);
+          AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(0);
+          tl::ascend::pv_store_rows(S[(batch * 512)], pool[3600], S[(batch * 512)], 1, 16, 0, 0);
+        }
+        tl::ascend::pv_sync_all(W[0], W[0], W[0]);
+        tl::ascend::pv_cross_set2(W[0], W[0], W[0], 8);
+        tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 10);
+        tl::ascend::pv_sync_all(W[0], W[0], W[0]);
+      }
+      if (refine != 0) {
+        tl::ascend::fr_decode(W[0], W[0], W[0], ((batch * 8192) + (((((batch * n) * stride) + 63) / 64) * 128)), (((n * n) * 5) / 2), (((n * n) * 25) + (((n * n) * 5) / 2)), (((n * n) * 26) + (((n * n) * 5) / 2)), ((((n * n) * 26) + ((n * n) / 2)) + (((n * n) * 5) / 2)), (blocks * 2), n, job, sa, sy);
+        tl::ascend::fr_norms(W[0], W[0], W[0], ((batch * 8192) + (((((batch * n) * stride) + 63) / 64) * 128)), (((n * n) * 25) + (((n * n) * 5) / 2)), ((((n * n) * 27) + (((n * n) / 2) * 2)) + (((n * n) * 5) / 2)), (blocks * 2), n);
+      }
+      if (refine != 0) {
+        tl::ascend::pv_sync_all(W[0], W[0], W[0]);
+        tl::ascend::pv_cross_set2(W[0], W[0], W[0], 8);
+        tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 10);
+        tl::ascend::pv_sync_all(W[0], W[0], W[0]);
+      }
+      if (refine != 0) {
+        tl::ascend::fr_certify(W[0], W[0], W[0], ((batch * 8192) + (((((batch * n) * stride) + 63) / 64) * 128)), ((((n * n) * 26) + (((n * n) / 2) * 2)) + (((n * n) * 5) / 2)), ((((n * n) * 27) + (((n * n) / 2) * 2)) + (((n * n) * 5) / 2)), (((((n * n) * 27) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2)), ((job * 512) + 32), (blocks * 2), n, job, sa, sy, af, yf);
+        tl::ascend::pv_sync_all(W[0], W[0], W[0]);
+        tl::ascend::pv_load_rows(pool[0], S[((job * 512) + 32)], pool[0], 1, (blocks * 16), 0, 0);
+        AscendC::SetFlag<AscendC::HardEvent::MTE2_S>(0);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE2_S>(0);
+        corrected = 0.000000e+00f;
+        for (int32_t c_1 = 0; c_1 < (blocks * 2); ++c_1) {
+          if (pool.GetValue((((int64_t)c_1) * (int64_t)8)) < 5.000000e-01f) {
+            valid = 0;
+          }
+          corrected = (corrected + pool.GetValue(((((int64_t)c_1) * (int64_t)8) + (int64_t)1)));
+        }
+        float absolute_cutoff = max((af * rtol), atol);
+        if (8.100000e+01f <= ((corrected * absolute_cutoff) * absolute_cutoff)) {
+          valid = 0;
+        }
+      }
+      if ((valid == 0) && (fallback_enabled != 0)) {
+        tl::ascend::pv_sync_all(W[0], W[0], W[0]);
+        if (bid == job) {
+          tl::ascend::fr_fallback(W[0], W[0], W[0], (((((((batch * 8224) + (((((batch * n) * stride) + 63) / 64) * 128)) + (blocks * 32)) + ((n * n) * 27)) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2)), blocks, job, n, batch, atol, rtol);
+          tl::ascend::pc_invalidate(W[((((((((batch * 8224) + (((((batch * n) * stride) + 63) / 64) * 128)) + (job * 32)) + (blocks * 32)) + ((n * n) * 27)) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2))], W[((((((((batch * 8224) + (((((batch * n) * stride) + 63) / 64) * 128)) + (job * 32)) + (blocks * 32)) + ((n * n) * 27)) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2))], W[((((((((batch * 8224) + (((((batch * n) * stride) + 63) / 64) * 128)) + (job * 32)) + (blocks * 32)) + ((n * n) * 27)) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2))]);
+        }
+        tl::ascend::pv_sync_all(W[0], W[0], W[0]);
+        tl::ascend::pv_load_rows(pool[3616], W[((((((((batch * 8224) + (((((batch * n) * stride) + 63) / 64) * 128)) + (job * 32)) + (blocks * 32)) + ((n * n) * 27)) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2))], pool[3616], 1, 8, 0, 0);
+        AscendC::SetFlag<AscendC::HardEvent::MTE2_S>(0);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE2_S>(0);
+        valid = ((int32_t)pool.GetValue(3616));
+      }
+      if (bid == 0) {
+        pool.SetValue(3616, ((float)valid));
+        AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(0);
+        AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(0);
+        tl::ascend::pv_store_rows(S[((job * 512) + 16)], pool[3616], S[((job * 512) + 16)], 1, 8, 0, 0);
+      }
+      tl::ascend::pv_sync_all(W[0], W[0], W[0]);
+    }
+    if (bid == 0) {
+      pool.SetValue(3600, -1.000000e+00f);
+      AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(0);
+      AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(0);
+      tl::ascend::pv_store_rows(S[(batch * 512)], pool[3600], S[(batch * 512)], 1, 16, 0, 0);
+    }
+    tl::ascend::pv_sync_all(W[0], W[0], W[0]);
+    tl::ascend::pv_cross_set2(W[0], W[0], W[0], 8);
+    tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 10);
+    tl::ascend::pv_sync_all(W[0], W[0], W[0]);
+    pipe.Destroy();
+  }
+  AscendC::PipeBarrier<PIPE_ALL>();
+}
+
+__aicore__ inline void PvStageBlock( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_ADDR W_handle,  GM_ADDR S_handle, int32_t blocks, int32_t n, int32_t batch, int32_t stride, int32_t window, float atol, float rtol, int32_t fallback_enabled, uint64_t fftsAddr) {
+
+  AscendC::GlobalTensor<float> A;
+  A.SetGlobalBuffer((__gm__ float*)A_handle);
+  AscendC::GlobalTensor<float> X;
+  X.SetGlobalBuffer((__gm__ float*)X_handle);
+  AscendC::GlobalTensor<float> W;
+  W.SetGlobalBuffer((__gm__ float*)W_handle);
+  AscendC::GlobalTensor<float> S;
+  S.SetGlobalBuffer((__gm__ float*)S_handle);
+
+  auto bid = AscendC::GetBlockIdx();
+  if ASCEND_IS_AIV {
+    }
+  int blocked = 0;
+  int running = 0;
+  float inverse = 0.000000e+00f;
+  float peak_cached = 0.000000e+00f;
+  int valid = 0;
+  int refine = 0;
+  float sy = 0.000000e+00f;
+  float corrected = 0.000000e+00f;
+  auto vid = AscendC::GetSubBlockIdx();
+  blocked = 1;
   if (blocked != 0) {
     tl::ascend::bf_block(A[0], X[0], W[0], blocks, n, batch);
   }
