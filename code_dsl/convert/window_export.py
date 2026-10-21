@@ -8,6 +8,7 @@ from code_dsl.convert.native_source import native_source
 from code_dsl.convert.stage_export import export_stage
 from code_dsl.convert.export import CMAKE_FILES
 from code_dsl.convert.window_layout import CPP
+from code_dsl.op_host.block_schedule import CPP as BLOCK_CPP
 from tests.common.provenance import require_mock_path_acceptance
 
 DECLARATION='extern "C" __global__ __aicore__ void linalg_pinv_tilelang_kernel('
@@ -172,12 +173,15 @@ def export_window(args,native,current,acceptance):
     if text.count(needle)!=1:raise ValueError('unexpected host planning')
     text=text.replace(needle,addition+needle,1)
     text=text.replace('#include "../op_kernel/pinv_dsl_workspace.h"\n','')
+    launch='        context->SetBlockDim(context->GetBlockDim()/2);\n'
+    if text.count(launch)!=1:raise ValueError('unexpected Cube grid planning')
+    text=text.replace(launch,'        context->SetBlockDim(pinv_dsl::BlockLaunch(t->cols,t->stride,t->batch,t->local,context->GetBlockDim()/2));\n',1)
     host.write_text(text)
     # Place the shared workspace ABI beside the existing shape contract.
     workspace=destination/'op_kernel/pinv_dsl_workspace.h'
     fragment=workspace.read_text().replace('#pragma once\n','').replace('#include "pinv_contract.h"\n','')
     contract=destination/'op_kernel/pinv_contract.h'
-    contract.write_text(contract.read_text()+'\n'+fragment+'\n'+CPP)
+    contract.write_text(contract.read_text()+'\n'+fragment+'\n'+CPP+BLOCK_CPP)
     workspace.unlink()
     # Keep generated strategies separate within the official file budget.
     # Expand this shared native class-method fragment at its include sites.
