@@ -241,7 +241,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     }
     uint32_t CUBE=WINDOW && t->cols%32==0 && (t->cols+context->GetBlockDim()-1)/context->GetBlockDim()<=8 && context->GetBlockDim()%2==0;
     if(CUBE){
-        context->SetBlockDim(context->GetBlockDim()/2);
+        context->SetBlockDim(pinv_dsl::BlockLaunch(t->cols,t->stride,t->batch,t->local,context->GetBlockDim()/2));
         matmul_tiling::MatmulApiTiling mt(platform);
         using P=matmul_tiling::TPosition;using F=matmul_tiling::CubeFormat;using D=matmul_tiling::DataType;
         mt.SetAType(P::GM,F::ND,D::DT_INT8,false);mt.SetBType(P::GM,F::ND,D::DT_INT8,false);
