@@ -53,11 +53,11 @@ def window_recovery_kernel(component_source):
        emit('fr_bind',A.access_ptr('r'),X.access_ptr('rw'),W.access_ptr('rw'))
        if blocked!=0:
         emit('bf_pack',W.access_ptr('rw'),blocks,n,batch)
-        emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10);emit('pv_sync_all',W.access_ptr('rw'))
+        emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10)
         emit('bf_decode',W.access_ptr('rw'),blocks,n,batch)
-        emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10);emit('pv_sync_all',W.access_ptr('rw'))
+        emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10)
         emit('bf_accumulate',W.access_ptr('rw'),blocks,n,batch)
-        emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10);emit('pv_sync_all',W.access_ptr('rw'))
+        emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10)
         emit('bf_finish',W.access_ptr('rw'),blocks,n,batch,stride)
        else:
         if use_prepared(n,stride,batch,blocks,window):
@@ -109,12 +109,12 @@ def window_recovery_kernel(component_source):
           pool[3600]=T.Cast('float32',job)
           T.set_flag('S','MTE3',0);T.wait_flag('S','MTE3',0)
           emit('pv_store_rows',S.access_ptr('w',offset=batch*512),pool.access_ptr('r',offset=3600),1,16,0,0)
-         emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10);emit('pv_sync_all',W.access_ptr('rw'))
+         emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10)
         if refine!=0:
          emit('fr_decode',W.access_ptr('rw'),off,pr,rr,yh,rh,cores,n,job,sa,sy)
          emit('fr_norms',W.access_ptr('rw'),off,rr,pa,cores,n)
         if refine!=0:
-         emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10);emit('pv_sync_all',W.access_ptr('rw'))
+         emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10)
         if refine!=0:
          emit('fr_certify',W.access_ptr('rw'),off,co,pa,qn,job*512+32,cores,n,job,sa,sy,af,yf)
          emit('pv_sync_all',W.access_ptr('rw'))
@@ -140,11 +140,10 @@ def window_recovery_kernel(component_source):
          pool[3616]=T.Cast('float32',valid)
          T.set_flag('S','MTE3',0);T.wait_flag('S','MTE3',0)
          emit('pv_store_rows',S.access_ptr('w',offset=job*512+16),pool.access_ptr('r',offset=3616),1,8,0,0)
-        emit('pv_sync_all',W.access_ptr('rw'))
        if bid==0:
         pool[3600]=T.float32(-1)
         T.set_flag('S','MTE3',0);T.wait_flag('S','MTE3',0)
         emit('pv_store_rows',S.access_ptr('w',offset=batch*512),pool.access_ptr('r',offset=3600),1,16,0,0)
-       emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10);emit('pv_sync_all',W.access_ptr('rw'))
+       emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10)
       T.barrier_all()
     return kernel.with_attr("pinv.strategy","window_cube").with_attr("pinv.complete_continuation",True).with_attr("pinv.component_source.sha256",sha256(header.encode()).hexdigest()).with_attr("pinv.jit.optimization_level",3)

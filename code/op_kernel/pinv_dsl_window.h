@@ -2225,17 +2225,14 @@ __aicore__ inline void PvStageWindow( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_A
       tl::ascend::pv_sync_all(W[0], W[0], W[0]);
       tl::ascend::pv_cross_set2(W[0], W[0], W[0], 8);
       tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 10);
-      tl::ascend::pv_sync_all(W[0], W[0], W[0]);
       tl::ascend::bf_decode(W[0], W[0], W[0], blocks, n, batch);
       tl::ascend::pv_sync_all(W[0], W[0], W[0]);
       tl::ascend::pv_cross_set2(W[0], W[0], W[0], 8);
       tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 10);
-      tl::ascend::pv_sync_all(W[0], W[0], W[0]);
       tl::ascend::bf_accumulate(W[0], W[0], W[0], blocks, n, batch);
       tl::ascend::pv_sync_all(W[0], W[0], W[0]);
       tl::ascend::pv_cross_set2(W[0], W[0], W[0], 8);
       tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 10);
-      tl::ascend::pv_sync_all(W[0], W[0], W[0]);
       tl::ascend::bf_finish(W[0], W[0], W[0], blocks, n, batch, stride);
     } else {
       if (((((((2 < ((blocks * 2) / batch)) && ((n % 16) == 0)) && (0 < window)) && ((window % 16) == 0)) && (((((((((n + 63) / 64) * 320) + (((n + 7) / 8) * 136)) + (max(((((n - 1) / max((((blocks * 2) / batch) - 2), 1)) / 8) + 1), 2) * 64)) + ((((n - 1) / max((((blocks * 2) / batch) - 2), 1)) / 8) * 8)) + max((max(((((n - 1) / max((((blocks * 2) / batch) - 2), 1)) + 1) * ((n + 7) / 8)), 64) * 8), ((((((n - 1) / max((((blocks * 2) / batch) - 2), 1)) / 8) * 1024) + (((n - 1) / max((((blocks * 2) / batch) - 2), 1)) * 16)) + 1296))) + ((((n - 1) / max((((blocks * 2) / batch) - 2), 1)) + 1) * stride)) <= 48712)) && (((((((n + 63) / 64) * 192) + (((n + 7) / 8) * 80)) + (((n + 15) / 16) * 64)) + (n * window)) <= 44416)) && (window < ((((n - 1) / max((((blocks * 2) / batch) - 1), 1)) * 4) + 4))) {
@@ -2314,7 +2311,6 @@ __aicore__ inline void PvStageWindow( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_A
         tl::ascend::pv_sync_all(W[0], W[0], W[0]);
         tl::ascend::pv_cross_set2(W[0], W[0], W[0], 8);
         tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 10);
-        tl::ascend::pv_sync_all(W[0], W[0], W[0]);
       }
       if (refine != 0) {
         tl::ascend::fr_decode(W[0], W[0], W[0], ((batch * 8192) + (((((batch * n) * stride) + 63) / 64) * 128)), (((n * n) * 5) / 2), (((n * n) * 25) + (((n * n) * 5) / 2)), (((n * n) * 26) + (((n * n) * 5) / 2)), ((((n * n) * 26) + ((n * n) / 2)) + (((n * n) * 5) / 2)), (blocks * 2), n, job, sa, sy);
@@ -2324,7 +2320,6 @@ __aicore__ inline void PvStageWindow( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_A
         tl::ascend::pv_sync_all(W[0], W[0], W[0]);
         tl::ascend::pv_cross_set2(W[0], W[0], W[0], 8);
         tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 10);
-        tl::ascend::pv_sync_all(W[0], W[0], W[0]);
       }
       if (refine != 0) {
         tl::ascend::fr_certify(W[0], W[0], W[0], ((batch * 8192) + (((((batch * n) * stride) + 63) / 64) * 128)), ((((n * n) * 26) + (((n * n) / 2) * 2)) + (((n * n) * 5) / 2)), ((((n * n) * 27) + (((n * n) / 2) * 2)) + (((n * n) * 5) / 2)), (((((n * n) * 27) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2)), ((job * 512) + 32), (blocks * 2), n, job, sa, sy, af, yf);
@@ -2362,7 +2357,6 @@ __aicore__ inline void PvStageWindow( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_A
         AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(0);
         tl::ascend::pv_store_rows(S[((job * 512) + 16)], pool[3616], S[((job * 512) + 16)], 1, 8, 0, 0);
       }
-      tl::ascend::pv_sync_all(W[0], W[0], W[0]);
     }
     if (bid == 0) {
       pool.SetValue(3600, -1.000000e+00f);
@@ -2373,7 +2367,6 @@ __aicore__ inline void PvStageWindow( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_A
     tl::ascend::pv_sync_all(W[0], W[0], W[0]);
     tl::ascend::pv_cross_set2(W[0], W[0], W[0], 8);
     tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 10);
-    tl::ascend::pv_sync_all(W[0], W[0], W[0]);
     pipe.Destroy();
   }
   AscendC::PipeBarrier<PIPE_ALL>();
