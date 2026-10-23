@@ -492,7 +492,6 @@ __aicore__ inline void PvDslPipelineRows( GM_ADDR A_handle,  GM_ADDR X_handle,  
           float reciprocal = pool.GetValue(((meta + (uint32_t)16) + column_1));
           tl::ascend::pv_scale(pool[(packets + (column_1 * packet_stride))], pool[(packets + (column_1 * packet_stride))], pool[(packets + (column_1 * packet_stride))], reciprocal, packet_stride);
           if ((column_1 + (uint32_t)1) < rows) {
-            tl::ascend::pv_scale(pool[product], pool[product], pool[product], -1.000000e+00f, 16);
             tl::ascend::pv_brcb_rows(pool[factors], pool[product], pool[factors], 16, 8);
             for (uint32_t chunk_1 = (uint32_t)0; chunk_1 < (((packet_stride + (uint32_t)64) - (uint32_t)1) / (uint32_t)64); ++chunk_1) {
               uint32_t col = (chunk_1 * (uint32_t)64);
@@ -503,7 +502,7 @@ __aicore__ inline void PvDslPipelineRows( GM_ADDR A_handle,  GM_ADDR X_handle,  
         for (uint32_t column_2 = (uint32_t)0; column_2 < rows; ++column_2) {
           int32_t selected_1 = ((int32_t)pool.GetValue((meta + column_2)));
           if ((((uint32_t)selected_1) % cores) == core) {
-            tl::ascend::pv_copy(pool[(((((uint32_t)selected_1) / cores) * stride) + first)], pool[(packets + (column_2 * packet_stride))], pool[(((((uint32_t)selected_1) / cores) * stride) + first)], packet_stride);
+            tl::ascend::pv_scale(pool[(((((uint32_t)selected_1) / cores) * stride) + first)], pool[(packets + (column_2 * packet_stride))], pool[(((((uint32_t)selected_1) / cores) * stride) + first)], -1.000000e+00f, packet_stride);
           }
           tl::ascend::pv_gather_offsets(pool[vector], pool[0], pool[row_indices], ((first + column_2) * (uint32_t)4), factor_rows);
           if ((((uint32_t)selected_1) % cores) == core) {
@@ -513,7 +512,6 @@ __aicore__ inline void PvDslPipelineRows( GM_ADDR A_handle,  GM_ADDR X_handle,  
             AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
             AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
           }
-          tl::ascend::pv_scale(pool[vector], pool[vector], pool[vector], -1.000000e+00f, factor_rows);
           tl::ascend::pv_brcb_rows(pool[factors], pool[vector], pool[factors], factor_rows, 8);
           uint32_t pivot_column = (first + column_2);
           bool consumed = (((pivot_column % (uint32_t)8) == (uint32_t)7) || ((pivot_column + (uint32_t)1) == n));
@@ -843,7 +841,7 @@ __aicore__ inline void PvDslPipelinePeer( GM_ADDR A_handle,  GM_ADDR X_handle,  
             pool.SetValue((((int64_t)permutation) + ((int64_t)selected)), old);
           }
           pool.SetValue((((((int64_t)panel) * (int64_t)64) + ((int64_t)records)) + ((int64_t)pivot)), pool.GetValue((((int64_t)permutation) + ((int64_t)pivot))));
-          pool.SetValue(((((((int64_t)panel) * (int64_t)64) + ((int64_t)records)) + ((int64_t)pivot)) + (int64_t)16), (1.000000e+00f / divisor));
+          pool.SetValue(((((((int64_t)panel) * (int64_t)64) + ((int64_t)records)) + ((int64_t)pivot)) + (int64_t)16), (-1.000000e+00f / divisor));
           if (1 < remaining) {
             pool.SetValue(((((int64_t)vector) + ((int64_t)selected)) - ((int64_t)pivot)), 0.000000e+00f);
             tl::ascend::pv_copy(pool[scratch], pool[(selected * pitch)], pool[scratch], pitch);

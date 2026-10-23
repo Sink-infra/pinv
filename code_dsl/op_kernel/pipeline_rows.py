@@ -92,7 +92,7 @@ def make_pipeline_rows_macro(*, cache_peak=False):
                     reciprocal=pool[meta+16+column]
                     emit('pv_scale',pool.access_ptr('w',offset=packets+column*packet_stride),pool.access_ptr('r',offset=packets+column*packet_stride),reciprocal,packet_stride)
                     if column+1<rows:
-                        emit('pv_scale',pool.access_ptr('w',offset=product),pool.access_ptr('r',offset=product),T.float32(-1),16)
+                        # The scaled pivot row already carries the negation.
                         emit('pv_brcb_rows',pool.access_ptr('w',offset=factors),pool.access_ptr('r',offset=product),16,8)
                         for chunk in T.serial(T.ceildiv(packet_stride,64)):
                             col=chunk*64
@@ -100,13 +100,14 @@ def make_pipeline_rows_macro(*, cache_peak=False):
                 for column in T.serial(rows):
                     selected=T.Cast('int32',pool[meta+column])
                     if selected%cores==core:
-                        emit('pv_copy',pool.access_ptr('w',offset=(selected//cores)*stride+first),pool.access_ptr('r',offset=packets+column*packet_stride),packet_stride)
+                        # Restore the sign on the one row that is output
+                        # rather than used as an update operand.
+                        emit('pv_scale',pool.access_ptr('w',offset=(selected//cores)*stride+first),pool.access_ptr('r',offset=packets+column*packet_stride),T.float32(-1),packet_stride)
                     emit('pv_gather_offsets',pool.access_ptr('w',offset=vector),pool.access_ptr('r'),pool.access_ptr('r',offset=row_indices),(first+column)*4,factor_rows)
                     if selected%cores==core:
                         T.set_flag('V','S',0);T.wait_flag('V','S',0)
                         pool[vector+selected//cores]=T.float32(0)
                         T.set_flag('S','V',0);T.wait_flag('S','V',0)
-                    emit('pv_scale',pool.access_ptr('w',offset=vector),pool.access_ptr('r',offset=vector),T.float32(-1),factor_rows)
                     emit('pv_brcb_rows',pool.access_ptr('w',offset=factors),pool.access_ptr('r',offset=vector),factor_rows,8)
                     pivot_column=first+column
                     consumed=pivot_column%8==7 or pivot_column+1==n

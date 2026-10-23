@@ -156,7 +156,10 @@ def make_peer_producer_macro():
                         pool[permutation+pivot]=pool[permutation+selected]
                         pool[permutation+selected]=old
                     pool[records+panel*64+pivot]=pool[permutation+pivot]
-                    pool[records+panel*64+16+pivot]=T.float32(1)/divisor
+                    # Published with the sign this producer already applies
+                    # to its own panel column, so the consumers can drop
+                    # their multiplier negations.
+                    pool[records+panel*64+16+pivot]=T.float32(-1)/divisor
                     if remaining>1:
                         pool[vector+selected-pivot]=T.float32(0)
                         emit('pv_copy',pool.access_ptr('w',offset=scratch),pool.access_ptr('r',offset=selected*pitch),pitch)
