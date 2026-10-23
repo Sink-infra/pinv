@@ -1,0 +1,228 @@
+#pragma once
+#include "pinv_dsl_common.h"
+namespace tl::ascend {
+__aicore__ inline void BlockQuick( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADDR W_handle,  GM_ADDR S_handle, int32_t blocks, int32_t job, int32_t m, int32_t n, int32_t batch, float atol, float rtol, uint64_t fftsAddr) {
+  AscendC::TPipe pipe;
+
+  AscendC::GlobalTensor<float> A;
+  A.SetGlobalBuffer((__gm__ float*)A_handle);
+  AscendC::GlobalTensor<float> Y;
+  Y.SetGlobalBuffer((__gm__ float*)Y_handle);
+  AscendC::GlobalTensor<float> W;
+  W.SetGlobalBuffer((__gm__ float*)W_handle);
+  AscendC::GlobalTensor<float> S;
+  S.SetGlobalBuffer((__gm__ float*)S_handle);
+
+  AscendC::TBuf<AscendC::TPosition::VECCALC> ascend_ub; pipe.InitBuffer(ascend_ub, 77344);
+  auto cid = AscendC::GetBlockIdx();
+  if ASCEND_IS_AIV {
+    }
+  auto accepted = ascend_ub.GetWithOffset<int>(8, 0);
+  int count = 0;
+  int dma_pad = 0;
+  float condition = 0.000000e+00f;
+  int valid = 0;
+  auto pool = ascend_ub.GetWithOffset<float>(19136, 32);
+  float power = 0.000000e+00f;
+  uint32_t power_word = (uint32_t)0;
+  auto indices = ascend_ub.GetWithOffset<uint32_t>(64, 76576);
+  int previous = 0;
+  float recovered = 0.000000e+00f;
+  auto order = ascend_ub.GetWithOffset<uint32_t>(128, 76832);
+  int word = 0;
+  float metric = 0.000000e+00f;
+  float best = 0.000000e+00f;
+  int pivot = 0;
+  int consumed = 0;
+  int base = 0;
+  int active = 0;
+  float best_1 = 0.000000e+00f;
+  int pivot_1 = 0;
+  int consumed_1 = 0;
+  int base_1 = 0;
+  int active_1 = 0;
+  auto vid = AscendC::GetSubBlockIdx();
+  if ASCEND_IS_AIV {
+    accepted.SetValue(0, 0);
+    count = 5120;
+    dma_pad = 64;
+    condition = 1.000000e+30f;
+    valid = 1;
+    tl::ascend::pv_fill(pool[0], pool[0], pool[0], 0.000000e+00f, count);
+    AscendC::PipeBarrier<PIPE_V>();
+    AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(0);
+    AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(0);
+    tl::ascend::pv_load_rows(pool[0], A[(job * 4096)], pool[0], 64, 64, max((m - 64), 0), (80 - dma_pad), (bool)0);
+    AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(0);
+    AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(0);
+    tl::ascend::pv_abs(pool[8704], pool[0], pool[8704], count);
+    AscendC::PipeBarrier<PIPE_V>();
+    tl::ascend::pv_reduce_max(pool[19008], pool[8704], pool[18496], count);
+    AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
+    AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
+    float magnitude = pool.GetValue(19008);
+    if ((magnitude < 1.000000e-30f) || (1.701412e+38f <= magnitude)) {
+      valid = 0;
+    }
+    power = 1.000000e+00f;
+    if (valid != 0) {
+      power_word = (((*(uint32_t *)(&(magnitude))) + (uint32_t)8388607) & (uint32_t)2139095040);
+      power = (*(float *)(&(power_word)));
+      tl::ascend::pv_scale(pool[0], pool[0], pool[0], (1.000000e+00f / power), count);
+      AscendC::PipeBarrier<PIPE_V>();
+      tl::ascend::pv_mul(pool[8704], pool[0], pool[0], count);
+      AscendC::PipeBarrier<PIPE_V>();
+      tl::ascend::pv_reduce_sum(pool[19008], pool[8704], pool[18496], count);
+      AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
+      AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
+      float total = pool.GetValue(19008);
+      for (int32_t i = 0; i < 64; ++i) {
+        indices.SetValue(i, ((uint32_t)(i * 320)));
+      }
+      tl::ascend::pv_fill(pool[19040], pool[19040], pool[19040], 0.000000e+00f, 64);
+      AscendC::PipeBarrier<PIPE_V>();
+      tl::ascend::pv_mask_begin(pool[0], pool[0], pool[0], 64);
+      previous = 19105;
+      recovered = 0.000000e+00f;
+      AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
+      AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
+      for (int32_t pivot_tile = 0; pivot_tile < 64; ++pivot_tile) {
+        tl::ascend::pv_gather(pool[19040], pool[0], indices[0], (pivot_tile * 4), 64);
+        AscendC::PipeBarrier<PIPE_V>();
+        tl::ascend::pv_abs(pool[18432], pool[19040], pool[18432], 64);
+        AscendC::PipeBarrier<PIPE_V>();
+        tl::ascend::pv_mask_reduce(pool[19008], pool[18432], pool[19008]);
+        AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
+        AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
+        tl::ascend::pv_reduce_scalars(pool[0], pool[0], pool[0], best, pivot);
+        if (best <= 0.000000e+00f) {
+          valid = 0;
+          break;
+        }
+        tl::ascend::pv_mask_remove(pool[0], pool[0], pool[0], pivot);
+        order.SetValue(pivot, ((uint32_t)(pivot_tile * 4)));
+        order.SetValue((pivot_tile + 64), ((uint32_t)(pivot * 320)));
+        consumed = 0;
+        base = 0;
+        float divisor = pool.GetValue((((int64_t)pivot) + (int64_t)19040));
+        pool.SetValue(((((int64_t)pivot) * (int64_t)80) + ((int64_t)pivot_tile)), (divisor + 1.000000e+00f));
+        pool.SetValue(((((int64_t)previous) + ((int64_t)pivot_tile)) - (int64_t)1), recovered);
+        recovered = (-1.000000e+00f / divisor);
+        previous = (pivot * 80);
+        pool.SetValue((((int64_t)pivot) + (int64_t)19040), 0.000000e+00f);
+        AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
+        AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
+        active = 64;
+        if (consumed != 0) {
+          active = (active - 8);
+        }
+        tl::ascend::pv_scale(pool[((pivot * 80) + base)], pool[((pivot * 80) + base)], pool[((pivot * 80) + base)], (-1.000000e+00f / divisor), active);
+        tl::ascend::pv_brcb_rows(pool[17408], pool[19040], pool[17408], 64, 8);
+        AscendC::PipeBarrier<PIPE_V>();
+        tl::ascend::pv_mad_strided(pool[base], pool[((pivot * 80) + base)], pool[17408], 64, 64, 1, 1, 0, 10, 0, 1);
+        AscendC::PipeBarrier<PIPE_V>();
+      }
+      if (valid != 0) {
+        AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
+        AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
+        pool.SetValue((((int64_t)previous) + (int64_t)63), recovered);
+        AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
+        AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
+        tl::ascend::pv_fill(pool[8704], pool[8704], pool[8704], 0.000000e+00f, count);
+        AscendC::PipeBarrier<PIPE_V>();
+        tl::ascend::pv_square_padded_rows(pool[8704], pool[0], pool[8704], 64, 64, 80);
+        AscendC::PipeBarrier<PIPE_V>();
+        tl::ascend::pv_reduce_sum(pool[19008], pool[8704], pool[18496], count);
+        AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
+        AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
+        float inverse_total = pool.GetValue(19008);
+        condition = (total * inverse_total);
+        pool.SetValue(19008, total);
+        AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
+        AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
+        tl::ascend::pv_sqrt(pool[19008], pool[19008], pool[19008], 1);
+        AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
+        AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
+        if (inverse_total <= 0.000000e+00f) {
+          valid = 0;
+        } else {
+          tl::ascend::pv_scale(pool[0], pool[0], pool[0], (-1.000000e+00f / power), count);
+          AscendC::PipeBarrier<PIPE_V>();
+          AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
+          AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
+          tl::ascend::bl_index_brcb(pool[17408], order[64], pool[17408], 64);
+          AscendC::PipeBarrier<PIPE_V>();
+          tl::ascend::bl_index_matrix(pool[12800], pool[17408], order[0], 64, 64);
+          AscendC::PipeBarrier<PIPE_V>();
+          tl::ascend::bl_gather(pool[8704], pool[0], pool[12800], 4096);
+          AscendC::PipeBarrier<PIPE_V>();
+          AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(0);
+          AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(0);
+          tl::ascend::pv_store_rows(Y[(job * 4096)], pool[8704], Y[(job * 4096)], 64, 64, (64 - dma_pad), 0);
+          AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(0);
+          AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(0);
+          AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(0);
+          AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(0);
+        }
+      }
+    }
+    accepted.SetValue(0, valid);
+    accepted.SetValue(1, (*(int32_t *)(&(condition))));
+    S.SetValue((((int64_t)job) * (int64_t)32), ((float)accepted.GetValue(0)));
+    word = accepted.GetValue(1);
+    metric = (*(float *)(&(word)));
+    S.SetValue(((((int64_t)job) * (int64_t)32) + (int64_t)1), metric);
+  }
+  pipe.Destroy();
+}
+}
+
+#include "kernel_operator.h"
+namespace tl::ascend {
+template<class D,class A,class B> __aicore__ inline void br_cube_sync(D,A,B){AscendC::CrossCoreSetFlag<0,PIPE_FIX>(6);AscendC::CrossCoreWaitFlag<0,PIPE_MTE2>(6);}
+}
+
+namespace tl::ascend {
+__aicore__ inline void BlockRowGemm( GM_ADDR A_handle,  GM_ADDR P_handle,  GM_ADDR C_handle, int32_t blocks,  GM_ADDR shape_hint, int64_t inner, int64_t cols, int64_t batch, int64_t rows, uint64_t fftsAddr) {
+  AscendC::TPipe pipe;
+
+  AscendC::GlobalTensor<float> A;
+  A.SetGlobalBuffer((__gm__ float*)A_handle);
+  AscendC::GlobalTensor<float> P;
+  P.SetGlobalBuffer((__gm__ float*)P_handle);
+  AscendC::GlobalTensor<float> C;
+  C.SetGlobalBuffer((__gm__ float*)C_handle);
+  AscendC::GlobalTensor<uint8_t> ShapeHint;
+  ShapeHint.SetGlobalBuffer((__gm__ uint8_t*)shape_hint);
+
+  AscendC::TBuf<AscendC::TPosition::A2> ascend_l0a;
+  pipe.InitBuffer(ascend_l0a, 65536);
+  AscendC::TBuf<AscendC::TPosition::B2> ascend_l0b;
+  pipe.InitBuffer(ascend_l0b, 65536);
+  AscendC::TBuf<AscendC::TPosition::A1> ascend_l1; pipe.InitBuffer(ascend_l1, 524032);
+  AscendC::TBuf<AscendC::TPosition::CO1> ascend_l0c; pipe.InitBuffer(ascend_l0c, 131072);
+  AscendC::TBuf<AscendC::TPosition::VECCALC> ascend_ub; pipe.InitBuffer(ascend_ub, 196352);
+  auto bid = AscendC::GetBlockIdx();
+  if ASCEND_IS_AIV {
+    }
+  auto a = ascend_l1.GetWithOffset<float>(4096, 0);
+  auto b = ascend_l1.GetWithOffset<float>(16384, 16384);
+  auto c = ascend_l0c.GetWithOffset<float>(16384, 0);
+  auto vid = AscendC::GetSubBlockIdx();
+  if ASCEND_IS_AIC {
+    for (int32_t iteration = 0; iteration < (((((batch * (rows / 64)) * (cols / 256)) + blocks) - 1) / blocks); ++iteration) {
+      if ((bid + (iteration * blocks)) < ((batch * (rows / 64)) * (cols / 256))) {
+        tl::ascend::br_load_a_shape(a[0], A[((((((bid + (iteration * blocks)) / (cols / 256)) % (rows / 64)) * 64) + (((bid + (iteration * blocks)) / ((rows / 64) * (cols / 256))) * rows)) * inner)], a[0], inner, inner, 64);
+        tl::ascend::copy_gm_to_l1<float, 64, 256>(b[0], P[((((bid + (iteration * blocks)) % (cols / 256)) * 256) + ((((bid + (iteration * blocks)) / ((rows / 64) * (cols / 256))) * inner) * cols))], cols, ((64 <= (inner * (batch - ((bid + (iteration * blocks)) / ((rows / 64) * (cols / 256)))))) ? 64 : ((0 < (inner * (batch - ((bid + (iteration * blocks)) / ((rows / 64) * (cols / 256)))))) ? (inner * (batch - ((bid + (iteration * blocks)) / ((rows / 64) * (cols / 256))))) : 0)), ((1 <= ((cols / 256) - ((bid + (iteration * blocks)) % (cols / 256)))) ? 256 : ((0 < (cols - (((bid + (iteration * blocks)) % (cols / 256)) * 256))) ? (cols - (((bid + (iteration * blocks)) % (cols / 256)) * 256)) : 0)));
+        AscendC::PipeBarrier<PIPE_ALL>();
+        tl::ascend::gemm_v0<float, float, 64, 256, 64, false, false>(a[0], b[0], c[0], ascend_l0a, ascend_l0b, (bool)1);
+        AscendC::PipeBarrier<PIPE_ALL>();
+        tl::ascend::copy_l0c_to_gm<float, float, layout::RowMajor, 64, 256, 0>(C[((((bid + (iteration * blocks)) % (cols / 256)) * 256) + ((((((bid + (iteration * blocks)) / (cols / 256)) % (rows / 64)) * 64) + (((bid + (iteration * blocks)) / ((rows / 64) * (cols / 256))) * rows)) * cols))], c[0], cols, ((1 <= (((rows * (batch - ((bid + (iteration * blocks)) / ((rows / 64) * (cols / 256))))) / 64) - (((bid + (iteration * blocks)) / (cols / 256)) % (rows / 64)))) ? 64 : ((0 < ((rows * (batch - ((bid + (iteration * blocks)) / ((rows / 64) * (cols / 256))))) - ((((bid + (iteration * blocks)) / (cols / 256)) % (rows / 64)) * 64))) ? ((rows * (batch - ((bid + (iteration * blocks)) / ((rows / 64) * (cols / 256))))) - ((((bid + (iteration * blocks)) / (cols / 256)) % (rows / 64)) * 64)) : 0)), ((1 <= ((cols / 256) - ((bid + (iteration * blocks)) % (cols / 256)))) ? 256 : ((0 < (cols - (((bid + (iteration * blocks)) % (cols / 256)) * 256))) ? (cols - (((bid + (iteration * blocks)) % (cols / 256)) * 256)) : 0)));
+        AscendC::PipeBarrier<PIPE_ALL>();
+      }
+    }
+  }
+  pipe.Destroy();
+}
+}
+#define br_row_gemm(d,a,b,oa,ob,oc,bl,ba,m,k,n) BlockRowGemm((GM_ADDR)(d.GetPhyAddr()+oa),(GM_ADDR)(d.GetPhyAddr()+ob),(GM_ADDR)(d.GetPhyAddr()+oc),bl,(GM_ADDR)d.GetPhyAddr(),k,n,ba,m,fftsAddr)

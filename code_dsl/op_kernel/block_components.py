@@ -20,6 +20,7 @@ def append_block(root,lower,digest):
  from code_dsl.op_kernel.local import _make_quick_schedule
  from code_dsl.op_kernel.block_local import quick_kernel
  from code_dsl.op_kernel.block_gemm import block_gemm
+ from code_dsl.op_kernel.block_row_gemm import row_gemm
  from code_dsl.op_kernel.block_inverse import raw_kernel
  from code_dsl.op_kernel.block_continuation import pack_kernel,decode_kernel,finish_kernel,accumulate_kernel
  from code_dsl.op_kernel.block_products import product_kernel
@@ -31,17 +32,19 @@ def append_block(root,lower,digest):
  header=instructions+'\nusing uint=unsigned int;using uchar=unsigned char;using ushort=unsigned short;\n'
  def add(name,function,**kwargs):
   source=lower(name,function,**kwargs)
-  symbol={'block_quick':'BlockQuick','block_gemm':'BlockGemm','block_pack':'BlockPack','block_product':'BlockProduct','block_decode':'BlockDecode','block_finish':'BlockFinish','block_accumulate':'BlockAccumulate'}[name]
+  symbol={'block_quick':'BlockQuick','block_gemm':'BlockGemm','block_row_gemm':'BlockRowGemm','block_pack':'BlockPack','block_product':'BlockProduct','block_decode':'BlockDecode','block_finish':'BlockFinish','block_accumulate':'BlockAccumulate'}[name]
   body=adapt(source,symbol)
   records[name]={'source_sha256':sha256(source.encode()).hexdigest(),'callable_body_sha256':sha256(body[body.index('{'):].encode()).hexdigest()}
   return source,body
  quick_source,quick=add('block_quick',quick_kernel())
  gemm_source,gemm=add('block_gemm',block_gemm(),cube=True)
- header+='namespace tl::ascend {\n'+quick+'\n'+gemm+'\n}\n'
+ row_source,row=add('block_row_gemm',row_gemm(),cube=True)
+ header+='namespace tl::ascend {\n'+quick+'\n'+gemm+'\n'+row+'\n}\n'
  header+="""
 #define br_quick_strided(d,a,b,ca,ci,so,bl,pitch) BlockQuick((GM_ADDR)(d.GetPhyAddr()+ca),(GM_ADDR)(d.GetPhyAddr()+ci),(GM_ADDR)d.GetPhyAddr(),(GM_ADDR)(d.GetPhyAddr()+so),bl,0,pitch,64,1,0.0f,0.0f,fftsAddr),tl::ascend::FrRestorePipe(&pipe)
 #define br_quick(d,a,b,ca,ci,so,bl,job,ba) BlockQuick((GM_ADDR)(d.GetPhyAddr()+ca),(GM_ADDR)(d.GetPhyAddr()+ci),(GM_ADDR)d.GetPhyAddr(),(GM_ADDR)(d.GetPhyAddr()+so),bl,job,64,64,ba,0.0f,0.0f,fftsAddr),tl::ascend::FrRestorePipe(&pipe)
 #define br_gemm(d,a,b,oa,ob,oc,bl,ba,m,k,n) BlockGemm((GM_ADDR)(d.GetPhyAddr()+oa),(GM_ADDR)(d.GetPhyAddr()+ob),(GM_ADDR)(d.GetPhyAddr()+oc),bl,(GM_ADDR)d.GetPhyAddr(),k,n,ba,m,fftsAddr)
+#define br_row_gemm(d,a,b,oa,ob,oc,bl,ba,m,k,n) BlockRowGemm((GM_ADDR)(d.GetPhyAddr()+oa),(GM_ADDR)(d.GetPhyAddr()+ob),(GM_ADDR)(d.GetPhyAddr()+oc),bl,(GM_ADDR)d.GetPhyAddr(),k,n,ba,m,fftsAddr)
 """
  standalone=instruction_source()+'\n'+(op/'parallel_instructions.h').read_text()+'\n'+(op/'recovery_bindings.h').read_text()+'\n'+header
  destination=root/'components/block_raw';destination.mkdir(parents=True,exist_ok=False)
@@ -74,7 +77,7 @@ def append_block(root,lower,digest):
  callback('block_pack',pack_kernel(instructions),'bf_pack','bl,n,ba',dict(shared,A_handle='(GM_ADDR)fr.input.GetPhyAddr()',Y_handle='(GM_ADDR)fr.output.GetPhyAddr()',AH_handle=ptr('2*'+all),YH_handle=ptr('3*'+all),YN_handle=ptr('8*'+all),S_handle='(GM_ADDR)fr.status.GetPhyAddr()'))
  callback('block_product',product_kernel(),'bf_product','bl,n,ba',dict(shared,A_handle=ptr('2*'+all),Y_handle=ptr('3*'+all),P_handle=ptr('4*'+all)),cube=True)
  callback('block_decode',decode_kernel(instructions),'bf_decode','bl,n,ba',dict(shared,P_handle=ptr('4*'+all),R_handle=ptr('9*'+all)))
- callback('block_finish',finish_kernel(instructions),'bf_finish','bl,n,ba,st',dict(shared,A_handle='(GM_ADDR)fr.input.GetPhyAddr()',Y_handle='(GM_ADDR)fr.output.GetPhyAddr()',W_handle='(GM_ADDR)d.GetPhyAddr()',S_handle='(GM_ADDR)fr.status.GetPhyAddr()',stride='st'))
+ callback('block_finish',finish_kernel(instructions),'bf_finish','bl,n,ba,st,at,rt',dict(shared,A_handle='(GM_ADDR)fr.input.GetPhyAddr()',Y_handle='(GM_ADDR)fr.output.GetPhyAddr()',W_handle='(GM_ADDR)d.GetPhyAddr()',S_handle='(GM_ADDR)fr.status.GetPhyAddr()',stride='st',atol='at',rtol='rt'))
  callback('block_accumulate',accumulate_kernel(instructions),'bf_accumulate','bl,n,ba',dict(shared,W_handle='(GM_ADDR)d.GetPhyAddr()'))
  header=BEGIN+header+END
  (root/'block_components.h').write_text(header)

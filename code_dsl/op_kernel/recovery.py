@@ -24,16 +24,15 @@ def window_recovery_kernel(component_source):
        emit('pv_sync_init',W.access_ptr('rw'))
        if blocked!=0:
         emit('pv_cross_wait2',W.access_ptr('rw'),8)
-        emit('br_gemm',W.access_ptr('rw'),2*batch*n*n,8*batch*n*n,4*batch*n*n,blocks,batch,n,n,n)
+        emit('br_gemm',W.access_ptr('rw'),11*batch*n*n,8*batch*n*n,4*batch*n*n,blocks,batch,n,n,n)
         T.barrier_all();emit('pc_done',W.access_ptr('rw'))
         # Third Neumann term prepared from the first residual: R1 = R0*R0 is
         # added into R0 on the Vector pipe, so the single correction product
         # below delivers Y0*(R0 + R0^2) and the residual becomes R0^3.
         emit('pv_cross_wait2',W.access_ptr('rw'),8)
-        emit('br_gemm',W.access_ptr('rw'),9*batch*n*n,9*batch*n*n,11*batch*n*n,blocks,batch,n,n,n)
-        T.barrier_all();emit('pc_done',W.access_ptr('rw'))
-        emit('pv_cross_wait2',W.access_ptr('rw'),8)
-        emit('br_gemm',W.access_ptr('rw'),8*batch*n*n,9*batch*n*n,10*batch*n*n,blocks,batch,n,n,n)
+        emit('br_gemm',W.access_ptr('rw'),9*batch*n*n,10*batch*n*n,11*batch*n*n,blocks,batch,n,n,n)
+        T.barrier_all();emit('br_cube_sync',W.access_ptr('rw'))
+        emit('br_gemm',W.access_ptr('rw'),8*batch*n*n,11*batch*n*n,10*batch*n*n,blocks,batch,n,n,n)
         T.barrier_all();emit('pc_done',W.access_ptr('rw'))
        running=T.alloc_var('int32');running=1
        while running!=0:
@@ -52,13 +51,10 @@ def window_recovery_kernel(component_source):
        T.reads(A[0],W[0],S[0]);T.writes(X[0],W[0],S[0])
        emit('fr_bind',A.access_ptr('r'),X.access_ptr('rw'),W.access_ptr('rw'))
        if blocked!=0:
-        emit('bf_pack',W.access_ptr('rw'),blocks,n,batch)
-        emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10);emit('pv_sync_all',W.access_ptr('rw'))
+        emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10);emit('pv_sync_all',W.access_ptr('rw'))
         emit('bf_decode',W.access_ptr('rw'),blocks,n,batch)
         emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10);emit('pv_sync_all',W.access_ptr('rw'))
-        emit('bf_accumulate',W.access_ptr('rw'),blocks,n,batch)
-        emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10);emit('pv_sync_all',W.access_ptr('rw'))
-        emit('bf_finish',W.access_ptr('rw'),blocks,n,batch,stride)
+        emit('bf_finish',W.access_ptr('rw'),blocks,n,batch,stride,atol,rtol)
        else:
         if use_prepared(n,stride,batch,blocks,window):
          emit('fr_prepared_raw',W.access_ptr('rw'),blocks,n,batch,stride,window,atol,rtol,off+qn+blocks*32)
@@ -66,80 +62,87 @@ def window_recovery_kernel(component_source):
          emit('fr_raw',W.access_ptr('rw'),blocks,n,batch,stride,window,atol,rtol,off+qn+blocks*32)
        cores=blocks*2
        group_size=cores//batch
-       for job in T.serial(batch):
-        metadata=2*batch*n*stride+job*8192
-        emit('pv_load_rows',pool.access_ptr('w'),W.access_ptr('r',offset=metadata+2048),1,group_size*8,0,0)
-        emit('pv_load_rows',pool.access_ptr('w',offset=384),W.access_ptr('r',offset=metadata),1,64,0,0)
-        T.set_flag('MTE2','S',0);T.wait_flag('MTE2','S',0)
-        inverse=T.alloc_var('float32');inverse=T.float32(0)
-        peak_cached=T.alloc_var('float32');peak_cached=T.float32(0)
-        valid=T.alloc_var('int32');valid=1
-        for c in T.serial(group_size):
-         if pool[c*8]<T.float32(.5):valid=0
-         inverse+=pool[c*8+1]
-         peak_cached=T.max(peak_cached,pool[c*8+2])
-        power=pool[416];total=pool[417]
-        pool[3648]=total;pool[3649]=inverse
-        T.set_flag('S','V',0);T.wait_flag('S','V',0)
-        emit('pv_sqrt',pool.access_ptr('w',offset=3648),pool.access_ptr('r',offset=3648),2)
-        T.set_flag('V','S',0);T.wait_flag('V','S',0)
-        af=pool[3648]*power*T.float32(1.001);yf=pool[3649]/power*T.float32(1.001)
-        cutoff=T.max(pool[3648]*rtol,atol/power)
-        if not (inverse>T.float32(0) and inverse*cutoff*cutoff<T.float32(81) and inverse*total<T.float32(1e16)):valid=0
-        refine=T.alloc_var('int32');refine=0
-        # The block strategy now delivers the R0^3 residual through its own
-        # Cube correction, so exact digit recovery is reserved for inputs the
-        # Frobenius gate itself cannot admit.
-        if valid!=0 and inverse*total>=T.float32(1e15):refine=1
-        sy=T.alloc_var('float32');sy=T.float32(1)
-        sa=power*T.float32(8)
-        if refine!=0:
-         peak=peak_cached
-         if not (peak>T.float32(0) and peak<T.float32(1e20)):refine=0;valid=0
-         if refine!=0:
-          while sy<peak*T.float32(4):sy*=T.float32(2)
-          while peak>T.float32(0) and sy*T.float32(.5)>=peak*T.float32(4):sy*=T.float32(.5)
-          emit('fr_quant',W.access_ptr('rw'),off,qa,qy,qn,cores,n,job,sa,sy)
-        if bid==0:
-         pool[3584]=T.Cast('float32',refine)
-         T.set_flag('S','MTE3',0);T.wait_flag('S','MTE3',0)
-         emit('pv_store_rows',S.access_ptr('w',offset=job*512),pool.access_ptr('r',offset=3584),1,8,0,0)
-        if refine!=0:
-         if bid==0:
-          pool[3600]=T.Cast('float32',job)
-          T.set_flag('S','MTE3',0);T.wait_flag('S','MTE3',0)
-          emit('pv_store_rows',S.access_ptr('w',offset=batch*512),pool.access_ptr('r',offset=3600),1,16,0,0)
-         emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10)
-        if refine!=0:
-         emit('fr_decode',W.access_ptr('rw'),off,pr,rr,yh,rh,cores,n,job,sa,sy)
-         emit('fr_norms',W.access_ptr('rw'),off,rr,pa,cores,n)
-        if refine!=0:
-         emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10)
-        if refine!=0:
-         emit('fr_certify',W.access_ptr('rw'),off,co,pa,qn,job*512+32,cores,n,job,sa,sy,af,yf)
-         emit('pv_sync_all',W.access_ptr('rw'))
-         emit('pv_load_rows',pool.access_ptr('w'),S.access_ptr('r',offset=job*512+32),1,cores*8,0,0)
+       all_admitted=T.alloc_var('int32');all_admitted=0
+       if blocked!=0:
+        all_admitted=1
+        for job in T.serial(batch):
+         emit('pc_invalidate',S.access_ptr('rw',offset=job*512+16))
+         if not S[job*512+16]>T.float32(.5):all_admitted=0
+       if all_admitted==0:
+        for job in T.serial(batch):
+         metadata=2*batch*n*stride+job*8192
+         emit('pv_load_rows',pool.access_ptr('w'),W.access_ptr('r',offset=metadata+2048),1,group_size*8,0,0)
+         emit('pv_load_rows',pool.access_ptr('w',offset=384),W.access_ptr('r',offset=metadata),1,64,0,0)
          T.set_flag('MTE2','S',0);T.wait_flag('MTE2','S',0)
-         corrected=T.alloc_var('float32');corrected=T.float32(0)
-         for c in T.serial(cores):
+         inverse=T.alloc_var('float32');inverse=T.float32(0)
+         peak_cached=T.alloc_var('float32');peak_cached=T.float32(0)
+         valid=T.alloc_var('int32');valid=1
+         for c in T.serial(group_size):
           if pool[c*8]<T.float32(.5):valid=0
-          corrected+=pool[c*8+1]
-         absolute_cutoff=T.max(af*rtol,atol)
-         if not corrected*absolute_cutoff*absolute_cutoff<T.float32(81):valid=0
-        if valid==0 and fallback_enabled!=0:
-         emit('pv_sync_all',W.access_ptr('rw'))
-         fallback_status=off+qn+cores*16+batch*32
-         if bid==job:
-          emit('fr_fallback',W.access_ptr('rw'),fallback_status,blocks,job,n,batch,atol,rtol)
-          emit('pc_invalidate',W.access_ptr('rw',offset=fallback_status+job*32))
-         emit('pv_sync_all',W.access_ptr('rw'))
-         emit('pv_load_rows',pool.access_ptr('w',offset=3616),W.access_ptr('r',offset=fallback_status+job*32),1,8,0,0)
-         T.set_flag('MTE2','S',0);T.wait_flag('MTE2','S',0)
-         valid=T.Cast('int32',pool[3616])
-        if bid==0:
-         pool[3616]=T.Cast('float32',valid)
-         T.set_flag('S','MTE3',0);T.wait_flag('S','MTE3',0)
-         emit('pv_store_rows',S.access_ptr('w',offset=job*512+16),pool.access_ptr('r',offset=3616),1,8,0,0)
+          inverse+=pool[c*8+1]
+          peak_cached=T.max(peak_cached,pool[c*8+2])
+         power=pool[416];total=pool[417]
+         pool[3648]=total;pool[3649]=inverse
+         T.set_flag('S','V',0);T.wait_flag('S','V',0)
+         emit('pv_sqrt',pool.access_ptr('w',offset=3648),pool.access_ptr('r',offset=3648),2)
+         T.set_flag('V','S',0);T.wait_flag('V','S',0)
+         af=pool[3648]*power*T.float32(1.001);yf=pool[3649]/power*T.float32(1.001)
+         cutoff=T.max(pool[3648]*rtol,atol/power)
+         if not (inverse>T.float32(0) and inverse*cutoff*cutoff<T.float32(81) and inverse*total<T.float32(1e16)):valid=0
+         refine=T.alloc_var('int32');refine=0
+         # The block strategy now delivers the R0^3 residual through its own
+         # Cube correction, so exact digit recovery is reserved for inputs the
+         # Frobenius gate itself cannot admit.
+         if valid!=0 and inverse*total>=T.float32(1e15):refine=1
+         sy=T.alloc_var('float32');sy=T.float32(1)
+         sa=power*T.float32(8)
+         if refine!=0:
+          peak=peak_cached
+          if not (peak>T.float32(0) and peak<T.float32(1e20)):refine=0;valid=0
+          if refine!=0:
+           while sy<peak*T.float32(4):sy*=T.float32(2)
+           while peak>T.float32(0) and sy*T.float32(.5)>=peak*T.float32(4):sy*=T.float32(.5)
+           emit('fr_quant',W.access_ptr('rw'),off,qa,qy,qn,cores,n,job,sa,sy)
+         if bid==0:
+          pool[3584]=T.Cast('float32',refine)
+          T.set_flag('S','MTE3',0);T.wait_flag('S','MTE3',0)
+          emit('pv_store_rows',S.access_ptr('w',offset=job*512),pool.access_ptr('r',offset=3584),1,8,0,0)
+         if refine!=0:
+          if bid==0:
+           pool[3600]=T.Cast('float32',job)
+           T.set_flag('S','MTE3',0);T.wait_flag('S','MTE3',0)
+           emit('pv_store_rows',S.access_ptr('w',offset=batch*512),pool.access_ptr('r',offset=3600),1,16,0,0)
+          emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10)
+         if refine!=0:
+          emit('fr_decode',W.access_ptr('rw'),off,pr,rr,yh,rh,cores,n,job,sa,sy)
+          emit('fr_norms',W.access_ptr('rw'),off,rr,pa,cores,n)
+         if refine!=0:
+          emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10)
+         if refine!=0:
+          emit('fr_certify',W.access_ptr('rw'),off,co,pa,qn,job*512+32,cores,n,job,sa,sy,af,yf)
+          emit('pv_sync_all',W.access_ptr('rw'))
+          emit('pv_load_rows',pool.access_ptr('w'),S.access_ptr('r',offset=job*512+32),1,cores*8,0,0)
+          T.set_flag('MTE2','S',0);T.wait_flag('MTE2','S',0)
+          corrected=T.alloc_var('float32');corrected=T.float32(0)
+          for c in T.serial(cores):
+           if pool[c*8]<T.float32(.5):valid=0
+           corrected+=pool[c*8+1]
+          absolute_cutoff=T.max(af*rtol,atol)
+          if not corrected*absolute_cutoff*absolute_cutoff<T.float32(81):valid=0
+         if valid==0 and fallback_enabled!=0:
+          emit('pv_sync_all',W.access_ptr('rw'))
+          fallback_status=off+qn+cores*16+batch*32
+          if bid==job:
+           emit('fr_fallback',W.access_ptr('rw'),fallback_status,blocks,job,n,batch,atol,rtol)
+           emit('pc_invalidate',W.access_ptr('rw',offset=fallback_status+job*32))
+          emit('pv_sync_all',W.access_ptr('rw'))
+          emit('pv_load_rows',pool.access_ptr('w',offset=3616),W.access_ptr('r',offset=fallback_status+job*32),1,8,0,0)
+          T.set_flag('MTE2','S',0);T.wait_flag('MTE2','S',0)
+          valid=T.Cast('int32',pool[3616])
+         if bid==0:
+          pool[3616]=T.Cast('float32',valid)
+          T.set_flag('S','MTE3',0);T.wait_flag('S','MTE3',0)
+          emit('pv_store_rows',S.access_ptr('w',offset=job*512+16),pool.access_ptr('r',offset=3616),1,8,0,0)
        if bid==0:
         pool[3600]=T.float32(-1)
         T.set_flag('S','MTE3',0);T.wait_flag('S','MTE3',0)

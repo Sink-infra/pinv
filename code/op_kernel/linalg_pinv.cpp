@@ -176,7 +176,7 @@ __aicore__ __attribute__((noinline)) void PvStageNative(GM_ADDR A, GM_ADDR A_pin
 #include "pinv_dsl_half_pipeline.h"
 #include "pinv_dsl_peer_pipeline.h"
 #include "pinv_dsl_window.h"
-template <typename DT_A, bool COMPACT, bool TAIL, bool WAVE, bool LOCAL, bool GROUP, bool PIPELINE, bool WINDOW, bool CUBE, bool RECT, bool FAST_TILE>
+template <typename DT_A, bool COMPACT, bool TAIL, bool WAVE, bool LOCAL, bool GROUP, bool PIPELINE, bool WINDOW, bool CUBE, bool RECT>
 __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR workspace, GM_ADDR tiling) {
 #if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & PINV_KEY_WINDOW) && (TILING_KEY_VAR & PINV_KEY_CUBE)
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);
@@ -185,13 +185,13 @@ __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR worksp
 #endif
     REGISTER_TILING_DEFAULT(LinalgPinvCubeTilingData);
     GET_TILING_DATA_WITH_STRUCT(LinalgPinvTilingData, data, tiling);
-    if constexpr (FAST_TILE) {
+    if constexpr (GROUP && PIPELINE && CUBE && !WINDOW && WAVE) {
         if ASCEND_IS_AIC {return;}
         GM_ADDR work=GetUserWorkspace(workspace);
         GM_ADDR status=work+pinv_dsl::WorkFloats(data.batch,data.rows,data.cols,data.stride)*sizeof(float);
         PvStagePeerTile(A,A_pinv,work,status,GetBlockNum(),data.cols,data.batch,data.stride,0,data.atol,data.rtol,0);
         return;
-    }
+    } else {
     if constexpr (COMPACT || LOCAL) {
         if (COMPACT || data.cols<=64) {
             // Complete resident paths keep matrices and admission status in
@@ -236,4 +236,5 @@ __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR worksp
         return;
     }
     PvStageNative<DT_A,COMPACT,TAIL,WAVE,LOCAL,GROUP,PIPELINE,WINDOW,CUBE,RECT>(A,A_pinv,workspace,tiling);
+    }
 }

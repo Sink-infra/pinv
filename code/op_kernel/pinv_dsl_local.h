@@ -215,7 +215,7 @@ __aicore__ inline void PvStageLocal( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_AD
             accepted_slot.SetValue(0, valid);
           } else {
             if (dimension == 64) {
-              count_1 = 4608;
+              count_1 = 5120;
               dma_pad_1 = 64;
               condition_1 = 1.000000e+30f;
               valid_1 = 1;
@@ -223,7 +223,7 @@ __aicore__ inline void PvStageLocal( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_AD
               AscendC::PipeBarrier<PIPE_V>();
               AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(0);
               AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(0);
-              tl::ascend::pv_load_rows(pool[0], A[offset], pool[0], 64, 64, 0, (72 - dma_pad_1), (bool)0);
+              tl::ascend::pv_load_rows(pool[0], A[offset], pool[0], 64, 64, 0, (80 - dma_pad_1), (bool)0);
               AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(0);
               AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(0);
               tl::ascend::pv_abs(pool[8704], pool[0], pool[8704], count_1);
@@ -248,7 +248,7 @@ __aicore__ inline void PvStageLocal( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_AD
                 AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
                 float total_1 = pool.GetValue(19008);
                 for (int32_t i_1 = 0; i_1 < 64; ++i_1) {
-                  indices.SetValue(i_1, ((uint32_t)(i_1 * 288)));
+                  indices.SetValue(i_1, ((uint32_t)(i_1 * 320)));
                 }
                 tl::ascend::pv_fill(pool[19040], pool[19040], pool[19040], 0.000000e+00f, 64);
                 AscendC::PipeBarrier<PIPE_V>();
@@ -260,7 +260,7 @@ __aicore__ inline void PvStageLocal( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_AD
                 for (int32_t pivot_tile_1 = 0; pivot_tile_1 < 64; ++pivot_tile_1) {
                   tl::ascend::pv_gather(pool[19040], pool[0], indices[0], (pivot_tile_1 * 4), 64);
                   AscendC::PipeBarrier<PIPE_V>();
-                  tl::ascend::pv_abs(pool[18432], pool[19040], pool[18432], 64);
+                  tl::ascend::lv_abs_nomask(pool[18432], pool[19040], pool[18432]);
                   AscendC::PipeBarrier<PIPE_V>();
                   tl::ascend::pv_mask_reduce(pool[19008], pool[18432], pool[19008]);
                   AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
@@ -272,14 +272,14 @@ __aicore__ inline void PvStageLocal( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_AD
                   }
                   tl::ascend::pv_mask_remove(pool[0], pool[0], pool[0], pivot_2);
                   order.SetValue(pivot_2, ((uint32_t)(pivot_tile_1 * 4)));
-                  order.SetValue((pivot_tile_1 + 64), ((uint32_t)(pivot_2 * 288)));
+                  order.SetValue((pivot_tile_1 + 64), ((uint32_t)(pivot_2 * 320)));
                   consumed_2 = 0;
                   base_2 = 0;
                   float divisor_1 = pool.GetValue((((int64_t)pivot_2) + (int64_t)19040));
-                  pool.SetValue(((((int64_t)pivot_2) * (int64_t)72) + ((int64_t)pivot_tile_1)), (divisor_1 + 1.000000e+00f));
+                  pool.SetValue(((((int64_t)pivot_2) * (int64_t)80) + ((int64_t)pivot_tile_1)), (divisor_1 + 1.000000e+00f));
                   pool.SetValue(((((int64_t)previous_1) + ((int64_t)pivot_tile_1)) - (int64_t)1), recovered_1);
                   recovered_1 = (-1.000000e+00f / divisor_1);
-                  previous_1 = (pivot_2 * 72);
+                  previous_1 = (pivot_2 * 80);
                   pool.SetValue((((int64_t)pivot_2) + (int64_t)19040), 0.000000e+00f);
                   AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
                   AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
@@ -287,10 +287,10 @@ __aicore__ inline void PvStageLocal( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_AD
                   if (consumed_2 != 0) {
                     active_2 = (active_2 - 8);
                   }
-                  tl::ascend::pv_scale(pool[((pivot_2 * 72) + base_2)], pool[((pivot_2 * 72) + base_2)], pool[((pivot_2 * 72) + base_2)], (-1.000000e+00f / divisor_1), active_2);
                   tl::ascend::pv_brcb_rows(pool[17408], pool[19040], pool[17408], 64, 8);
+                  tl::ascend::lv_scale_nomask(pool[(pivot_2 * 80)], pool[(pivot_2 * 80)], pool[(pivot_2 * 80)], (-1.000000e+00f / divisor_1));
                   AscendC::PipeBarrier<PIPE_V>();
-                  tl::ascend::pv_mad_strided(pool[base_2], pool[((pivot_2 * 72) + base_2)], pool[17408], 64, 64, 1, 1, 0, 9, 0, 1);
+                  tl::ascend::lv_mad_nomask(pool[0], pool[(pivot_2 * 80)], pool[17408], 64, 10);
                   AscendC::PipeBarrier<PIPE_V>();
                 }
                 if (valid_1 != 0) {
@@ -301,7 +301,7 @@ __aicore__ inline void PvStageLocal( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_AD
                   AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
                   tl::ascend::pv_fill(pool[8704], pool[8704], pool[8704], 0.000000e+00f, count_1);
                   AscendC::PipeBarrier<PIPE_V>();
-                  tl::ascend::pv_square_padded_rows(pool[8704], pool[0], pool[8704], 64, 64, 72);
+                  tl::ascend::pv_square_padded_rows(pool[8704], pool[0], pool[8704], 64, 64, 80);
                   AscendC::PipeBarrier<PIPE_V>();
                   tl::ascend::pv_reduce_sum(pool[19008], pool[8704], pool[18496], count_1);
                   AscendC::SetFlag<AscendC::HardEvent::V_S>(0);

@@ -30,7 +30,7 @@ __aicore__ inline void PvMaskReduce(LocalTensor<float> d,LocalTensor<float> a,co
 __aicore__ inline void PvMaskRemove(PvLaneMask &state,int bit){state.bits&=~(uint64_t(1)<<bit);}
 __aicore__ inline void pv_reduce_registers(LocalTensor<float> d,LocalTensor<float>,LocalTensor<float>){float best,bits;GetReduceRepeatMaxMinSpr<float>(best,bits);d.SetValue(0,best);d.SetValue(1,bits);}
 // Scalar-output ABI for the same SDK instruction. Allocation, lifetime and
-// synchronization of these outputs are controlled by TileLang alloc_var.
+// TileLang alloc_var controls synchronization of these scalar values.
 __aicore__ inline void pv_reduce_scalars(LocalTensor<float>,LocalTensor<float>,LocalTensor<float>,float &best,int32_t &position){float bits;GetReduceRepeatMaxMinSpr<float>(best,bits);union {float value;uint32_t word;} index;index.value=bits;position=int32_t(index.word);}
 __aicore__ inline void pv_brcb_rows(LocalTensor<float> d,LocalTensor<float> a,LocalTensor<float>,int n,int pitch){Brcb(d,a,uint8_t(n/8),BrcbRepeatParams{uint8_t(pitch/8),uint8_t(pitch)});}
 __aicore__ inline void pv_gj_update(LocalTensor<float> d,LocalTensor<float> pivot,LocalTensor<float> factors,int width,int n,int pitch){MulAddDst(d,pivot,factors,uint64_t(width),uint8_t(n),BinaryRepeatParams{1,1,0,uint8_t(pitch/8),0,uint8_t(pitch/8)});}
@@ -48,4 +48,10 @@ namespace tl::ascend {
 __aicore__ inline void bl_index_brcb(LocalTensor<float>d,LocalTensor<uint32_t>a,LocalTensor<float>,int n){Brcb(d.ReinterpretCast<int32_t>(),a.ReinterpretCast<int32_t>(),uint8_t(n/8),BrcbRepeatParams{1,8});}
 __aicore__ inline void bl_index_matrix(LocalTensor<float>d,LocalTensor<float>a,LocalTensor<uint32_t>b,int width,int rows){Add(d.ReinterpretCast<int32_t>(),a.ReinterpretCast<int32_t>(),b.ReinterpretCast<int32_t>(),uint64_t(width),uint8_t(rows),BinaryRepeatParams{1,0,1,uint8_t(width/8),1,0});}
 __aicore__ inline void bl_gather(LocalTensor<float>d,LocalTensor<float>a,LocalTensor<float>indices,int n){Gather(d,a,indices.ReinterpretCast<uint32_t>(),uint32_t(0),n);}
+}
+
+namespace tl::ascend {
+__aicore__ inline void lv_abs_nomask(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>){AscendC::Abs<float,false>(d,a,uint64_t(64),1,AscendC::UnaryRepeatParams{1,1,8,8});}
+__aicore__ inline void lv_scale_nomask(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>,float scale){AscendC::Muls<float,false>(d,a,scale,uint64_t(64),1,AscendC::UnaryRepeatParams{1,1,8,8});}
+__aicore__ inline void lv_mad_nomask(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>b,int rows,int pitch){AscendC::MulAddDst<float,float,false>(d,a,b,uint64_t(64),uint8_t(rows),AscendC::BinaryRepeatParams{1,1,0,uint8_t(pitch),0,1});}
 }

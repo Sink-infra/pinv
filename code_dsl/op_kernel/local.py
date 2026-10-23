@@ -9,7 +9,7 @@ from code_dsl.op_kernel.control import admission_writer
 from code_dsl.op_kernel.normalization import ceil_power_bits
 
 
-def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_admission=False,condition_metric=False,minimum_magnitude=0.1,fused=False):
+def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_admission=False,condition_metric=False,minimum_magnitude=0.1,fused=False,row_padding=8,reuse_mask=False):
     import tilelang.language as T
     store_admission=admission_writer(scalar_admission)
 
@@ -19,7 +19,7 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
         # outside elimination; all lane strides and vector widths are DSL tile
         # constants, rather than descriptors cached by an external C++ helper.
         pad=tile_pad
-        pitch=(tile_pad+8) if fused else (2*tile_pad+8)
+        pitch=(tile_pad+row_padding) if fused else (2*tile_pad+8)
         xbase=0 if fused else tile_pad
         n=tile_pad if full_tile else runtime_n
         count=T.alloc_var('int32');count=n*pitch
@@ -76,7 +76,10 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
                     p=pivot_tile*unroll+lane
                     emit('pv_gather', pool.access_ptr('w', offset=norms), pool.access_ptr('r'), indices.access_ptr('r'), p * 4, n)
                     T.pipe_barrier('V')
-                    emit('pv_abs', pool.access_ptr('w', offset=product), pool.access_ptr('r', offset=norms), pad)
+                    if reuse_mask:
+                        emit('lv_abs_nomask',pool.access_ptr('w',offset=product),pool.access_ptr('r',offset=norms))
+                    else:
+                        emit('pv_abs', pool.access_ptr('w', offset=product), pool.access_ptr('r', offset=norms), pad)
                     T.pipe_barrier('V')
                     emit('pv_mask_reduce', pool.access_ptr('w', offset=red), pool.access_ptr('r', offset=product))
                     T.set_flag('V', 'S', 0)
@@ -110,10 +113,17 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
                     active = live
                     if consumed != 0:
                         active -= 8
-                    emit('pv_scale', pool.access_ptr('w', offset=pivot * pitch + base), pool.access_ptr('r', offset=pivot * pitch + base), T.float32(-1) / divisor, active)
-                    emit('pv_brcb_rows', pool.access_ptr('w', offset=factors), pool.access_ptr('r', offset=norms), pad, factor_pitch)
+                    if reuse_mask:
+                        emit('pv_brcb_rows',pool.access_ptr('w',offset=factors),pool.access_ptr('r',offset=norms),64,8)
+                        emit('lv_scale_nomask',pool.access_ptr('w',offset=pivot*pitch),pool.access_ptr('r',offset=pivot*pitch),T.float32(-1)/divisor)
+                    else:
+                        emit('pv_scale', pool.access_ptr('w', offset=pivot * pitch + base), pool.access_ptr('r', offset=pivot * pitch + base), T.float32(-1) / divisor, active)
+                        emit('pv_brcb_rows', pool.access_ptr('w', offset=factors), pool.access_ptr('r', offset=norms), pad, factor_pitch)
                     T.pipe_barrier('V')
-                    emit('pv_mad_strided', pool.access_ptr('rw', offset=base), pool.access_ptr('r', offset=pivot * pitch + base), pool.access_ptr('r', offset=factors), T.min(live, 64), n, 1, 1, 0, pitch//8, 0, factor_pitch//8)
+                    if reuse_mask:
+                        emit('lv_mad_nomask',pool.access_ptr('rw'),pool.access_ptr('r',offset=pivot*pitch),pool.access_ptr('r',offset=factors),64,pitch//8)
+                    else:
+                        emit('pv_mad_strided', pool.access_ptr('rw', offset=base), pool.access_ptr('r', offset=pivot * pitch + base), pool.access_ptr('r', offset=factors), T.min(live, 64), n, 1, 1, 0, pitch//8, 0, factor_pitch//8)
                     if live > 64 and consumed == 0:
                         groups = n // 8
                         rest = n % 8
@@ -212,7 +222,7 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
                     else:
                         # Store byte offsets during pivoting, then transfer the
                         # permutation in bulk on the Vector pipe. This removes
-                        # the scalar UB read/write loop from the output schedule.
+                        # the scalar UB access loop from the output schedule.
                         T.set_flag('S','V',0);T.wait_flag('S','V',0)
                         T.copy(order[0:pad],indices[0:pad])
                         T.pipe_barrier('V')
@@ -236,7 +246,7 @@ def make_local_quick_macro(unroll=1,factor_pitch=8,scalar_admission=False):
     import tilelang.language as T
     one_vector=_make_quick_schedule(56,factor_pitch,unroll,scalar_admission=scalar_admission)
     two_vectors=_make_quick_schedule(64,factor_pitch,unroll,scalar_admission=scalar_admission,fused=True)
-    two_vectors_aligned=_make_quick_schedule(64,8,unroll,full_tile=True,scalar_admission=scalar_admission,fused=True)
+    two_vectors_aligned=_make_quick_schedule(64,8,unroll,full_tile=True,scalar_admission=scalar_admission,fused=True,row_padding=16,reuse_mask=True)
 
     @T.macro
     def quick(A,X,pool,indices,order,accepted,offset,n,atol,rtol):

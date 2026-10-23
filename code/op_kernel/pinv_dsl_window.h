@@ -2171,180 +2171,7 @@ __aicore__ inline void br_load_a(LocalTensor<float>d,GlobalTensor<float>s,LocalT
 
 using uint=unsigned int;using uchar=unsigned char;using ushort=unsigned short;
 namespace tl::ascend {
-__aicore__ inline void BlockQuick( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADDR W_handle,  GM_ADDR S_handle, int32_t blocks, int32_t job, int32_t m, int32_t n, int32_t batch, float atol, float rtol, uint64_t fftsAddr) {
-  AscendC::TPipe pipe;
 
-  AscendC::GlobalTensor<float> A;
-  A.SetGlobalBuffer((__gm__ float*)A_handle);
-  AscendC::GlobalTensor<float> Y;
-  Y.SetGlobalBuffer((__gm__ float*)Y_handle);
-  AscendC::GlobalTensor<float> W;
-  W.SetGlobalBuffer((__gm__ float*)W_handle);
-  AscendC::GlobalTensor<float> S;
-  S.SetGlobalBuffer((__gm__ float*)S_handle);
-
-  AscendC::TBuf<AscendC::TPosition::VECCALC> ascend_ub; pipe.InitBuffer(ascend_ub, 77344);
-  auto cid = AscendC::GetBlockIdx();
-  if ASCEND_IS_AIV {
-    }
-  auto accepted = ascend_ub.GetWithOffset<int>(8, 0);
-  int count = 0;
-  int dma_pad = 0;
-  float condition = 0.000000e+00f;
-  int valid = 0;
-  auto pool = ascend_ub.GetWithOffset<float>(19136, 32);
-  float power = 0.000000e+00f;
-  uint32_t power_word = (uint32_t)0;
-  auto indices = ascend_ub.GetWithOffset<uint32_t>(64, 76576);
-  int previous = 0;
-  float recovered = 0.000000e+00f;
-  auto order = ascend_ub.GetWithOffset<uint32_t>(128, 76832);
-  int word = 0;
-  float metric = 0.000000e+00f;
-  float best = 0.000000e+00f;
-  int pivot = 0;
-  int consumed = 0;
-  int base = 0;
-  int active = 0;
-  float best_1 = 0.000000e+00f;
-  int pivot_1 = 0;
-  int consumed_1 = 0;
-  int base_1 = 0;
-  int active_1 = 0;
-  auto vid = AscendC::GetSubBlockIdx();
-  if ASCEND_IS_AIV {
-    accepted.SetValue(0, 0);
-    count = 4608;
-    dma_pad = 64;
-    condition = 1.000000e+30f;
-    valid = 1;
-    tl::ascend::pv_fill(pool[0], pool[0], pool[0], 0.000000e+00f, count);
-    AscendC::PipeBarrier<PIPE_V>();
-    AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(0);
-    AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(0);
-    tl::ascend::pv_load_rows(pool[0], A[(job * 4096)], pool[0], 64, 64, max((m - 64), 0), (72 - dma_pad), (bool)0);
-    AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(0);
-    AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(0);
-    tl::ascend::pv_abs(pool[8704], pool[0], pool[8704], count);
-    AscendC::PipeBarrier<PIPE_V>();
-    tl::ascend::pv_reduce_max(pool[19008], pool[8704], pool[18496], count);
-    AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
-    AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
-    float magnitude = pool.GetValue(19008);
-    if ((magnitude < 1.000000e-30f) || (1.701412e+38f <= magnitude)) {
-      valid = 0;
-    }
-    power = 1.000000e+00f;
-    if (valid != 0) {
-      power_word = (((*(uint32_t *)(&(magnitude))) + (uint32_t)8388607) & (uint32_t)2139095040);
-      power = (*(float *)(&(power_word)));
-      tl::ascend::pv_scale(pool[0], pool[0], pool[0], (1.000000e+00f / power), count);
-      AscendC::PipeBarrier<PIPE_V>();
-      tl::ascend::pv_mul(pool[8704], pool[0], pool[0], count);
-      AscendC::PipeBarrier<PIPE_V>();
-      tl::ascend::pv_reduce_sum(pool[19008], pool[8704], pool[18496], count);
-      AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
-      AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
-      float total = pool.GetValue(19008);
-      for (int32_t i = 0; i < 64; ++i) {
-        indices.SetValue(i, ((uint32_t)(i * 288)));
-      }
-      tl::ascend::pv_fill(pool[19040], pool[19040], pool[19040], 0.000000e+00f, 64);
-      AscendC::PipeBarrier<PIPE_V>();
-      tl::ascend::pv_mask_begin(pool[0], pool[0], pool[0], 64);
-      previous = 19105;
-      recovered = 0.000000e+00f;
-      AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
-      AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
-      for (int32_t pivot_tile = 0; pivot_tile < 64; ++pivot_tile) {
-        tl::ascend::pv_gather(pool[19040], pool[0], indices[0], (pivot_tile * 4), 64);
-        AscendC::PipeBarrier<PIPE_V>();
-        tl::ascend::pv_abs(pool[18432], pool[19040], pool[18432], 64);
-        AscendC::PipeBarrier<PIPE_V>();
-        tl::ascend::pv_mask_reduce(pool[19008], pool[18432], pool[19008]);
-        AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
-        AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
-        tl::ascend::pv_reduce_scalars(pool[0], pool[0], pool[0], best, pivot);
-        if (best <= 0.000000e+00f) {
-          valid = 0;
-          break;
-        }
-        tl::ascend::pv_mask_remove(pool[0], pool[0], pool[0], pivot);
-        order.SetValue(pivot, ((uint32_t)(pivot_tile * 4)));
-        order.SetValue((pivot_tile + 64), ((uint32_t)(pivot * 288)));
-        consumed = 0;
-        base = 0;
-        float divisor = pool.GetValue((((int64_t)pivot) + (int64_t)19040));
-        pool.SetValue(((((int64_t)pivot) * (int64_t)72) + ((int64_t)pivot_tile)), (divisor + 1.000000e+00f));
-        pool.SetValue(((((int64_t)previous) + ((int64_t)pivot_tile)) - (int64_t)1), recovered);
-        recovered = (-1.000000e+00f / divisor);
-        previous = (pivot * 72);
-        pool.SetValue((((int64_t)pivot) + (int64_t)19040), 0.000000e+00f);
-        AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
-        AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
-        active = 64;
-        if (consumed != 0) {
-          active = (active - 8);
-        }
-        tl::ascend::pv_scale(pool[((pivot * 72) + base)], pool[((pivot * 72) + base)], pool[((pivot * 72) + base)], (-1.000000e+00f / divisor), active);
-        tl::ascend::pv_brcb_rows(pool[17408], pool[19040], pool[17408], 64, 8);
-        AscendC::PipeBarrier<PIPE_V>();
-        tl::ascend::pv_mad_strided(pool[base], pool[((pivot * 72) + base)], pool[17408], 64, 64, 1, 1, 0, 9, 0, 1);
-        AscendC::PipeBarrier<PIPE_V>();
-      }
-      if (valid != 0) {
-        AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
-        AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
-        pool.SetValue((((int64_t)previous) + (int64_t)63), recovered);
-        AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
-        AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
-        tl::ascend::pv_fill(pool[8704], pool[8704], pool[8704], 0.000000e+00f, count);
-        AscendC::PipeBarrier<PIPE_V>();
-        tl::ascend::pv_square_padded_rows(pool[8704], pool[0], pool[8704], 64, 64, 72);
-        AscendC::PipeBarrier<PIPE_V>();
-        tl::ascend::pv_reduce_sum(pool[19008], pool[8704], pool[18496], count);
-        AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
-        AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
-        float inverse_total = pool.GetValue(19008);
-        condition = (total * inverse_total);
-        pool.SetValue(19008, total);
-        AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
-        AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
-        tl::ascend::pv_sqrt(pool[19008], pool[19008], pool[19008], 1);
-        AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
-        AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
-        if (inverse_total <= 0.000000e+00f) {
-          valid = 0;
-        } else {
-          tl::ascend::pv_scale(pool[0], pool[0], pool[0], (-1.000000e+00f / power), count);
-          AscendC::PipeBarrier<PIPE_V>();
-          AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
-          AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
-          tl::ascend::bl_index_brcb(pool[17408], order[64], pool[17408], 64);
-          AscendC::PipeBarrier<PIPE_V>();
-          tl::ascend::bl_index_matrix(pool[12800], pool[17408], order[0], 64, 64);
-          AscendC::PipeBarrier<PIPE_V>();
-          tl::ascend::bl_gather(pool[8704], pool[0], pool[12800], 4096);
-          AscendC::PipeBarrier<PIPE_V>();
-          AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(0);
-          AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(0);
-          tl::ascend::pv_store_rows(Y[(job * 4096)], pool[8704], Y[(job * 4096)], 64, 64, (64 - dma_pad), 0);
-          AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(0);
-          AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(0);
-          AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(0);
-          AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(0);
-        }
-      }
-    }
-    accepted.SetValue(0, valid);
-    accepted.SetValue(1, (*(int32_t *)(&(condition))));
-    S.SetValue((((int64_t)job) * (int64_t)32), ((float)accepted.GetValue(0)));
-    word = accepted.GetValue(1);
-    metric = (*(float *)(&(word)));
-    S.SetValue(((((int64_t)job) * (int64_t)32) + (int64_t)1), metric);
-  }
-  pipe.Destroy();
-}
 
 
 __aicore__ inline void BlockGemm( GM_ADDR A_handle,  GM_ADDR P_handle,  GM_ADDR C_handle, int32_t blocks,  GM_ADDR shape_hint, int64_t inner, int64_t cols, int64_t batch, int64_t rows, uint64_t fftsAddr) {
@@ -2446,6 +2273,7 @@ __aicore__ inline void BlockGemm( GM_ADDR A_handle,  GM_ADDR P_handle,  GM_ADDR 
 #define br_quick_strided(d,a,b,ca,ci,so,bl,pitch) BlockQuick((GM_ADDR)(d.GetPhyAddr()+ca),(GM_ADDR)(d.GetPhyAddr()+ci),(GM_ADDR)d.GetPhyAddr(),(GM_ADDR)(d.GetPhyAddr()+so),bl,0,pitch,64,1,0.0f,0.0f,fftsAddr),tl::ascend::FrRestorePipe(&pipe)
 #define br_quick(d,a,b,ca,ci,so,bl,job,ba) BlockQuick((GM_ADDR)(d.GetPhyAddr()+ca),(GM_ADDR)(d.GetPhyAddr()+ci),(GM_ADDR)d.GetPhyAddr(),(GM_ADDR)(d.GetPhyAddr()+so),bl,job,64,64,ba,0.0f,0.0f,fftsAddr),tl::ascend::FrRestorePipe(&pipe)
 #define br_gemm(d,a,b,oa,ob,oc,bl,ba,m,k,n) BlockGemm((GM_ADDR)(d.GetPhyAddr()+oa),(GM_ADDR)(d.GetPhyAddr()+ob),(GM_ADDR)(d.GetPhyAddr()+oc),bl,(GM_ADDR)d.GetPhyAddr(),k,n,ba,m,fftsAddr)
+#include "pinv_dsl_block_local.h"
 namespace tl::ascend {
 __aicore__ inline void BlockRaw( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADDR W_handle,  GM_ADDR S_handle, int32_t blocks, int32_t n, int32_t batch, uint64_t fftsAddr) {
 
@@ -2483,9 +2311,12 @@ __aicore__ inline void BlockRaw( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADDR W
       tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 8);
       tl::ascend::br_gemm(W[0], W[0], W[0], (((batch * n) * 128) + (((batch * n) * n) * 4)), (((batch * 4096) + ((batch * n) * 128)) + (((batch * n) * n) * 4)), (((batch * 4096) + ((batch * n) * 256)) + (((batch * n) * n) * 4)), blocks, batch, 64, 64, n);
       AscendC::PipeBarrier<PIPE_ALL>();
-      tl::ascend::pc_done(W[0], W[0], W[0]);
-      tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 8);
-      tl::ascend::br_gemm(W[0], W[0], W[0], (((batch * 4096) + ((batch * n) * 384)) + (((batch * n) * n) * 4)), (((batch * 4096) + ((batch * n) * 256)) + (((batch * n) * n) * 4)), (((batch * 4096) + ((batch * n) * 448)) + (((batch * n) * n) * 4)), blocks, batch, n, 64, n);
+      tl::ascend::br_cube_sync(W[0], W[0], W[0]);
+      if ((batch * n) == (blocks * 64)) {
+        tl::ascend::br_row_gemm(W[0], W[0], W[0], (((batch * 4096) + ((batch * n) * 384)) + (((batch * n) * n) * 4)), (((batch * 4096) + ((batch * n) * 256)) + (((batch * n) * n) * 4)), (((batch * 4096) + ((batch * n) * 448)) + (((batch * n) * n) * 4)), blocks, batch, n, 64, n);
+      } else {
+        tl::ascend::br_gemm(W[0], W[0], W[0], (((batch * 4096) + ((batch * n) * 384)) + (((batch * n) * n) * 4)), (((batch * 4096) + ((batch * n) * 256)) + (((batch * n) * n) * 4)), (((batch * 4096) + ((batch * n) * 448)) + (((batch * n) * n) * 4)), blocks, batch, n, 64, n);
+      }
       AscendC::PipeBarrier<PIPE_ALL>();
       tl::ascend::pc_done(W[0], W[0], W[0]);
     }
@@ -2563,6 +2394,7 @@ __aicore__ inline void BlockRaw( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADDR W
         AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(0);
         AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(0);
         tl::ascend::pv_store_rows(W[(row * n)], pool[0], W[(row * n)], row_tile, n, 0, 0);
+        tl::ascend::pv_store_rows(W[((((batch * n) * n) * 11) + (row * n))], pool[0], W[((((batch * n) * n) * 11) + (row * n))], row_tile, n, 0, 0);
         tl::ascend::pv_all_barrier(W[0], W[0], W[0]);
       }
     }
@@ -2652,10 +2484,9 @@ __aicore__ inline void BlockRaw( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADDR W
       tl::ascend::pv_sync_all(W[0], W[0], W[0]);
       tl::ascend::pv_cross_set2(W[0], W[0], W[0], 8);
       tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 10);
-      tl::ascend::pv_sync_all(W[0], W[0], W[0]);
-      tl::ascend::pv_cross_set2(W[0], W[0], W[0], 8);
-      tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 10);
-      tl::ascend::pv_sync_all(W[0], W[0], W[0]);
+      if ((batch * n) != (blocks * 64)) {
+        tl::ascend::pv_sync_all(W[0], W[0], W[0]);
+      }
       for (int32_t iteration_2 = 0; iteration_2 < ((((blocks * 2) + ((batch * n) / row_tile)) - 1) / (blocks * 2)); ++iteration_2) {
         int32_t row_2 = ((((iteration_2 * blocks) * 2) + bid) * row_tile);
         if (row_2 < (batch * n)) {
@@ -2677,14 +2508,12 @@ __aicore__ inline void BlockRaw( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADDR W
       }
       tl::ascend::pv_sync_all(W[0], W[0], W[0]);
     }
-    tl::ascend::pv_load_rows(pool[20480], S[0], pool[20480], 1, (batch * 32), 0, 0);
     tl::ascend::pv_load_rows(pool[22016], S[512], pool[22016], 1, 512, 0, 0);
     AscendC::SetFlag<AscendC::HardEvent::MTE2_S>(0);
     AscendC::WaitFlag<AscendC::HardEvent::MTE2_S>(0);
     for (int32_t iteration_3 = 0; iteration_3 < ((((blocks * 2) + ((batch * n) / row_tile)) - 1) / (blocks * 2)); ++iteration_3) {
       int32_t row_3 = ((((iteration_3 * blocks) * 2) + bid) * row_tile);
       if (row_3 < (batch * n)) {
-        float power_2 = pool.GetValue((((((int64_t)row_3) / ((int64_t)n)) * (int64_t)32) + (int64_t)20480));
         for (int32_t col = 0; col < (n / 64); ++col) {
           pool.SetValue((col + 21200), ((float)col));
         }
@@ -2697,12 +2526,9 @@ __aicore__ inline void BlockRaw( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADDR W
         for (int32_t col_1 = 0; col_1 < (n / 64); ++col_1) {
           int32_t original_1 = ((int32_t)pool.GetValue((col_1 + 21200)));
           tl::ascend::pv_load_rows(pool[0], W[((col_1 * 64) + (row_3 * n))], pool[0], row_tile, 64, (n - 64), 0);
-          AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(0);
-          AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(0);
-          tl::ascend::pv_scale(pool[0], pool[0], pool[0], (1.000000e+00f / power_2), (row_tile * 64));
-          AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(0);
-          AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(0);
-          tl::ascend::pv_store_rows(Y[((original_1 * 64) + (row_3 * n))], pool[0], Y[((original_1 * 64) + (row_3 * n))], row_tile, 64, 0, (n - 64));
+          AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE3>(0);
+          AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE3>(0);
+          tl::ascend::pv_store_rows(W[(((original_1 * 64) + (((batch * n) * n) * 8)) + (row_3 * n))], pool[0], W[(((original_1 * 64) + (((batch * n) * n) * 8)) + (row_3 * n))], row_tile, 64, 0, (n - 64));
           tl::ascend::pv_all_barrier(W[0], W[0], W[0]);
         }
       }
@@ -2869,6 +2695,13 @@ __aicore__ inline void BlockDecode( GM_ADDR P_handle,  GM_ADDR R_handle, int32_t
         tl::ascend::pv_store_rows(R[(((iteration * blocks) * 8192) + (bid * 4096))], value[0], R[(((iteration * blocks) * 8192) + (bid * 4096))], 1, 4096, 0, 0);
         AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(0);
         AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(0);
+        AscendC::Add(value[0], value[0], identity[0], 4096);
+        AscendC::PipeBarrier<PIPE_V>();
+        AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(0);
+        AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(0);
+        tl::ascend::pv_store_rows(R[((((iteration * blocks) * 8192) + (bid * 4096)) + ((batch * n) * n))], value[0], R[((((iteration * blocks) * 8192) + (bid * 4096)) + ((batch * n) * n))], 1, 4096, 0, 0);
+        AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(0);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(0);
       }
     }
   }
@@ -2878,7 +2711,7 @@ __aicore__ inline void BlockDecode( GM_ADDR P_handle,  GM_ADDR R_handle, int32_t
 }
 #define bf_decode(d,a,b,bl,n,ba) BlockDecode((GM_ADDR)(d.GetPhyAddr()+4*(ba*n*n)),(GM_ADDR)(d.GetPhyAddr()+9*(ba*n*n)),bl,n,ba,fftsAddr),tl::ascend::FrRestorePipe(&pipe)
 namespace tl::ascend {
-__aicore__ inline void BlockFinish( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADDR W_handle,  GM_ADDR S_handle, int32_t blocks, int32_t n, int32_t batch, int32_t stride, uint64_t fftsAddr) {
+__aicore__ inline void BlockFinish( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADDR W_handle,  GM_ADDR S_handle, int32_t blocks, int32_t n, int32_t batch, int32_t stride, float atol, float rtol, uint64_t fftsAddr) {
   AscendC::TPipe pipe;
 
   AscendC::GlobalTensor<float> A;
@@ -2900,6 +2733,8 @@ __aicore__ inline void BlockFinish( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADD
   auto pool = ascend_ub.GetWithOffset<float>(24576, 0);
   int valid = 0;
   float sum = 0.000000e+00f;
+  int fast = 0;
+  float norm_inverse = 0.000000e+00f;
   auto vid = AscendC::GetSubBlockIdx();
   if ASCEND_IS_AIV {
     if ((bid / ((blocks * 2) / batch)) < batch) {
@@ -2972,6 +2807,33 @@ __aicore__ inline void BlockFinish( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADD
       AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(0);
       AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(0);
       tl::ascend::pv_store_rows(W[((((bid / ((blocks * 2) / batch)) * 8192) + (((batch * n) * stride) * 2)) + 32)], pool[0], W[((((bid / ((blocks * 2) / batch)) * 8192) + (((batch * n) * stride) * 2)) + 32)], 1, 8, 0, 0);
+      tl::ascend::pv_load_rows(pool[64], W[((((bid / ((blocks * 2) / batch)) * 8192) + (((batch * n) * stride) * 2)) + 2048)], pool[64], 1, (((blocks * 2) / batch) * 8), 0, 0);
+      AscendC::SetFlag<AscendC::HardEvent::MTE2_S>(0);
+      AscendC::WaitFlag<AscendC::HardEvent::MTE2_S>(0);
+      fast = 1;
+      norm_inverse = 0.000000e+00f;
+      for (int32_t c_1 = 0; c_1 < ((blocks * 2) / batch); ++c_1) {
+        if (pool.GetValue(((((int64_t)c_1) * (int64_t)8) + (int64_t)64)) < 5.000000e-01f) {
+          fast = 0;
+        }
+        norm_inverse = (norm_inverse + pool.GetValue(((((int64_t)c_1) * (int64_t)8) + (int64_t)65)));
+      }
+      pool.SetValue(512, sum);
+      AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
+      AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
+      tl::ascend::pv_sqrt(pool[512], pool[512], pool[512], 1);
+      AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
+      AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
+      float threshold = max((pool.GetValue(512) * rtol), (atol / S.GetValue(((((int64_t)bid) / ((((int64_t)blocks) * (int64_t)2) / ((int64_t)batch))) * (int64_t)32))));
+      if (((norm_inverse <= 0.000000e+00f) || (8.100000e+01f <= ((norm_inverse * threshold) * threshold))) || (1.000000e+15f <= (norm_inverse * sum))) {
+        fast = 0;
+      }
+      pool.SetValue(520, 0.000000e+00f);
+      pool.SetValue(528, ((float)fast));
+      AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(0);
+      AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(0);
+      tl::ascend::pv_store_rows(S[((bid / ((blocks * 2) / batch)) * 512)], pool[520], S[((bid / ((blocks * 2) / batch)) * 512)], 1, 8, 0, 0);
+      tl::ascend::pv_store_rows(S[(((bid / ((blocks * 2) / batch)) * 512) + 16)], pool[528], S[(((bid / ((blocks * 2) / batch)) * 512) + 16)], 1, 8, 0, 0);
     }
     tl::ascend::pv_sync_all(W[0], W[0], W[0]);
   }
@@ -2979,7 +2841,7 @@ __aicore__ inline void BlockFinish( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADD
 }
 
 }
-#define bf_finish(d,a,b,bl,n,ba,st) BlockFinish((GM_ADDR)fr.input.GetPhyAddr(),(GM_ADDR)fr.output.GetPhyAddr(),(GM_ADDR)d.GetPhyAddr(),(GM_ADDR)fr.status.GetPhyAddr(),bl,n,ba,st,fftsAddr),tl::ascend::FrRestorePipe(&pipe)
+#define bf_finish(d,a,b,bl,n,ba,st,at,rt) BlockFinish((GM_ADDR)fr.input.GetPhyAddr(),(GM_ADDR)fr.output.GetPhyAddr(),(GM_ADDR)d.GetPhyAddr(),(GM_ADDR)fr.status.GetPhyAddr(),bl,n,ba,st,at,rt,fftsAddr),tl::ascend::FrRestorePipe(&pipe)
 namespace tl::ascend {
 __aicore__ inline void BlockAccumulate( GM_ADDR W_handle, int32_t blocks, int32_t n, int32_t batch, uint64_t fftsAddr) {
   AscendC::TPipe pipe;
@@ -3020,7 +2882,7 @@ __aicore__ inline void BlockAccumulate( GM_ADDR W_handle, int32_t blocks, int32_
 // END DSL block strategy
 #endif
 
-__aicore__ inline void PvStageWindow( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_ADDR W_handle,  GM_ADDR S_handle, int32_t blocks, int32_t n, int32_t batch, int32_t stride, int32_t window, float atol, float rtol, int32_t fallback_enabled, uint64_t fftsAddr) {
+__aicore__ static __attribute__((noinline)) void PvStageWindow( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_ADDR W_handle,  GM_ADDR S_handle, int32_t blocks, int32_t n, int32_t batch, int32_t stride, int32_t window, float atol, float rtol, int32_t fallback_enabled, uint64_t fftsAddr) {
 
   AscendC::GlobalTensor<float> A;
   A.SetGlobalBuffer((__gm__ float*)A_handle);
@@ -3036,6 +2898,7 @@ __aicore__ inline void PvStageWindow( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_A
     }
   int blocked = 0;
   int running = 0;
+  int all_admitted = 0;
   float inverse = 0.000000e+00f;
   float peak_cached = 0.000000e+00f;
   int valid = 0;
@@ -3054,15 +2917,14 @@ __aicore__ inline void PvStageWindow( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_A
     tl::ascend::pv_sync_init(W[0], W[0], W[0]);
     if (blocked != 0) {
       tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 8);
-      tl::ascend::br_gemm(W[0], W[0], W[0], (((batch * n) * n) * 2), (((batch * n) * n) * 8), (((batch * n) * n) * 4), blocks, batch, n, n, n);
+      tl::ascend::br_gemm(W[0], W[0], W[0], (((batch * n) * n) * 11), (((batch * n) * n) * 8), (((batch * n) * n) * 4), blocks, batch, n, n, n);
       AscendC::PipeBarrier<PIPE_ALL>();
       tl::ascend::pc_done(W[0], W[0], W[0]);
       tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 8);
-      tl::ascend::br_gemm(W[0], W[0], W[0], (((batch * n) * n) * 9), (((batch * n) * n) * 9), (((batch * n) * n) * 11), blocks, batch, n, n, n);
+      tl::ascend::br_gemm(W[0], W[0], W[0], (((batch * n) * n) * 9), (((batch * n) * n) * 10), (((batch * n) * n) * 11), blocks, batch, n, n, n);
       AscendC::PipeBarrier<PIPE_ALL>();
-      tl::ascend::pc_done(W[0], W[0], W[0]);
-      tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 8);
-      tl::ascend::br_gemm(W[0], W[0], W[0], (((batch * n) * n) * 8), (((batch * n) * n) * 9), (((batch * n) * n) * 10), blocks, batch, n, n, n);
+      tl::ascend::br_cube_sync(W[0], W[0], W[0]);
+      tl::ascend::br_gemm(W[0], W[0], W[0], (((batch * n) * n) * 8), (((batch * n) * n) * 11), (((batch * n) * n) * 10), blocks, batch, n, n, n);
       AscendC::PipeBarrier<PIPE_ALL>();
       tl::ascend::pc_done(W[0], W[0], W[0]);
     }
@@ -3091,8 +2953,6 @@ __aicore__ inline void PvStageWindow( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_A
     auto pool = ascend_ub.GetWithOffset<float>(4096, 0);
     tl::ascend::fr_bind(A[0], X[0], W[0]);
     if (blocked != 0) {
-      tl::ascend::bf_pack(W[0], W[0], W[0], blocks, n, batch);
-      tl::ascend::pv_sync_all(W[0], W[0], W[0]);
       tl::ascend::pv_cross_set2(W[0], W[0], W[0], 8);
       tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 10);
       tl::ascend::pv_sync_all(W[0], W[0], W[0]);
@@ -3101,12 +2961,7 @@ __aicore__ inline void PvStageWindow( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_A
       tl::ascend::pv_cross_set2(W[0], W[0], W[0], 8);
       tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 10);
       tl::ascend::pv_sync_all(W[0], W[0], W[0]);
-      tl::ascend::bf_accumulate(W[0], W[0], W[0], blocks, n, batch);
-      tl::ascend::pv_sync_all(W[0], W[0], W[0]);
-      tl::ascend::pv_cross_set2(W[0], W[0], W[0], 8);
-      tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 10);
-      tl::ascend::pv_sync_all(W[0], W[0], W[0]);
-      tl::ascend::bf_finish(W[0], W[0], W[0], blocks, n, batch, stride);
+      tl::ascend::bf_finish(W[0], W[0], W[0], blocks, n, batch, stride, atol, rtol);
     } else {
       if (((((((2 < ((blocks * 2) / batch)) && ((n % 16) == 0)) && (0 < window)) && ((window % 16) == 0)) && (((((((((n + 63) / 64) * 320) + (((n + 7) / 8) * 136)) + (max(((((n - 1) / max((((blocks * 2) / batch) - 2), 1)) / 8) + 1), 2) * 64)) + ((((n - 1) / max((((blocks * 2) / batch) - 2), 1)) / 8) * 8)) + max((max(((((n - 1) / max((((blocks * 2) / batch) - 2), 1)) + 1) * ((n + 7) / 8)), 64) * 8), ((((((n - 1) / max((((blocks * 2) / batch) - 2), 1)) / 8) * 1024) + (((n - 1) / max((((blocks * 2) / batch) - 2), 1)) * 16)) + 1296))) + ((((n - 1) / max((((blocks * 2) / batch) - 2), 1)) + 1) * stride)) <= 48712)) && (((((((n + 63) / 64) * 192) + (((n + 7) / 8) * 80)) + (((n + 15) / 16) * 64)) + (n * window)) <= 44416)) && (window < ((((n - 1) / max((((blocks * 2) / batch) - 1), 1)) * 4) + 4))) {
         tl::ascend::fr_prepared_raw(W[0], W[0], W[0], blocks, n, batch, stride, window, atol, rtol, (((((((batch * 8192) + (((((batch * n) * stride) + 63) / 64) * 128)) + (blocks * 32)) + ((n * n) * 27)) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2)));
@@ -3114,121 +2969,133 @@ __aicore__ inline void PvStageWindow( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_A
         tl::ascend::fr_raw(W[0], W[0], W[0], blocks, n, batch, stride, window, atol, rtol, (((((((batch * 8192) + (((((batch * n) * stride) + 63) / 64) * 128)) + (blocks * 32)) + ((n * n) * 27)) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2)));
       }
     }
-    for (int32_t job = 0; job < batch; ++job) {
-      tl::ascend::pv_load_rows(pool[0], W[(((job * 8192) + (((batch * n) * stride) * 2)) + 2048)], pool[0], 1, (((blocks * 2) / batch) * 8), 0, 0);
-      tl::ascend::pv_load_rows(pool[384], W[((job * 8192) + (((batch * n) * stride) * 2))], pool[384], 1, 64, 0, 0);
-      AscendC::SetFlag<AscendC::HardEvent::MTE2_S>(0);
-      AscendC::WaitFlag<AscendC::HardEvent::MTE2_S>(0);
-      inverse = 0.000000e+00f;
-      peak_cached = 0.000000e+00f;
-      valid = 1;
-      for (int32_t c = 0; c < ((blocks * 2) / batch); ++c) {
-        if (pool.GetValue((((int64_t)c) * (int64_t)8)) < 5.000000e-01f) {
-          valid = 0;
-        }
-        inverse = (inverse + pool.GetValue(((((int64_t)c) * (int64_t)8) + (int64_t)1)));
-        peak_cached = max(peak_cached, pool.GetValue(((((int64_t)c) * (int64_t)8) + (int64_t)2)));
-      }
-      float power = pool.GetValue(416);
-      float total = pool.GetValue(417);
-      pool.SetValue(3648, total);
-      pool.SetValue(3649, inverse);
-      AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
-      AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
-      tl::ascend::pv_sqrt(pool[3648], pool[3648], pool[3648], 2);
-      AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
-      AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
-      float af = ((pool.GetValue(3648) * power) * 1.001000e+00f);
-      float yf = ((pool.GetValue(3649) / power) * 1.001000e+00f);
-      float cutoff = max((pool.GetValue(3648) * rtol), (atol / power));
-      if (((inverse <= 0.000000e+00f) || (8.100000e+01f <= ((inverse * cutoff) * cutoff))) || (1.000000e+16f <= (inverse * total))) {
-        valid = 0;
-      }
-      refine = 0;
-      if ((valid != 0) && (1.000000e+15f <= (inverse * total))) {
-        refine = 1;
-      }
-      sy = 1.000000e+00f;
-      float sa = (power * 8.000000e+00f);
-      if (refine != 0) {
-        float peak = peak_cached;
-        if ((peak <= 0.000000e+00f) || (1.000000e+20f <= peak)) {
-          refine = 0;
-          valid = 0;
-        }
-        if (refine != 0) {
-          while (1) {
-            if (!((sy < (peak * 4.000000e+00f)))) { break; }
-            sy = (sy * 2.000000e+00f);
-          }
-          while (1) {
-            if (!(((0.000000e+00f < peak) && ((peak * 4.000000e+00f) <= (sy * 5.000000e-01f))))) { break; }
-            sy = (sy * 5.000000e-01f);
-          }
-          tl::ascend::fr_quant(W[0], W[0], W[0], ((batch * 8192) + (((((batch * n) * stride) + 63) / 64) * 128)), 0, (((n * n) * 5) / 4), (((((n * n) * 27) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2)), (blocks * 2), n, job, sa, sy);
+    all_admitted = 0;
+    if (blocked != 0) {
+      all_admitted = 1;
+      for (int32_t job = 0; job < batch; ++job) {
+        tl::ascend::pc_invalidate(S[((job * 512) + 16)], S[((job * 512) + 16)], S[((job * 512) + 16)]);
+        if (S.GetValue(((((int64_t)job) * (int64_t)512) + (int64_t)16)) <= 5.000000e-01f) {
+          all_admitted = 0;
         }
       }
-      if (bid == 0) {
-        pool.SetValue(3584, ((float)refine));
-        AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(0);
-        AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(0);
-        tl::ascend::pv_store_rows(S[(job * 512)], pool[3584], S[(job * 512)], 1, 8, 0, 0);
-      }
-      if (refine != 0) {
-        if (bid == 0) {
-          pool.SetValue(3600, ((float)job));
-          AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(0);
-          AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(0);
-          tl::ascend::pv_store_rows(S[(batch * 512)], pool[3600], S[(batch * 512)], 1, 16, 0, 0);
-        }
-        tl::ascend::pv_sync_all(W[0], W[0], W[0]);
-        tl::ascend::pv_cross_set2(W[0], W[0], W[0], 8);
-        tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 10);
-      }
-      if (refine != 0) {
-        tl::ascend::fr_decode(W[0], W[0], W[0], ((batch * 8192) + (((((batch * n) * stride) + 63) / 64) * 128)), (((n * n) * 5) / 2), (((n * n) * 25) + (((n * n) * 5) / 2)), (((n * n) * 26) + (((n * n) * 5) / 2)), ((((n * n) * 26) + ((n * n) / 2)) + (((n * n) * 5) / 2)), (blocks * 2), n, job, sa, sy);
-        tl::ascend::fr_norms(W[0], W[0], W[0], ((batch * 8192) + (((((batch * n) * stride) + 63) / 64) * 128)), (((n * n) * 25) + (((n * n) * 5) / 2)), ((((n * n) * 27) + (((n * n) / 2) * 2)) + (((n * n) * 5) / 2)), (blocks * 2), n);
-      }
-      if (refine != 0) {
-        tl::ascend::pv_sync_all(W[0], W[0], W[0]);
-        tl::ascend::pv_cross_set2(W[0], W[0], W[0], 8);
-        tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 10);
-      }
-      if (refine != 0) {
-        tl::ascend::fr_certify(W[0], W[0], W[0], ((batch * 8192) + (((((batch * n) * stride) + 63) / 64) * 128)), ((((n * n) * 26) + (((n * n) / 2) * 2)) + (((n * n) * 5) / 2)), ((((n * n) * 27) + (((n * n) / 2) * 2)) + (((n * n) * 5) / 2)), (((((n * n) * 27) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2)), ((job * 512) + 32), (blocks * 2), n, job, sa, sy, af, yf);
-        tl::ascend::pv_sync_all(W[0], W[0], W[0]);
-        tl::ascend::pv_load_rows(pool[0], S[((job * 512) + 32)], pool[0], 1, (blocks * 16), 0, 0);
+    }
+    if (all_admitted == 0) {
+      for (int32_t job_1 = 0; job_1 < batch; ++job_1) {
+        tl::ascend::pv_load_rows(pool[0], W[(((job_1 * 8192) + (((batch * n) * stride) * 2)) + 2048)], pool[0], 1, (((blocks * 2) / batch) * 8), 0, 0);
+        tl::ascend::pv_load_rows(pool[384], W[((job_1 * 8192) + (((batch * n) * stride) * 2))], pool[384], 1, 64, 0, 0);
         AscendC::SetFlag<AscendC::HardEvent::MTE2_S>(0);
         AscendC::WaitFlag<AscendC::HardEvent::MTE2_S>(0);
-        corrected = 0.000000e+00f;
-        for (int32_t c_1 = 0; c_1 < (blocks * 2); ++c_1) {
-          if (pool.GetValue((((int64_t)c_1) * (int64_t)8)) < 5.000000e-01f) {
+        inverse = 0.000000e+00f;
+        peak_cached = 0.000000e+00f;
+        valid = 1;
+        for (int32_t c = 0; c < ((blocks * 2) / batch); ++c) {
+          if (pool.GetValue((((int64_t)c) * (int64_t)8)) < 5.000000e-01f) {
             valid = 0;
           }
-          corrected = (corrected + pool.GetValue(((((int64_t)c_1) * (int64_t)8) + (int64_t)1)));
+          inverse = (inverse + pool.GetValue(((((int64_t)c) * (int64_t)8) + (int64_t)1)));
+          peak_cached = max(peak_cached, pool.GetValue(((((int64_t)c) * (int64_t)8) + (int64_t)2)));
         }
-        float absolute_cutoff = max((af * rtol), atol);
-        if (8.100000e+01f <= ((corrected * absolute_cutoff) * absolute_cutoff)) {
+        float power = pool.GetValue(416);
+        float total = pool.GetValue(417);
+        pool.SetValue(3648, total);
+        pool.SetValue(3649, inverse);
+        AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
+        AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
+        tl::ascend::pv_sqrt(pool[3648], pool[3648], pool[3648], 2);
+        AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
+        AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
+        float af = ((pool.GetValue(3648) * power) * 1.001000e+00f);
+        float yf = ((pool.GetValue(3649) / power) * 1.001000e+00f);
+        float cutoff = max((pool.GetValue(3648) * rtol), (atol / power));
+        if (((inverse <= 0.000000e+00f) || (8.100000e+01f <= ((inverse * cutoff) * cutoff))) || (1.000000e+16f <= (inverse * total))) {
           valid = 0;
         }
-      }
-      if ((valid == 0) && (fallback_enabled != 0)) {
-        tl::ascend::pv_sync_all(W[0], W[0], W[0]);
-        if (bid == job) {
-          tl::ascend::fr_fallback(W[0], W[0], W[0], (((((((batch * 8224) + (((((batch * n) * stride) + 63) / 64) * 128)) + (blocks * 32)) + ((n * n) * 27)) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2)), blocks, job, n, batch, atol, rtol);
-          tl::ascend::pc_invalidate(W[((((((((batch * 8224) + (((((batch * n) * stride) + 63) / 64) * 128)) + (job * 32)) + (blocks * 32)) + ((n * n) * 27)) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2))], W[((((((((batch * 8224) + (((((batch * n) * stride) + 63) / 64) * 128)) + (job * 32)) + (blocks * 32)) + ((n * n) * 27)) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2))], W[((((((((batch * 8224) + (((((batch * n) * stride) + 63) / 64) * 128)) + (job * 32)) + (blocks * 32)) + ((n * n) * 27)) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2))]);
+        refine = 0;
+        if ((valid != 0) && (1.000000e+15f <= (inverse * total))) {
+          refine = 1;
         }
-        tl::ascend::pv_sync_all(W[0], W[0], W[0]);
-        tl::ascend::pv_load_rows(pool[3616], W[((((((((batch * 8224) + (((((batch * n) * stride) + 63) / 64) * 128)) + (job * 32)) + (blocks * 32)) + ((n * n) * 27)) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2))], pool[3616], 1, 8, 0, 0);
-        AscendC::SetFlag<AscendC::HardEvent::MTE2_S>(0);
-        AscendC::WaitFlag<AscendC::HardEvent::MTE2_S>(0);
-        valid = ((int32_t)pool.GetValue(3616));
-      }
-      if (bid == 0) {
-        pool.SetValue(3616, ((float)valid));
-        AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(0);
-        AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(0);
-        tl::ascend::pv_store_rows(S[((job * 512) + 16)], pool[3616], S[((job * 512) + 16)], 1, 8, 0, 0);
+        sy = 1.000000e+00f;
+        float sa = (power * 8.000000e+00f);
+        if (refine != 0) {
+          float peak = peak_cached;
+          if ((peak <= 0.000000e+00f) || (1.000000e+20f <= peak)) {
+            refine = 0;
+            valid = 0;
+          }
+          if (refine != 0) {
+            while (1) {
+              if (!((sy < (peak * 4.000000e+00f)))) { break; }
+              sy = (sy * 2.000000e+00f);
+            }
+            while (1) {
+              if (!(((0.000000e+00f < peak) && ((peak * 4.000000e+00f) <= (sy * 5.000000e-01f))))) { break; }
+              sy = (sy * 5.000000e-01f);
+            }
+            tl::ascend::fr_quant(W[0], W[0], W[0], ((batch * 8192) + (((((batch * n) * stride) + 63) / 64) * 128)), 0, (((n * n) * 5) / 4), (((((n * n) * 27) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2)), (blocks * 2), n, job_1, sa, sy);
+          }
+        }
+        if (bid == 0) {
+          pool.SetValue(3584, ((float)refine));
+          AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(0);
+          AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(0);
+          tl::ascend::pv_store_rows(S[(job_1 * 512)], pool[3584], S[(job_1 * 512)], 1, 8, 0, 0);
+        }
+        if (refine != 0) {
+          if (bid == 0) {
+            pool.SetValue(3600, ((float)job_1));
+            AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(0);
+            AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(0);
+            tl::ascend::pv_store_rows(S[(batch * 512)], pool[3600], S[(batch * 512)], 1, 16, 0, 0);
+          }
+          tl::ascend::pv_sync_all(W[0], W[0], W[0]);
+          tl::ascend::pv_cross_set2(W[0], W[0], W[0], 8);
+          tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 10);
+        }
+        if (refine != 0) {
+          tl::ascend::fr_decode(W[0], W[0], W[0], ((batch * 8192) + (((((batch * n) * stride) + 63) / 64) * 128)), (((n * n) * 5) / 2), (((n * n) * 25) + (((n * n) * 5) / 2)), (((n * n) * 26) + (((n * n) * 5) / 2)), ((((n * n) * 26) + ((n * n) / 2)) + (((n * n) * 5) / 2)), (blocks * 2), n, job_1, sa, sy);
+          tl::ascend::fr_norms(W[0], W[0], W[0], ((batch * 8192) + (((((batch * n) * stride) + 63) / 64) * 128)), (((n * n) * 25) + (((n * n) * 5) / 2)), ((((n * n) * 27) + (((n * n) / 2) * 2)) + (((n * n) * 5) / 2)), (blocks * 2), n);
+        }
+        if (refine != 0) {
+          tl::ascend::pv_sync_all(W[0], W[0], W[0]);
+          tl::ascend::pv_cross_set2(W[0], W[0], W[0], 8);
+          tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 10);
+        }
+        if (refine != 0) {
+          tl::ascend::fr_certify(W[0], W[0], W[0], ((batch * 8192) + (((((batch * n) * stride) + 63) / 64) * 128)), ((((n * n) * 26) + (((n * n) / 2) * 2)) + (((n * n) * 5) / 2)), ((((n * n) * 27) + (((n * n) / 2) * 2)) + (((n * n) * 5) / 2)), (((((n * n) * 27) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2)), ((job_1 * 512) + 32), (blocks * 2), n, job_1, sa, sy, af, yf);
+          tl::ascend::pv_sync_all(W[0], W[0], W[0]);
+          tl::ascend::pv_load_rows(pool[0], S[((job_1 * 512) + 32)], pool[0], 1, (blocks * 16), 0, 0);
+          AscendC::SetFlag<AscendC::HardEvent::MTE2_S>(0);
+          AscendC::WaitFlag<AscendC::HardEvent::MTE2_S>(0);
+          corrected = 0.000000e+00f;
+          for (int32_t c_1 = 0; c_1 < (blocks * 2); ++c_1) {
+            if (pool.GetValue((((int64_t)c_1) * (int64_t)8)) < 5.000000e-01f) {
+              valid = 0;
+            }
+            corrected = (corrected + pool.GetValue(((((int64_t)c_1) * (int64_t)8) + (int64_t)1)));
+          }
+          float absolute_cutoff = max((af * rtol), atol);
+          if (8.100000e+01f <= ((corrected * absolute_cutoff) * absolute_cutoff)) {
+            valid = 0;
+          }
+        }
+        if ((valid == 0) && (fallback_enabled != 0)) {
+          tl::ascend::pv_sync_all(W[0], W[0], W[0]);
+          if (bid == job_1) {
+            tl::ascend::fr_fallback(W[0], W[0], W[0], (((((((batch * 8224) + (((((batch * n) * stride) + 63) / 64) * 128)) + (blocks * 32)) + ((n * n) * 27)) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2)), blocks, job_1, n, batch, atol, rtol);
+            tl::ascend::pc_invalidate(W[((((((((batch * 8224) + (((((batch * n) * stride) + 63) / 64) * 128)) + (job_1 * 32)) + (blocks * 32)) + ((n * n) * 27)) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2))], W[((((((((batch * 8224) + (((((batch * n) * stride) + 63) / 64) * 128)) + (job_1 * 32)) + (blocks * 32)) + ((n * n) * 27)) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2))], W[((((((((batch * 8224) + (((((batch * n) * stride) + 63) / 64) * 128)) + (job_1 * 32)) + (blocks * 32)) + ((n * n) * 27)) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2))]);
+          }
+          tl::ascend::pv_sync_all(W[0], W[0], W[0]);
+          tl::ascend::pv_load_rows(pool[3616], W[((((((((batch * 8224) + (((((batch * n) * stride) + 63) / 64) * 128)) + (job_1 * 32)) + (blocks * 32)) + ((n * n) * 27)) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2))], pool[3616], 1, 8, 0, 0);
+          AscendC::SetFlag<AscendC::HardEvent::MTE2_S>(0);
+          AscendC::WaitFlag<AscendC::HardEvent::MTE2_S>(0);
+          valid = ((int32_t)pool.GetValue(3616));
+        }
+        if (bid == 0) {
+          pool.SetValue(3616, ((float)valid));
+          AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(0);
+          AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(0);
+          tl::ascend::pv_store_rows(S[((job_1 * 512) + 16)], pool[3616], S[((job_1 * 512) + 16)], 1, 8, 0, 0);
+        }
       }
     }
     if (bid == 0) {

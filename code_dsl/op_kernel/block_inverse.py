@@ -29,9 +29,11 @@ def raw_kernel(header):
     for stage in T.serial(n//64):
      emit('pv_cross_wait2',W.access_ptr('rw'),8)
      emit('br_gemm',W.access_ptr('rw'),diag,panel_input,panel,blocks,batch,64,64,n)
-     T.barrier_all();emit('pc_done',W.access_ptr('rw'))
-     emit('pv_cross_wait2',W.access_ptr('rw'),8)
-     emit('br_gemm',W.access_ptr('rw'),factors,panel,update,blocks,batch,n,64,n)
+     T.barrier_all();emit('br_cube_sync',W.access_ptr('rw'))
+     if batch*n==blocks*64:
+      emit('br_row_gemm',W.access_ptr('rw'),factors,panel,update,blocks,batch,n,64,n)
+     else:
+      emit('br_gemm',W.access_ptr('rw'),factors,panel,update,blocks,batch,n,64,n)
      T.barrier_all();emit('pc_done',W.access_ptr('rw'))
    with T.Scope('V'):
     T.reads(A[0],W[0],S[0]);T.writes(Y[0],W[0],S[0])
@@ -83,6 +85,7 @@ def raw_kernel(header):
       emit('pv_scale',pool.access_ptr('w'),pool.access_ptr('r'),T.float32(1)/power,row_tile*n)
       T.set_flag('V','MTE3',0);T.wait_flag('V','MTE3',0)
       emit('pv_store_rows',W.access_ptr('w',offset=source+row*n),pool.access_ptr('r'),row_tile,n,0,0)
+      emit('pv_store_rows',W.access_ptr('w',offset=11*batch*extent+row*n),pool.access_ptr('r'),row_tile,n,0,0)
       emit('pv_all_barrier',W.access_ptr('rw'))
     emit('pv_sync_all',W.access_ptr('rw'))
     for stage in T.serial(n//64):
@@ -140,8 +143,8 @@ def raw_kernel(header):
         T.set_flag('MTE2','MTE3',0);T.wait_flag('MTE2','MTE3',0)
         emit('pv_store_rows',W.access_ptr('w',offset=diag+job*4096+(i-st)*64),pool.access_ptr('r',offset=16384),row_tile,64,0,0)
         emit('pv_all_barrier',W.access_ptr('rw'))
-     emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10);emit('pv_sync_all',W.access_ptr('rw'))
-     emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10);emit('pv_sync_all',W.access_ptr('rw'))
+     emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10)
+     if batch*n!=blocks*64:emit('pv_sync_all',W.access_ptr('rw'))
      for iteration in T.serial(T.ceildiv(batch*n//row_tile,cores)):
       row=(bid+iteration*cores)*row_tile
       if row<batch*n:
@@ -158,13 +161,12 @@ def raw_kernel(header):
        emit('pv_store_rows',W.access_ptr('w',offset=source+row*n),pool.access_ptr('r'),row_tile,n,0,0)
        emit('pv_all_barrier',W.access_ptr('rw'))
      emit('pv_sync_all',W.access_ptr('rw'))
-    emit('pv_load_rows',pool.access_ptr('w',offset=20480),S.access_ptr('r'),1,batch*32,0,0)
     emit('pv_load_rows',pool.access_ptr('w',offset=22016),S.access_ptr('r',offset=512),1,512,0,0)
     T.set_flag('MTE2','S',0);T.wait_flag('MTE2','S',0)
     for iteration in T.serial(T.ceildiv(batch*n//row_tile,cores)):
      row=(bid+iteration*cores)*row_tile
      if row<batch*n:
-      job=row//n;power=pool[20480+job*32]
+      job=row//n
       for col in T.serial(n//64):pool[21200+col]=T.Cast('float32',col)
       for stage in T.serial(n//64):
        chosen=T.Cast('int32',pool[22016+(stage*batch+job)*32+1])//64
@@ -172,10 +174,8 @@ def raw_kernel(header):
       for col in T.serial(n//64):
        original=T.Cast('int32',pool[21200+col])
        emit('pv_load_rows',pool.access_ptr('w'),W.access_ptr('r',offset=source+row*n+col*64),row_tile,64,n-64,0)
-       T.set_flag('MTE2','V',0);T.wait_flag('MTE2','V',0)
-       emit('pv_scale',pool.access_ptr('w'),pool.access_ptr('r'),T.float32(1)/power,row_tile*64)
-       T.set_flag('V','MTE3',0);T.wait_flag('V','MTE3',0)
-       emit('pv_store_rows',Y.access_ptr('w',offset=row*n+original*64),pool.access_ptr('r'),row_tile,64,0,n-64)
+       T.set_flag('MTE2','MTE3',0);T.wait_flag('MTE2','MTE3',0)
+       emit('pv_store_rows',W.access_ptr('w',offset=8*batch*extent+row*n+original*64),pool.access_ptr('r'),row_tile,64,0,n-64)
        emit('pv_all_barrier',W.access_ptr('rw'))
     emit('pv_sync_all',W.access_ptr('rw'))
   T.barrier_all()
