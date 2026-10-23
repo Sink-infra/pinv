@@ -1929,8 +1929,8 @@ __aicore__ inline void FusedCertify( GM_ADDR Y_handle,  GM_ADDR C_handle,  GM_AD
   auto yy = ascend_ub.GetWithOffset<float>(2048, 69632);
   auto cc = ascend_ub.GetWithOffset<float>(2048, 77824);
   auto columns = ascend_ub.GetWithOffset<float>(256, 86016);
-  auto red = ascend_ub.GetWithOffset<float>(32, 88064);
-  auto scratch = ascend_ub.GetWithOffset<float>(256, 87040);
+  auto red = ascend_ub.GetWithOffset<float>(32, 87040);
+  auto scratch = ascend_ub.GetWithOffset<float>(256, 87168);
   auto colnorm = ascend_ub.GetWithOffset<float>(256, 88192);
   float factor = 0.000000e+00f;
   auto sums = ascend_ub.GetWithOffset<float>(2048, 89216);
