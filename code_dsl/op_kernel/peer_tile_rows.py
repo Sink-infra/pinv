@@ -49,8 +49,6 @@ def make_peer_tile_rows_macro(*, cache_peak=False):
         if window>0:window_end=T.min(T.int32(200),window)
         emit('pv_cross_set0',pool.access_ptr('rw'),4)
         emit('pv_cross_wait',pool.access_ptr('rw'),4)
-        emit('pv_cross_set0',pool.access_ptr('rw'),5)
-        emit('pv_cross_wait',pool.access_ptr('rw'),5)
         for panel in T.serial(T.ceildiv(T.int32(200),16)):
             first=panel*16
             rows=T.min(T.int32(200)-first,16)

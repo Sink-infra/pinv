@@ -27,7 +27,9 @@ def select_strategy(plan):
     if strategy == "local" and plan.geometry.n <= 64:
         return strategy
     if strategy == "peer_pipeline" and plan.geometry.m == plan.geometry.n == 200:
-        return strategy
+        batch=plan.geometry.batch
+        if batch*13<=plan.aiv and (batch*13+1)//2<=plan.aic and plan.blocks==(batch*13+1)//2 and plan.fields["stride"]==456:
+            return strategy
     if strategy == "window_cube":
         from code_dsl.op_host.recovery_layout import supported
         if supported(plan):return strategy

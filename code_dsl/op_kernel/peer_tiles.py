@@ -31,3 +31,8 @@ def tile_rows_kernel():
 def tile_peer_kernel():
     from code_dsl.op_kernel.peer_tile_producer import make_peer_tile_producer_macro
     return _tile_component(make_peer_tile_producer_macro(),True)
+
+
+def tile_pipeline_kernel(component_source,fallback_source):
+    from code_dsl.op_kernel.peer_tile_pipeline import tile_pipeline_kernel as make_pipeline
+    return make_pipeline(component_source,fallback_source)

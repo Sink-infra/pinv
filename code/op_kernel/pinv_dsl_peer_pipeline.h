@@ -99,15 +99,13 @@ __aicore__ inline void PvStagePeerTile( GM_ADDR A_handle,  GM_ADDR X_handle,  GM
     tl::ascend::pv_sync_init(W[0], W[0], W[0]);
     if ((bid / 13) < batch) {
       if (9 <= (bid % 13)) {
-        tl::ascend::PvDslPeerTileProducer(A_handle,X_handle,W_handle, blocks, n, stride, batch, (bid / 13), (bid % 13), 9, window,fftsAddr);
+        tl::ascend::PvDslPeerTileProducer(A_handle,X_handle,W_handle,blocks, n, stride, batch, (bid / 13), (bid % 13), 9, window,fftsAddr);
       } else {
-        tl::ascend::PvDslPeerTileRows(A_handle,X_handle,W_handle, blocks, n, stride, batch, (bid / 13), (bid % 13), 9, window,fftsAddr);
+        tl::ascend::PvDslPeerTileRows(A_handle,X_handle,W_handle,blocks, n, stride, batch, (bid / 13), (bid % 13), 9, window,fftsAddr);
       }
     } else {
       tl::ascend::pv_cross_set0(W[0], W[0], W[0], 4);
       tl::ascend::pv_cross_wait(W[0], W[0], W[0], 4);
-      tl::ascend::pv_cross_set0(W[0], W[0], W[0], 5);
-      tl::ascend::pv_cross_wait(W[0], W[0], W[0], 5);
       for (int32_t dummy_panel = 0; dummy_panel < 13; ++dummy_panel) {
         tl::ascend::pv_cross_set0(W[0], W[0], W[0], 0);
         tl::ascend::pv_cross_wait(W[0], W[0], W[0], 0);
@@ -117,8 +115,8 @@ __aicore__ inline void PvStagePeerTile( GM_ADDR A_handle,  GM_ADDR X_handle,  GM
     }
     tl::ascend::pv_sync_all(W[0], W[0], W[0]);
     valid = 1;
-    for (int32_t b = 0; b < batch; ++b) {
-      tl::ascend::pv_load_rows(pool[0], W[(((b * 8192) + (((batch * n) * stride) * 2)) + 2048)], pool[0], 1, 104, 0, 0);
+    if (bid < batch) {
+      tl::ascend::pv_load_rows(pool[0], W[(((bid * 8192) + (((batch * n) * stride) * 2)) + 2048)], pool[0], 1, 104, 0, 0);
       AscendC::SetFlag<AscendC::HardEvent::MTE2_S>(0);
       AscendC::WaitFlag<AscendC::HardEvent::MTE2_S>(0);
       inverse_total = 0.000000e+00f;
@@ -128,7 +126,7 @@ __aicore__ inline void PvStagePeerTile( GM_ADDR A_handle,  GM_ADDR X_handle,  GM
         }
         inverse_total = (inverse_total + pool.GetValue(((c * 8) + 1)));
       }
-      tl::ascend::pv_load_rows(pool[384], W[((b * 8192) + (((batch * n) * stride) * 2))], pool[384], 1, 64, 0, 0);
+      tl::ascend::pv_load_rows(pool[384], W[((bid * 8192) + (((batch * n) * stride) * 2))], pool[384], 1, 64, 0, 0);
       AscendC::SetFlag<AscendC::HardEvent::MTE2_S>(0);
       AscendC::WaitFlag<AscendC::HardEvent::MTE2_S>(0);
       float power = pool.GetValue(416);
@@ -141,6 +139,22 @@ __aicore__ inline void PvStagePeerTile( GM_ADDR A_handle,  GM_ADDR X_handle,  GM
       AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
       float cutoff = max((pool.GetValue(640) * rtol), (atol / power));
       if (((inverse_total <= 0.000000e+00f) || (8.100000e+01f <= ((inverse_total * cutoff) * cutoff))) || (3.600000e+09f <= (total * inverse_total))) {
+        valid = 0;
+      }
+      pool.SetValue(0, ((float)valid));
+      AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(0);
+      AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(0);
+      tl::ascend::pv_store_rows(W[(((bid * 8) + (((batch * n) * stride) * 2)) + 7040)], pool[0], W[(((bid * 8) + (((batch * n) * stride) * 2)) + 7040)], 1, 8, 0, 0);
+      AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(0);
+      AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(0);
+    }
+    tl::ascend::pv_sync_all(W[0], W[0], W[0]);
+    tl::ascend::pv_load_rows(pool[0], W[((((batch * n) * stride) * 2) + 7040)], pool[0], 1, (batch * 8), 0, 0);
+    AscendC::SetFlag<AscendC::HardEvent::MTE2_S>(0);
+    AscendC::WaitFlag<AscendC::HardEvent::MTE2_S>(0);
+    valid = 1;
+    for (int32_t b = 0; b < batch; ++b) {
+      if (pool.GetValue((((int64_t)b) * (int64_t)8)) < 5.000000e-01f) {
         valid = 0;
       }
     }
