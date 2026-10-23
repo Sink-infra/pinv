@@ -36,6 +36,10 @@ def append_block(root,lower,digest):
   records[name]={'source_sha256':sha256(source.encode()).hexdigest(),'callable_body_sha256':sha256(body[body.index('{'):].encode()).hexdigest()}
   return source,body
  quick_source,quick=add('block_quick',quick_kernel())
+ # The stage loop calls this once per stage, but inlining puts the whole
+ # resident 64-lane schedule inside the loop body and the instruction buffer
+ # refetches it every stage. Internal linkage keeps one copy per unit.
+ quick=quick.replace('__aicore__ inline void BlockQuick(','__aicore__ static __attribute__((noinline)) void BlockQuick(',1)
  gemm_source,gemm=add('block_gemm',block_gemm(),cube=True)
  header+='namespace tl::ascend {\n'+quick+'\n'+gemm+'\n}\n'
  header+="""

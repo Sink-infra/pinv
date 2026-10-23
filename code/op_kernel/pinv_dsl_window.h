@@ -205,7 +205,6 @@ __aicore__ inline void PvDslWindowRows( GM_ADDR A_handle,  GM_ADDR X_handle,  GM
           float reciprocal = pool.GetValue(((meta + (uint32_t)16) + column_1));
           tl::ascend::pv_scale(pool[(packets + (column_1 * packet_stride))], pool[(packets + (column_1 * packet_stride))], pool[(packets + (column_1 * packet_stride))], reciprocal, packet_stride);
           if ((column_1 + (uint32_t)1) < rows) {
-            tl::ascend::pv_scale(pool[product], pool[product], pool[product], -1.000000e+00f, 16);
             tl::ascend::pv_brcb_rows(pool[factors], pool[product], pool[factors], 16, 8);
             for (uint32_t chunk_1 = (uint32_t)0; chunk_1 < (((packet_stride + (uint32_t)64) - (uint32_t)1) / (uint32_t)64); ++chunk_1) {
               uint32_t col = (chunk_1 * (uint32_t)64);
@@ -216,7 +215,7 @@ __aicore__ inline void PvDslWindowRows( GM_ADDR A_handle,  GM_ADDR X_handle,  GM
         for (uint32_t column_2 = (uint32_t)0; column_2 < rows; ++column_2) {
           int32_t selected_1 = ((int32_t)pool.GetValue((meta + column_2)));
           if ((((uint32_t)selected_1) % cores) == core) {
-            tl::ascend::pv_copy(pool[(((((uint32_t)selected_1) / cores) * stride) + first)], pool[(packets + (column_2 * packet_stride))], pool[(((((uint32_t)selected_1) / cores) * stride) + first)], packet_stride);
+            tl::ascend::pv_scale(pool[(((((uint32_t)selected_1) / cores) * stride) + first)], pool[(packets + (column_2 * packet_stride))], pool[(((((uint32_t)selected_1) / cores) * stride) + first)], -1.000000e+00f, packet_stride);
           }
           tl::ascend::pv_gather_offsets(pool[vector], pool[0], pool[row_indices], ((first + column_2) * (uint32_t)4), factor_rows);
           if ((((uint32_t)selected_1) % cores) == core) {
@@ -226,7 +225,6 @@ __aicore__ inline void PvDslWindowRows( GM_ADDR A_handle,  GM_ADDR X_handle,  GM
             AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
             AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
           }
-          tl::ascend::pv_scale(pool[vector], pool[vector], pool[vector], -1.000000e+00f, factor_rows);
           tl::ascend::pv_brcb_rows(pool[factors], pool[vector], pool[factors], factor_rows, 8);
           uint32_t pivot_column = (first + column_2);
           bool consumed = (((pivot_column % (uint32_t)8) == (uint32_t)7) || ((pivot_column + (uint32_t)1) == n));
@@ -1423,8 +1421,8 @@ __aicore__ inline void FusedQuant( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADDR
   auto high = ascend_ub.GetWithOffset<float>(2048, 16384);
   auto low = ascend_ub.GetWithOffset<float>(2048, 24576);
   auto temp = ascend_ub.GetWithOffset<float>(2048, 32768);
-  auto carry = ascend_ub.GetWithOffset<float>(2048, 49152);
-  auto rounded = ascend_ub.GetWithOffset<float>(2048, 40960);
+  auto carry = ascend_ub.GetWithOffset<float>(2048, 40960);
+  auto rounded = ascend_ub.GetWithOffset<float>(2048, 49152);
   auto half_buf = ascend_ub.GetWithOffset<half>(2048, 57344);
   auto small = ascend_ub.GetWithOffset<int8_t>(2048, 61440);
   auto vid = AscendC::GetSubBlockIdx();
@@ -1929,8 +1927,8 @@ __aicore__ inline void FusedCertify( GM_ADDR Y_handle,  GM_ADDR C_handle,  GM_AD
   auto yy = ascend_ub.GetWithOffset<float>(2048, 69632);
   auto cc = ascend_ub.GetWithOffset<float>(2048, 77824);
   auto columns = ascend_ub.GetWithOffset<float>(256, 86016);
-  auto red = ascend_ub.GetWithOffset<float>(32, 87040);
-  auto scratch = ascend_ub.GetWithOffset<float>(256, 87168);
+  auto red = ascend_ub.GetWithOffset<float>(32, 88064);
+  auto scratch = ascend_ub.GetWithOffset<float>(256, 87040);
   auto colnorm = ascend_ub.GetWithOffset<float>(256, 88192);
   float factor = 0.000000e+00f;
   auto sums = ascend_ub.GetWithOffset<float>(2048, 89216);
