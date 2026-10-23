@@ -90,12 +90,7 @@ def raw_kernel(header):
      # All remaining block candidates are independent local64 DSL inverses.
      if bid<candidates:
       job=bid//remaining;position=st+bid%remaining*64
-      emit('pv_load_rows',pool.access_ptr('w'),W.access_ptr('r',offset=source+job*extent+position*n),64,64,n-64,0)
-      T.set_flag('MTE2','MTE3',0);T.wait_flag('MTE2','MTE3',0)
-      emit('pv_store_rows',W.access_ptr('w',offset=ca+bid*4096),pool.access_ptr('r'),1,4096,0,0)
-      emit('pv_all_barrier',W.access_ptr('rw'))
-      T.set_flag('MTE3','MTE2',0);T.wait_flag('MTE3','MTE2',0)
-      emit('br_quick',W.access_ptr('rw'),ca,ci,status,blocks,bid,candidates)
+      emit('br_quick_strided',W.access_ptr('rw'),source+job*extent+position*n,ci+bid*4096,status+bid*32,blocks,n)
       admitted=T.alloc_var('int32');admitted=T.Cast('int32',W[status+bid*32])
       cost=T.alloc_var('float32');cost=T.float32(1e30)
       if admitted!=0:cost=W[status+bid*32+1]

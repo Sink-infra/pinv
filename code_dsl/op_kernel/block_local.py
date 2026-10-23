@@ -14,7 +14,7 @@ def quick_kernel():
    with T.Scope('V'):
     T.reads(A[0]);T.writes(Y[0],S[0])
     accepted[0]=0
-    operation(A,Y,pool,indices,order,accepted,job*4096,64,T.float32(0),T.float32(0))
+    operation(A,Y,pool,indices,order,accepted,job*4096,64,T.float32(0),T.float32(0),input_stride=m)
     S[job*32]=T.Cast('float32',accepted[0])
     word=T.alloc_var('int32');word=accepted[1]
     metric=T.alloc_var('float32');metric=T.reinterpret('float32',word)

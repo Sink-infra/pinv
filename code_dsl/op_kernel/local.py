@@ -14,7 +14,7 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
     store_admission=admission_writer(scalar_admission)
 
     @T.macro
-    def quick(A,X,pool,indices,order,accepted,offset,runtime_n,atol,rtol):
+    def quick(A,X,pool,indices,order,accepted,offset,runtime_n,atol,rtol,input_stride=0):
         # Runtime shapes share one of two vector-width tiles. Dispatch happens
         # outside elimination; all lane strides and vector widths are DSL tile
         # constants, rather than descriptors cached by an external C++ helper.
@@ -37,7 +37,7 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
         emit('pv_fill',pool.access_ptr('w'),T.float32(0),count)
         T.pipe_barrier('V')
         T.set_flag('V','MTE2',0);T.wait_flag('V','MTE2',0)
-        emit('pv_load_rows',pool.access_ptr('w'),A.access_ptr('r',offset=offset),n,n,0,pitch-dma_pad,n%8!=0)
+        emit('pv_load_rows',pool.access_ptr('w'),A.access_ptr('r',offset=offset),n,n,T.max(input_stride-n,0),pitch-dma_pad,n%8!=0)
         T.set_flag('MTE2','V',0);T.wait_flag('MTE2','V',0)
         emit('pv_abs',pool.access_ptr('w',offset=lo),pool.access_ptr('r'),count)
         T.pipe_barrier('V')

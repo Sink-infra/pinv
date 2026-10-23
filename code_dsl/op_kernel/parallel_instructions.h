@@ -25,3 +25,10 @@ __aicore__ inline void pv_even_max(AscendC::LocalTensor<float> d,AscendC::LocalT
 namespace tl::ascend {
 __aicore__ inline void pp_clear_history(AscendC::LocalTensor<float> d,AscendC::LocalTensor<float>,AscendC::LocalTensor<float>,int count,int pitch){AscendC::Duplicate(d,0.0f,uint64_t(8),uint8_t(count),1,uint8_t(pitch));}
 }
+
+namespace tl::ascend {
+__aicore__ inline void pv_add_scalar(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>,float v,int n){AscendC::Adds(d,a,v,n);}
+__aicore__ inline void pv_cast_indices(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>,int n){AscendC::Cast(d.ReinterpretCast<int32_t>(),a,AscendC::RoundMode::CAST_RINT,n);}
+__aicore__ inline void pv_mask_width(AscendC::LocalTensor<float>,AscendC::LocalTensor<float>,AscendC::LocalTensor<float>,int width){AscendC::SetMaskNorm();AscendC::SetVectorMask<float>(width);}
+__aicore__ inline void pv_mad_reuse(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>b,int rows,int pitch){AscendC::MulAddDst<float,float,false>(d,a,b,uint64_t(64),uint8_t(rows),AscendC::BinaryRepeatParams{1,1,0,uint8_t(pitch),0,1});}
+}

@@ -39,6 +39,7 @@ def append_block(root,lower,digest):
  gemm_source,gemm=add('block_gemm',block_gemm(),cube=True)
  header+='namespace tl::ascend {\n'+quick+'\n'+gemm+'\n}\n'
  header+="""
+#define br_quick_strided(d,a,b,ca,ci,so,bl,pitch) BlockQuick((GM_ADDR)(d.GetPhyAddr()+ca),(GM_ADDR)(d.GetPhyAddr()+ci),(GM_ADDR)d.GetPhyAddr(),(GM_ADDR)(d.GetPhyAddr()+so),bl,0,pitch,64,1,0.0f,0.0f,fftsAddr),tl::ascend::FrRestorePipe(&pipe)
 #define br_quick(d,a,b,ca,ci,so,bl,job,ba) BlockQuick((GM_ADDR)(d.GetPhyAddr()+ca),(GM_ADDR)(d.GetPhyAddr()+ci),(GM_ADDR)d.GetPhyAddr(),(GM_ADDR)(d.GetPhyAddr()+so),bl,job,64,64,ba,0.0f,0.0f,fftsAddr),tl::ascend::FrRestorePipe(&pipe)
 #define br_gemm(d,a,b,oa,ob,oc,bl,ba,m,k,n) BlockGemm((GM_ADDR)(d.GetPhyAddr()+oa),(GM_ADDR)(d.GetPhyAddr()+ob),(GM_ADDR)(d.GetPhyAddr()+oc),bl,(GM_ADDR)d.GetPhyAddr(),k,n,ba,m,fftsAddr)
 """

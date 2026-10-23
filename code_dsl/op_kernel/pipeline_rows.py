@@ -89,32 +89,41 @@ def make_pipeline_rows_macro(*, cache_peak=False):
                 # serializing the Vector pipeline after each instruction.
                 for column in T.serial(rows):
                     emit('pv_gather_offsets',pool.access_ptr('w',offset=product),pool.access_ptr('r',offset=packets),pool.access_ptr('r',offset=packet_indices),column*4,rows)
-                    reciprocal=pool[meta+16+column]
+                    T.set_flag('V','S',0);T.wait_flag('V','S',0)
+                    reciprocal=T.float32(-1)/pool[packets+column*packet_stride+column]
                     emit('pv_scale',pool.access_ptr('w',offset=packets+column*packet_stride),pool.access_ptr('r',offset=packets+column*packet_stride),reciprocal,packet_stride)
                     if column+1<rows:
-                        emit('pv_scale',pool.access_ptr('w',offset=product),pool.access_ptr('r',offset=product),T.float32(-1),16)
                         emit('pv_brcb_rows',pool.access_ptr('w',offset=factors),pool.access_ptr('r',offset=product),16,8)
-                        for chunk in T.serial(T.ceildiv(packet_stride,64)):
-                            col=chunk*64
-                            emit('pv_mad_strided',pool.access_ptr('rw',offset=packets+(column+1)*packet_stride+col),pool.access_ptr('r',offset=packets+column*packet_stride+col),pool.access_ptr('r',offset=factors+(column+1)*8),T.min(packet_stride-col,64),rows-column-1,1,1,0,packet_stride//8,0,1)
+                        full_packet=packet_stride//64
+                        if full_packet>0:
+                            emit('pv_mask_width',pool.access_ptr('rw'),64)
+                            for chunk in T.serial(full_packet):
+                                col=chunk*64
+                                emit('pv_mad_reuse',pool.access_ptr('rw',offset=packets+(column+1)*packet_stride+col),pool.access_ptr('r',offset=packets+column*packet_stride+col),pool.access_ptr('r',offset=factors+(column+1)*8),rows-column-1,packet_stride//8)
+                        tail_packet=packet_stride-full_packet*64
+                        if tail_packet>0:
+                            col=full_packet*64
+                            emit('pv_mad_strided',pool.access_ptr('rw',offset=packets+(column+1)*packet_stride+col),pool.access_ptr('r',offset=packets+column*packet_stride+col),pool.access_ptr('r',offset=factors+(column+1)*8),tail_packet,rows-column-1,1,1,0,packet_stride//8,0,1)
                 for column in T.serial(rows):
                     selected=T.Cast('int32',pool[meta+column])
-                    if selected%cores==core:
-                        emit('pv_copy',pool.access_ptr('w',offset=(selected//cores)*stride+first),pool.access_ptr('r',offset=packets+column*packet_stride),packet_stride)
                     emit('pv_gather_offsets',pool.access_ptr('w',offset=vector),pool.access_ptr('r'),pool.access_ptr('r',offset=row_indices),(first+column)*4,factor_rows)
-                    if selected%cores==core:
-                        T.set_flag('V','S',0);T.wait_flag('V','S',0)
-                        pool[vector+selected//cores]=T.float32(0)
-                        T.set_flag('S','V',0);T.wait_flag('S','V',0)
-                    emit('pv_scale',pool.access_ptr('w',offset=vector),pool.access_ptr('r',offset=vector),T.float32(-1),factor_rows)
                     emit('pv_brcb_rows',pool.access_ptr('w',offset=factors),pool.access_ptr('r',offset=vector),factor_rows,8)
                     pivot_column=first+column
                     consumed=pivot_column%8==7 or pivot_column+1==n
                     live_begin=pivot_column//8*8+T.if_then_else(consumed,8,0)
                     live_limit=live_begin+k+T.if_then_else(consumed,0,8)
-                    for chunk in T.serial(T.ceildiv(live_limit-live_begin,64)):
-                        col=live_begin+chunk*64
-                        emit('pv_mad_strided',pool.access_ptr('rw',offset=col),pool.access_ptr('r',offset=packets+column*packet_stride+col-first),pool.access_ptr('r',offset=factors),T.min(live_limit-col,64),owned,1,1,0,stride//8,0,1)
+                    full=(live_limit-live_begin)//64
+                    if full>0:
+                        emit('pv_mask_width',pool.access_ptr('rw'),64)
+                        for chunk in T.serial(full):
+                            col=live_begin+chunk*64
+                            emit('pv_mad_reuse',pool.access_ptr('rw',offset=col),pool.access_ptr('r',offset=packets+column*packet_stride+col-first),pool.access_ptr('r',offset=factors),owned,stride//8)
+                    tail=live_limit-live_begin-full*64
+                    if tail>0:
+                        col=live_begin+full*64
+                        emit('pv_mad_strided',pool.access_ptr('rw',offset=col),pool.access_ptr('r',offset=packets+column*packet_stride+col-first),pool.access_ptr('r',offset=factors),tail,owned,1,1,0,stride//8,0,1)
+                    if selected%cores==core:
+                        emit('pv_copy',pool.access_ptr('w',offset=(selected//cores)*stride+first),pool.access_ptr('r',offset=packets+column*packet_stride),packet_stride)
             if window>0 and first+rows==window_end and window_end<n:
                 emit('pv_all_barrier',pool.access_ptr('rw'))
                 emit('pv_cross_set0',pool.access_ptr('rw'),3)
@@ -133,10 +142,13 @@ def make_pipeline_rows_macro(*, cache_peak=False):
         peak=T.alloc_var('float32');peak=T.float32(0)
         if valid!=0:
             T.set_flag('V','S',0);T.wait_flag('V','S',0)
-            for j in T.serial(n):
-                index=(T.Cast('int32',-pool[norms+j])-1)*4
-                emit('pv_store_u32',pool.access_ptr('w'),mapping+j,T.Cast('uint32',index))
             T.set_flag('S','V',0);T.wait_flag('S','V',0)
+            emit('pv_scale',pool.access_ptr('w',offset=mapping),pool.access_ptr('r',offset=norms),T.float32(-4),n)
+            T.pipe_barrier('V')
+            emit('pv_add_scalar',pool.access_ptr('w',offset=mapping),pool.access_ptr('r',offset=mapping),T.float32(-4),n)
+            T.pipe_barrier('V')
+            emit('pv_cast_indices',pool.access_ptr('w',offset=mapping),pool.access_ptr('r',offset=mapping),n)
+            T.pipe_barrier('V')
             emit('pv_fill',pool.access_ptr('w',offset=accumulator),T.float32(0),wide)
             T.pipe_barrier('V')
             for i in T.serial(owned):
@@ -158,7 +170,7 @@ def make_pipeline_rows_macro(*, cache_peak=False):
                 T.set_flag('V','S',0);T.wait_flag('V','S',0)
                 peak=pool[red]/power
             for i in T.serial(owned):
-                emit('pv_scale',pool.access_ptr('w',offset=output+i*k),pool.access_ptr('r',offset=output+i*k),T.float32(1)/power,k)
+                emit('pv_scale',pool.access_ptr('w',offset=output+i*k),pool.access_ptr('r',offset=output+i*k),T.float32(-1)/power,k)
                 T.pipe_barrier('V')
                 target=T.Cast('int32',-pool[norms+core+i*cores])-1
                 T.set_flag('V','MTE3',0);T.wait_flag('V','MTE3',0)
