@@ -9,7 +9,7 @@ from code_dsl.op_kernel.control import admission_writer
 from code_dsl.op_kernel.normalization import ceil_power_bits
 
 
-def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_admission=False,condition_metric=False,minimum_magnitude=0.1):
+def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_admission=False,condition_metric=False,minimum_magnitude=0.1,fused=False):
     import tilelang.language as T
     store_admission=admission_writer(scalar_admission)
 
@@ -19,7 +19,8 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
         # outside elimination; all lane strides and vector widths are DSL tile
         # constants, rather than descriptors cached by an external C++ helper.
         pad=tile_pad
-        pitch=2*tile_pad+8
+        pitch=(tile_pad+8) if fused else (2*tile_pad+8)
+        xbase=0 if fused else tile_pad
         n=tile_pad if full_tile else runtime_n
         count=T.alloc_var('int32');count=n*pitch
         # The tile may be wider than ceildiv(n,8)*8. DMA block strides
@@ -66,7 +67,9 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
             emit('pv_fill',pool.access_ptr('w',offset=norms),T.float32(0),pad)
             T.pipe_barrier('V')
             emit('pv_mask_begin',pool.access_ptr('rw'),n)
-            live=tile_pad+8
+            live=tile_pad if fused else tile_pad+8
+            previous=T.alloc_var('int32');previous=norms+pad+1
+            recovered=T.alloc_var('float32');recovered=T.float32(0)
             T.set_flag('S','V',0);T.wait_flag('S','V',0)
             for pivot_tile in T.serial(n//unroll):
                 for lane in T.unroll(unroll):
@@ -86,17 +89,21 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
                         T.loop_break()
                     emit('pv_mask_remove', pool.access_ptr('rw'), pivot)
                     order[pivot] = T.Cast('uint32',p*4)
-                    if pad>=56:order[pad+p]=T.Cast('uint32',(pivot*pitch+pad)*4)
+                    if pad>=56:order[pad+p]=T.Cast('uint32',(pivot*pitch+xbase)*4)
                     consumed = T.alloc_var('int32')
                     consumed = 0
                     base = T.alloc_var('int32')
-                    base = p // 8 * 8
+                    base = 0 if fused else p // 8 * 8
                     if live > 64 and (p % 8 == 7 or p + 1 == n):
                         consumed = 1
                         base += 8
                     divisor = pool[norms + pivot]
+                    pool[pivot * pitch + xbase + p] = (divisor + T.float32(1)) if fused else T.float32(1)
+                    if fused:
+                        pool[previous + p - 1] = recovered
+                        recovered = T.float32(-1) / divisor
+                        previous = pivot * pitch
                     pool[norms + pivot] = T.float32(0)
-                    pool[pivot * pitch + pad + p] = T.float32(1)
                     T.set_flag('S', 'V', 0)
                     T.wait_flag('S', 'V', 0)
                     active = T.alloc_var('int32')
@@ -133,17 +140,21 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
                         T.loop_break()
                     emit('pv_mask_remove', pool.access_ptr('rw'), pivot)
                     order[pivot] = T.Cast('uint32',p*4)
-                    if pad>=56:order[pad+p]=T.Cast('uint32',(pivot*pitch+pad)*4)
+                    if pad>=56:order[pad+p]=T.Cast('uint32',(pivot*pitch+xbase)*4)
                     consumed = T.alloc_var('int32')
                     consumed = 0
                     base = T.alloc_var('int32')
-                    base = p // 8 * 8
+                    base = 0 if fused else p // 8 * 8
                     if live > 64 and (p % 8 == 7 or p + 1 == n):
                         consumed = 1
                         base += 8
                     divisor = pool[norms + pivot]
+                    pool[pivot * pitch + xbase + p] = (divisor + T.float32(1)) if fused else T.float32(1)
+                    if fused:
+                        pool[previous + p - 1] = recovered
+                        recovered = T.float32(-1) / divisor
+                        previous = pivot * pitch
                     pool[norms + pivot] = T.float32(0)
-                    pool[pivot * pitch + pad + p] = T.float32(1)
                     T.set_flag('S', 'V', 0)
                     T.wait_flag('S', 'V', 0)
                     active = T.alloc_var('int32')
@@ -163,9 +174,13 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
                             emit('pv_mad_strided', pool.access_ptr('rw', offset=groups * 8 * pitch + base + 64), pool.access_ptr('r', offset=pivot * pitch + base + 64), pool.access_ptr('r', offset=factors + groups * 8 * factor_pitch), 8, rest, 1, 1, 0, pitch//8, 0, factor_pitch//8)
                     T.pipe_barrier('V')
             if valid!=0:
+                if fused:
+                    T.set_flag('V','S',0);T.wait_flag('V','S',0)
+                    pool[previous + n - 1] = recovered
+                    T.set_flag('S','V',0);T.wait_flag('S','V',0)
                 emit('pv_fill',pool.access_ptr('w',offset=lo),T.float32(0),count)
                 T.pipe_barrier('V')
-                emit('pv_square_padded_rows',pool.access_ptr('w',offset=lo),pool.access_ptr('r',offset=pad),pad,n,pitch)
+                emit('pv_square_padded_rows',pool.access_ptr('w',offset=lo),pool.access_ptr('r',offset=xbase),pad,n,pitch)
                 T.pipe_barrier('V')
                 emit('pv_reduce_sum',pool.access_ptr('w',offset=red),pool.access_ptr('r',offset=lo),pool.access_ptr('rw',offset=scratch),count)
                 T.set_flag('V','S',0);T.wait_flag('V','S',0)
@@ -205,7 +220,7 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
                         # row into its logical output slot in the UB output tile.
                         for physical_row in T.serial(n):
                             output_row=T.Cast('int32',order[physical_row])//4
-                            emit('pv_gather',pool.access_ptr('w',offset=lo+output_row*pitch),pool.access_ptr('r'),indices.access_ptr('r'),(physical_row*pitch+pad)*4,n)
+                            emit('pv_gather',pool.access_ptr('w',offset=lo+output_row*pitch),pool.access_ptr('r'),indices.access_ptr('r'),(physical_row*pitch+xbase)*4,n)
                         T.pipe_barrier('V')
                         T.set_flag('V','MTE3',0);T.wait_flag('V','MTE3',0)
                         T.set_flag('S','MTE3',0);T.wait_flag('S','MTE3',0)
@@ -220,8 +235,8 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
 def make_local_quick_macro(unroll=1,factor_pitch=8,scalar_admission=False):
     import tilelang.language as T
     one_vector=_make_quick_schedule(56,factor_pitch,unroll,scalar_admission=scalar_admission)
-    two_vectors=_make_quick_schedule(64,factor_pitch,unroll,scalar_admission=scalar_admission)
-    two_vectors_aligned=_make_quick_schedule(64,8,unroll,full_tile=True,scalar_admission=scalar_admission)
+    two_vectors=_make_quick_schedule(64,factor_pitch,unroll,scalar_admission=scalar_admission,fused=True)
+    two_vectors_aligned=_make_quick_schedule(64,8,unroll,full_tile=True,scalar_admission=scalar_admission,fused=True)
 
     @T.macro
     def quick(A,X,pool,indices,order,accepted,offset,n,atol,rtol):
