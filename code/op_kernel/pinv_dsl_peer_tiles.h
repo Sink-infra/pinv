@@ -85,8 +85,6 @@ __aicore__ inline void PvDslPeerTileRows( GM_ADDR A_handle,  GM_ADDR X_handle,  
     }
     tl::ascend::pv_cross_set0(pool[0], pool[0], pool[0], 4);
     tl::ascend::pv_cross_wait(pool[0], pool[0], pool[0], 4);
-    tl::ascend::pv_cross_set0(pool[0], pool[0], pool[0], 5);
-    tl::ascend::pv_cross_wait(pool[0], pool[0], pool[0], 5);
     for (int32_t panel = 0; panel < 13; ++panel) {
       tl::ascend::pv_all_barrier(pool[0], pool[0], pool[0]);
       tl::ascend::pv_cross_set0(pool[0], pool[0], pool[0], 0);
@@ -406,20 +404,18 @@ __aicore__ inline void PvDslPeerTileProducer( GM_ADDR A_handle,  GM_ADDR X_handl
     pool.SetValue((((int64_t)scratch) + (int64_t)2), local_power);
     AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(0);
     AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(0);
-    tl::ascend::pv_store_rows(W[((((all_batch * 182400) + (job * 8192)) + (role * 8)) + 3072)], pool[scratch], W[((((all_batch * 182400) + (job * 8192)) + (role * 8)) + 3072)], 1, 8, 0, 0);
+    tl::ascend::pv_store_rows(W[((((all_batch * 182400) + (job * 8192)) + (role * 8)) + 6400)], pool[scratch], W[((((all_batch * 182400) + (job * 8192)) + (role * 8)) + 6400)], 1, 8, 0, 0);
     tl::ascend::pv_cross_set0(pool[0], pool[0], pool[0], 4);
     tl::ascend::pv_cross_wait(pool[0], pool[0], pool[0], 4);
     AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(0);
     AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(0);
-    tl::ascend::pv_load_rows(pool[scratch], W[(((all_batch * 182400) + (job * 8192)) + 3072)], pool[scratch], 1, 32, 0, 0);
+    tl::ascend::pv_load_rows(pool[scratch], W[(((all_batch * 182400) + (job * 8192)) + 6400)], pool[scratch], 1, 32, 0, 0);
     AscendC::SetFlag<AscendC::HardEvent::MTE2_S>(0);
     AscendC::WaitFlag<AscendC::HardEvent::MTE2_S>(0);
     magnitude = 0.000000e+00f;
     for (int32_t part = 0; part < 4; ++part) {
       magnitude = max(magnitude, pool.GetValue(((((int64_t)part) * (int64_t)8) + ((int64_t)scratch))));
     }
-    tl::ascend::pv_cross_set0(pool[0], pool[0], pool[0], 5);
-    tl::ascend::pv_cross_wait(pool[0], pool[0], pool[0], 5);
     valid = 1;
     if ((magnitude < 1.000000e-01f) || (1.701412e+38f <= magnitude)) {
       valid = 0;

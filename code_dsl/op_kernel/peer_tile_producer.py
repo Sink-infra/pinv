@@ -36,6 +36,7 @@ def make_peer_tile_producer_macro():
         records=permutation+k
         metadata=2*all_batch*200*456+job*8192
         header=metadata+3072
+        norm_header=metadata+6400
         offset=job*200*200
         ready=metadata+6656
         ack=metadata+6848
@@ -86,16 +87,14 @@ def make_peer_tile_producer_macro():
         pool[scratch+1]=local_total
         pool[scratch+2]=local_power
         T.set_flag('S','MTE3',0);T.wait_flag('S','MTE3',0)
-        emit('pv_store_rows',W.access_ptr('w',offset=header+role*8),pool.access_ptr('r',offset=scratch),1,8,0,0)
+        emit('pv_store_rows',W.access_ptr('w',offset=norm_header+role*8),pool.access_ptr('r',offset=scratch),1,8,0,0)
         emit('pv_cross_set0',pool.access_ptr('rw'),4)
         emit('pv_cross_wait',pool.access_ptr('rw'),4)
         T.set_flag('MTE3','MTE2',0);T.wait_flag('MTE3','MTE2',0)
-        emit('pv_load_rows',pool.access_ptr('w',offset=scratch),W.access_ptr('r',offset=header),1,32,0,0)
+        emit('pv_load_rows',pool.access_ptr('w',offset=scratch),W.access_ptr('r',offset=norm_header),1,32,0,0)
         T.set_flag('MTE2','S',0);T.wait_flag('MTE2','S',0)
         magnitude=T.alloc_var('float32');magnitude=T.float32(0)
         for part in T.serial(4):magnitude=T.max(magnitude,pool[scratch+part*8])
-        emit('pv_cross_set0',pool.access_ptr('rw'),5)
-        emit('pv_cross_wait',pool.access_ptr('rw'),5)
         valid=T.alloc_var('int32');valid=1
         if not (magnitude>=T.float32(0.1) and magnitude<T.float32(1.7014118e38)):valid=0
         power=T.alloc_var('float32');power=T.float32(1)

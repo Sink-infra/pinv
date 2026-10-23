@@ -42,7 +42,10 @@ def execute(args, report):
             library = C.CDLL(str(library_path.resolve()))
             blocks = report["blocks"]
             if strategy in {"peer_pipeline", "window_cube"}:
-                if 2 * blocks % g.batch or 2 * blocks // g.batch < 3:
+                if strategy=="peer_pipeline":
+                    if blocks!=(g.batch*13+1)//2:
+                        raise ValueError("invalid 13-AIV tile geometry")
+                elif 2 * blocks % g.batch or 2 * blocks // g.batch < 3:
                     raise ValueError("invalid collective peer geometry")
                 library.call.argtypes = [C.c_void_p] * 4 + [C.c_int32] * 5 + [C.c_float] * 2 + ([C.c_int32] if strategy=="window_cube" else []) + [C.c_void_p]
                 library.call.restype = None
