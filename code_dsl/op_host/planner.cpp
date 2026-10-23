@@ -285,6 +285,13 @@ extern "C" int pv_host_plan(int64_t m,int64_t n,uint64_t batch,float atol,float 
             }
         }
     }
+    if(GROUP && PIPELINE && CUBE && !WINDOW && !WAVE &&
+       t->m==t->n && t->cols==200 &&
+       uint64_t(t->batch)*13<=platform.GetCoreNumAiv() &&
+       (uint64_t(t->batch)*13+1)/2<=platform.GetCoreNumAic()) {
+        t->stride=456;
+        context->SetBlockDim((t->batch*13+1)/2);
+    }
     uint32_t RECT=0;
     context->SetFlags(COMPACT,TAIL,WAVE,LOCAL,GROUP,PIPELINE,WINDOW,CUBE,RECT);
     return 0;

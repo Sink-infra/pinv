@@ -5,7 +5,7 @@ from code_dsl.op_kernel.kernels import instruction_source
 
 
 def parallel_instruction_source():
-    return instruction_source()+'\n'+Path(__file__).with_name('parallel_instructions.h').read_text()
+    return instruction_source()+'\n'+Path(__file__).with_name('parallel_instructions.h').read_text()+'\n'+Path(__file__).with_name('peer_mailbox.h').read_text()
 
 
 def rows_kernel(operation=None):
@@ -50,11 +50,11 @@ def producer_kernel(operation=None):
     return kernel
 
 
-def peer_producer_kernel():
+def peer_producer_kernel(operation=None):
     import tilelang.language as T
     from code_dsl.op_kernel.peer_producer import make_peer_producer_macro
     from code_dsl.op_kernel.intrinsics import emit
-    operation=make_peer_producer_macro();instructions=parallel_instruction_source()
+    operation=make_peer_producer_macro() if operation is None else operation;instructions=parallel_instruction_source()
     @T.prim_func
     def kernel(A:T.Tensor((1,),'float32'),X:T.Tensor((1,),'float32'),W:T.Tensor((1,),'float32'),
                blocks:T.int32,n:T.int32,stride:T.int32,all_batch:T.int32,job:T.int32,core:T.int32,cores:T.int32,window:T.int32):
@@ -105,7 +105,7 @@ def prepared_producer_kernel():
 def parallel_device_functions(compiled):
     from code_dsl.op_kernel.components import DECLARATION,BOUNDARY
     parts=[];records={}
-    names=tuple(name for name in ('rows','producer','peer','prepared_rows','prepared_producer','transformer') if name in compiled)
+    names=tuple(name for name in ('rows','producer','peer','tile_rows','tile_peer','prepared_rows','prepared_producer','transformer') if name in compiled)
     if 'rows' not in names or not {'producer','peer'}.intersection(names):raise ValueError('a producer and its workers are required')
     for name in names:
         source=compiled[name].get_kernel_source()
@@ -126,7 +126,7 @@ def parallel_device_functions(compiled):
     return header,records
 
 
-def pipeline_kernel(component_source,*,paired=False,peer=False,prepared=False,prepared_checked=False,fallback_source=None):
+def pipeline_kernel(component_source,*,paired=False,peer=False,prepared=False,prepared_checked=False,fallback_source=None,tiles=False,producer_count=None,tile_group=None):
     """Full/window/peer pipeline; optional DSL Jacobi continuation on rejection.
 
     Window refinement remains a separate, unfinished strategy. Passing a DSL
@@ -135,7 +135,7 @@ def pipeline_kernel(component_source,*,paired=False,peer=False,prepared=False,pr
     import tilelang.language as T
     from code_dsl.op_kernel.intrinsics import emit
     lanes=2 if paired else 1
-    producers=2 if peer else 1
+    producers=producer_count if producer_count is not None else (2 if peer else 1)
     source=component_source+('\n'+fallback_source if fallback_source else '')
     @T.prim_func
     def kernel(A:T.Tensor((1,),'float32'),X:T.Tensor((1,),'float32'),W:T.Tensor((1,),'float32'),S:T.Tensor((1,),'float32'),
@@ -151,11 +151,29 @@ def pipeline_kernel(component_source,*,paired=False,peer=False,prepared=False,pr
                 T.writes(X[0],W[0],S[0])
                 emit('pv_pipeline_bind',A.access_ptr('r'),X.access_ptr('w'),W.access_ptr('rw'))
                 emit('pv_sync_init',W.access_ptr('rw'))
-                group_size=blocks*lanes//batch
+                group_size=tile_group if tile_group is not None else blocks*lanes//batch
                 workers=group_size-producers
                 job=bid//group_size
                 core=bid%group_size
-                if prepared:
+                if tile_group is not None:
+                    if job<batch:
+                        if core>=workers:
+                            emit('pv_pipeline_peer',W.access_ptr('rw'),blocks,n,stride,batch,job,core,workers,window)
+                        else:
+                            emit('pv_pipeline_rows',W.access_ptr('rw'),blocks,n,stride,batch,job,core,workers,window)
+                    else:
+                        # A rounded AIC launch has one padding AIV for odd batches.
+                        # It participates in all collectives without matrix accesses.
+                        emit('pv_cross_set0',W.access_ptr('rw'),4)
+                        emit('pv_cross_wait',W.access_ptr('rw'),4)
+                        emit('pv_cross_set0',W.access_ptr('rw'),5)
+                        emit('pv_cross_wait',W.access_ptr('rw'),5)
+                        for dummy_panel in T.serial(13):
+                            emit('pv_cross_set0',W.access_ptr('rw'),0)
+                            emit('pv_cross_wait',W.access_ptr('rw'),0)
+                            emit('pv_cross_set0',W.access_ptr('rw'),1)
+                            emit('pv_cross_wait',W.access_ptr('rw'),1)
+                elif prepared:
                     prepared_workers=T.max(group_size-2,1)
                     owned=T.ceildiv(n,prepared_workers)
                     factor_rows=T.ceildiv(owned,8)*8
@@ -180,13 +198,19 @@ def pipeline_kernel(component_source,*,paired=False,peer=False,prepared=False,pr
                         else:
                             emit('pv_pipeline_rows',W.access_ptr('rw'),blocks,n,stride,batch,job,core,workers,window)
                 else:
-                    if core>=workers:
-                        if peer:
-                            emit('pv_pipeline_peer',W.access_ptr('rw'),blocks,n,stride,batch,job,core,workers,window)
+                    if tiles and n==200 and stride==520 and group_size==16 and window==0:
+                        if core>=workers:
+                            emit('pv_pipeline_tile_peer',W.access_ptr('rw'),blocks,n,stride,batch,job,core,workers,window)
                         else:
-                            emit('pv_pipeline_producer',W.access_ptr('rw'),blocks,n,stride,batch,job,core,workers,window)
+                            emit('pv_pipeline_tile_rows',W.access_ptr('rw'),blocks,n,stride,batch,job,core,workers,window)
                     else:
-                        emit('pv_pipeline_rows',W.access_ptr('rw'),blocks,n,stride,batch,job,core,workers,window)
+                        if core>=workers:
+                            if peer:
+                                emit('pv_pipeline_peer',W.access_ptr('rw'),blocks,n,stride,batch,job,core,workers,window)
+                            else:
+                                emit('pv_pipeline_producer',W.access_ptr('rw'),blocks,n,stride,batch,job,core,workers,window)
+                        else:
+                            emit('pv_pipeline_rows',W.access_ptr('rw'),blocks,n,stride,batch,job,core,workers,window)
                 emit('pv_sync_all',W.access_ptr('rw'))
                 # Every core observes the same admission decision, matching the
                 # native protocol. Numerical fallback is a separate DSL stage.
