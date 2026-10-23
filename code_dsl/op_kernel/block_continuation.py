@@ -54,6 +54,10 @@ def decode_kernel(header):
       T.set_flag('V','MTE3',0);T.wait_flag('V','MTE3',0)
       emit('pv_store_rows',R.access_ptr('w',offset=start),value.access_ptr('r'),1,4096,0,0)
       T.set_flag('MTE3','V',0);T.wait_flag('MTE3','V',0)
+      T.tile.add(value,value,identity);T.pipe_barrier('V')
+      T.set_flag('V','MTE3',0);T.wait_flag('V','MTE3',0)
+      emit('pv_store_rows',R.access_ptr('w',offset=all+start),value.access_ptr('r'),1,4096,0,0)
+      T.set_flag('MTE3','V',0);T.wait_flag('MTE3','V',0)
  return kernel
 
 def accumulate_kernel(header):
@@ -84,7 +88,7 @@ def accumulate_kernel(header):
 def finish_kernel(header):
  import tilelang.language as T
  @T.prim_func
- def kernel(A:T.Tensor((1,),'float32'),Y:T.Tensor((1,),'float32'),W:T.Tensor((1,),'float32'),S:T.Tensor((1,),'float32'),blocks:T.int32,n:T.int32,batch:T.int32,stride:T.int32):
+ def kernel(A:T.Tensor((1,),'float32'),Y:T.Tensor((1,),'float32'),W:T.Tensor((1,),'float32'),S:T.Tensor((1,),'float32'),blocks:T.int32,n:T.int32,batch:T.int32,stride:T.int32,atol:T.float32,rtol:T.float32):
   T.func_attr({'global_symbol':'linalg_pinv_tilelang'})
   with T.Kernel(blocks,threads=1,is_npu=True) as bid:
    T.import_source(header)
@@ -134,5 +138,22 @@ def finish_kernel(header):
      pool[0]=S[job*32];pool[1]=sum
      T.set_flag('S','MTE3',0);T.wait_flag('S','MTE3',0)
      emit('pv_store_rows',W.access_ptr('w',offset=metadata+32),pool.access_ptr('r'),1,8,0,0)
+     emit('pv_load_rows',pool.access_ptr('w',offset=64),W.access_ptr('r',offset=metadata+2048),1,group*8,0,0)
+     T.set_flag('MTE2','S',0);T.wait_flag('MTE2','S',0)
+     fast=T.alloc_var('int32');fast=1
+     norm_inverse=T.alloc_var('float32');norm_inverse=T.float32(0)
+     for c in T.serial(group):
+      if pool[64+c*8]<T.float32(.5):fast=0
+      norm_inverse+=pool[64+c*8+1]
+     pool[512]=sum
+     T.set_flag('S','V',0);T.wait_flag('S','V',0)
+     emit('pv_sqrt',pool.access_ptr('w',offset=512),pool.access_ptr('r',offset=512),1)
+     T.set_flag('V','S',0);T.wait_flag('V','S',0)
+     threshold=T.max(pool[512]*rtol,atol/S[job*32])
+     if not (norm_inverse>T.float32(0) and norm_inverse*threshold*threshold<T.float32(81) and norm_inverse*sum<T.float32(1e15)):fast=0
+     pool[520]=T.float32(0);pool[528]=T.Cast('float32',fast)
+     T.set_flag('S','MTE3',0);T.wait_flag('S','MTE3',0)
+     emit('pv_store_rows',S.access_ptr('w',offset=job*512),pool.access_ptr('r',offset=520),1,8,0,0)
+     emit('pv_store_rows',S.access_ptr('w',offset=job*512+16),pool.access_ptr('r',offset=528),1,8,0,0)
     emit('pv_sync_all',W.access_ptr('rw'))
  return kernel

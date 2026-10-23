@@ -120,7 +120,7 @@ def export_window(args,native,current,acceptance):
             component=(args.window_build/'components'/name/'kernel.cpp').read_text()
             if digest(component)!=row['source_sha256']:raise ValueError('block component changed: '+name)
         header+=block+'\n'
-    root=callable_source(source,'PvStageWindow')
+    root=callable_source(source,'PvStageWindow',noinline=True)
     header+=root+'\n'
     (destination/'op_kernel/pinv_dsl_window.h').write_text(header)
     entry=destination/'op_kernel/linalg_pinv.cpp'

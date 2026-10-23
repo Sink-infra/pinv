@@ -97,13 +97,13 @@ __aicore__ inline void PvStageCompact( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_
                   valid = 0;
                   break;
                 }
-                tl::ascend::pv_scale(pool[(column * 40)], pool[(column * 40)], pool[(column * 40)], (-1.000000e+00f / divisor), 32);
+                tl::ascend::pv_scale(pool[((column * 40) + (((column + 1) / 8) * 8))], pool[((column * 40) + (((column + 1) / 8) * 8))], pool[((column * 40) + (((column + 1) / 8) * 8))], (-1.000000e+00f / divisor), (32 - (((column + 1) / 8) * 8)));
                 pool.SetValue((((int64_t)column) + (int64_t)1416), 0.000000e+00f);
                 AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
                 AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
                 tl::ascend::pv_brcb_rows(pool[640], pool[1416], pool[640], 16, 40);
                 AscendC::PipeBarrier<PIPE_V>();
-                tl::ascend::pv_gj_update(pool[0], pool[(column * 40)], pool[640], 32, dimension, 40);
+                tl::ascend::pv_gj_update(pool[(((column + 1) / 8) * 8)], pool[((column * 40) + (((column + 1) / 8) * 8))], pool[640], (32 - (((column + 1) / 8) * 8)), dimension, 40);
                 AscendC::PipeBarrier<PIPE_V>();
               }
               if (valid != 0) {
