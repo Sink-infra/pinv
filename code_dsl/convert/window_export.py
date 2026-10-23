@@ -119,8 +119,7 @@ def export_window(args,native,current,acceptance):
             if not isinstance(row,dict):continue
             component=(args.window_build/'components'/name/'kernel.cpp').read_text()
             if digest(component)!=row['source_sha256']:raise ValueError('block component changed: '+name)
-        (destination/'op_kernel/pinv_dsl_block.h').write_text('#pragma once\n'+block)
-        header+='#include \"pinv_dsl_block.h\"\n'
+        header+=block+'\n'
     root=callable_source(source,'PvStageWindow')
     header+=root+'\n'
     (destination/'op_kernel/pinv_dsl_window.h').write_text(header)

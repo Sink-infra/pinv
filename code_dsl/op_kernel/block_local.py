@@ -3,7 +3,7 @@ from code_dsl.op_kernel.local import _make_quick_schedule
 from code_dsl.op_kernel.kernels import instruction_source
 def quick_kernel():
  import tilelang.language as T
- operation=_make_quick_schedule(64,8,1,full_tile=True,condition_metric=True,minimum_magnitude=1e-30)
+ operation=_make_quick_schedule(64,8,1,full_tile=True,condition_metric=True,minimum_magnitude=1e-30,fused=True)
  @T.prim_func
  def kernel(A:T.Tensor((1,),'float32'),Y:T.Tensor((1,),'float32'),W:T.Tensor((1,),'float32'),S:T.Tensor((1,),'float32'),
             blocks:T.int32,job:T.int32,m:T.int32,n:T.int32,batch:T.int32,atol:T.float32,rtol:T.float32):
@@ -14,7 +14,7 @@ def quick_kernel():
    with T.Scope('V'):
     T.reads(A[0]);T.writes(Y[0],S[0])
     accepted[0]=0
-    operation(A,Y,pool,indices,order,accepted,job*4096,64,T.float32(0),T.float32(0))
+    operation(A,Y,pool,indices,order,accepted,job*4096,64,T.float32(0),T.float32(0),input_stride=m)
     S[job*32]=T.Cast('float32',accepted[0])
     word=T.alloc_var('int32');word=accepted[1]
     metric=T.alloc_var('float32');metric=T.reinterpret('float32',word)

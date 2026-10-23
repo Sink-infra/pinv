@@ -297,6 +297,9 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
         ws[0]=std::max<uint64_t>(ws[0],platform.GetLibApiWorkSpaceSize()+words*sizeof(float));
     }
     uint32_t RECT=0;
+    // The peer strategy uses its secondary key to isolate the half selector.
+    if (GROUP && PIPELINE && CUBE && !WINDOW && !WAVE &&
+        t->cols >= 64 && t->cols <= 208 && t->cols % 8 == 0) TAIL = 1;
     ASCENDC_TPL_SEL_PARAM(context, DT_A, COMPACT, TAIL, WAVE, LOCAL, GROUP, PIPELINE, WINDOW, CUBE, RECT);
     return ge::GRAPH_SUCCESS;
 }

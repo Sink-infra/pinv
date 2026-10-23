@@ -9,7 +9,7 @@ using namespace AscendC;
 #include "pinv_execution.h"
 #include "pinv_rect.h"
 #include "pinv_pipeline.h"
-#include "pinv_peer_full.h"
+
 #include "pinv_window_pipeline.h"
 #include "tiling_key_linalg_pinv.h"
 #include "pinv_stable.h"
@@ -112,7 +112,7 @@ __aicore__ inline bool TryCompactQuickLight(GM_ADDR in,GM_ADDR dst,const LinalgP
 }
 
 template <typename DT_A, bool COMPACT, bool TAIL, bool WAVE, bool LOCAL, bool GROUP, bool PIPELINE, bool WINDOW, bool CUBE, bool RECT>
-__aicore__ inline void PvStageNative(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR workspace, GM_ADDR tiling) {
+__aicore__ __attribute__((noinline)) void PvStageNative(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR workspace, GM_ADDR tiling) {
     REGISTER_TILING_DEFAULT(LinalgPinvCubeTilingData);
     GET_TILING_DATA_WITH_STRUCT(LinalgPinvTilingData, data, tiling);
     if constexpr(RECT){
@@ -175,6 +175,7 @@ __aicore__ inline void PvStageNative(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR workspac
 #include "pinv_dsl_local.h"
 #include "pinv_dsl_peer_pipeline.h"
 #include "pinv_dsl_window.h"
+#include "pinv_dsl_half_pipeline.h"
 template <typename DT_A, bool COMPACT, bool TAIL, bool WAVE, bool LOCAL, bool GROUP, bool PIPELINE, bool WINDOW, bool CUBE, bool RECT>
 __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR workspace, GM_ADDR tiling) {
 #if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & PINV_KEY_WINDOW) && (TILING_KEY_VAR & PINV_KEY_CUBE)
@@ -220,7 +221,11 @@ __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR worksp
         GM_ADDR work=GetUserWorkspace(workspace);
         GM_ADDR status=work+pinv_dsl::WorkFloats(data.batch,data.rows,data.cols,data.stride)*sizeof(float);
         // CANN initializes the hardware sync base; 0 skips the JIT-only setter.
-        PvStagePeerPipeline(A,A_pinv,work,status,GetBlockNum(),data.cols,data.batch,data.stride,0,data.atol,data.rtol,0);
+        if constexpr (TAIL) {
+            PvStageHalfPipeline(A,A_pinv,work,status,GetBlockNum(),data.cols,data.batch,data.stride,0,data.atol,data.rtol,0);
+        } else {
+            PvStagePeerPipeline(A,A_pinv,work,status,GetBlockNum(),data.cols,data.batch,data.stride,0,data.atol,data.rtol,0);
+        }
         return;
     }
     PvStageNative<DT_A,COMPACT,TAIL,WAVE,LOCAL,GROUP,PIPELINE,WINDOW,CUBE,RECT>(A,A_pinv,workspace,tiling);
