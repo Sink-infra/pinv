@@ -43,7 +43,8 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
         auto ws=context->GetWorkspaceSizes(1);
         ws[0]=platform.GetLibApiWorkSpaceSize()+pinv::RectWorkspaceFloats(batch,t->rows,t->cols)*sizeof(float);
         uint32_t DT_A=static_cast<uint32_t>(ge::DT_FLOAT),COMPACT=0,TAIL=0,WAVE=0,LOCAL=0,GROUP=0,PIPELINE=0,WINDOW=0,CUBE=0,RECT=1;
-        ASCENDC_TPL_SEL_PARAM(context,DT_A,COMPACT,TAIL,WAVE,LOCAL,GROUP,PIPELINE,WINDOW,CUBE,RECT);
+        uint32_t FAST_TILE=0;
+        ASCENDC_TPL_SEL_PARAM(context,DT_A,COMPACT,TAIL,WAVE,LOCAL,GROUP,PIPELINE,WINDOW,CUBE,RECT,FAST_TILE);
         return ge::GRAPH_SUCCESS;
     }
     uint64_t inverseBytes = (2 * uint64_t(t->cols) * t->stride + 4 * t->stride + 4 * r8 + 8 * t->rows + k8 + 32 + 8 * (r8 + k8)) * 4;
@@ -296,11 +297,20 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
                        +pinv_dsl::WindowStatusFloats(t->batch);
         ws[0]=std::max<uint64_t>(ws[0],platform.GetLibApiWorkSpaceSize()+words*sizeof(float));
     }
+    uint32_t FAST_TILE=0;
+    if(GROUP && PIPELINE && CUBE && !WINDOW && !WAVE &&
+       t->m==t->n && t->cols==200 &&
+       uint64_t(t->batch)*13<=platform.GetCoreNumAiv() &&
+       (uint64_t(t->batch)*13+1)/2<=platform.GetCoreNumAic()) {
+        t->stride=456;
+        context->SetBlockDim((t->batch*13+1)/2);
+        FAST_TILE=1;
+    }
     uint32_t RECT=0;
     // The peer strategy uses its secondary key to isolate the half selector.
     if (GROUP && PIPELINE && CUBE && !WINDOW && !WAVE &&
-        t->cols >= 64 && t->cols <= 208 && t->cols % 8 == 0) TAIL = 1;
-    ASCENDC_TPL_SEL_PARAM(context, DT_A, COMPACT, TAIL, WAVE, LOCAL, GROUP, PIPELINE, WINDOW, CUBE, RECT);
+        !FAST_TILE && t->cols >= 64 && t->cols <= 208 && t->cols % 8 == 0) TAIL = 1;
+    ASCENDC_TPL_SEL_PARAM(context, DT_A, COMPACT, TAIL, WAVE, LOCAL, GROUP, PIPELINE, WINDOW, CUBE, RECT, FAST_TILE);
     return ge::GRAPH_SUCCESS;
 }
 }
