@@ -21,7 +21,12 @@ def vector_only_source(source,mixed=False,paired=False):
     position=source.index(declaration)
     # Imported device subroutines have already been lowered and hashed. Never
     # rewrite their numerical bodies while lowering the containing module.
-    return source[:position]+_vector_device_source(source[position:],mixed=mixed,paired=paired)
+    result=source[:position]+_vector_device_source(source[position:],mixed=mixed,paired=paired)
+    from code_dsl.op_kernel.static_storage import MARKER,lower_source
+    if MARKER in result:
+        if mixed or paired:raise ValueError('static resident storage requires Vector-only mode')
+        result=lower_source(result)
+    return result
 
 
 def _vector_device_source(source, mixed=False, paired=False):

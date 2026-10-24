@@ -2713,3 +2713,9 @@ __aicore__ inline void lv_abs_nomask(AscendC::LocalTensor<float>d,AscendC::Local
 __aicore__ inline void lv_scale_nomask(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>,float scale){AscendC::Muls<float,false>(d,a,scale,uint64_t(64),1,AscendC::UnaryRepeatParams{1,1,8,8});}
 __aicore__ inline void lv_mad_nomask(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>b,int rows,int pitch){AscendC::MulAddDst<float,float,false>(d,a,b,uint64_t(64),uint8_t(rows),AscendC::BinaryRepeatParams{1,1,0,uint8_t(pitch),0,1});}
 }
+
+namespace tl::ascend {
+__aicore__ inline void ns_sum(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>,int n){AscendC::SetMaskCount();AscendC::SetVectorMask<float>(0,uint64_t(n));vcadd((__ubuf__ float*)d.GetPhyAddr(),(__ubuf__ float*)a.GetPhyAddr(),1,1,1,8,1);AscendC::SetMaskNorm();AscendC::ResetMask();}
+__aicore__ inline void ns_acc(AscendC::LocalTensor<float>,AscendC::LocalTensor<float>,AscendC::LocalTensor<float>,float &value){value=AscendC::GetReduceRepeatSumSpr<float>();}
+__aicore__ inline void sr_max(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>,int mask,int repeats){AscendC::WholeReduceMax<float>(d,a,mask,repeats,1,1,8,AscendC::ReduceOrder::ORDER_ONLY_VALUE);}
+}
