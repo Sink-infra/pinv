@@ -12,8 +12,26 @@ def make_nopivot_macro():
         emit('pv_fill',ub.access_ptr('w'),T.float32(0),count)
         T.pipe_barrier('V')
         T.set_flag('V','MTE2',0);T.wait_flag('V','MTE2',0)
-        emit('pv_load_rows',ub.access_ptr('w'),A.access_ptr('r',offset=offset),n,n,0,24,n%8!=0)
+        if n+1==16:
+            emit('pv_load_rows',ub.access_ptr('w',offset=640),A.access_ptr('r',offset=offset),1,n*n,0,0)
+        else:
+            emit('pv_load_rows',ub.access_ptr('w'),A.access_ptr('r',offset=offset),n,n,0,24,n%8!=0)
         T.set_flag('MTE2','V',0);T.wait_flag('MTE2','V',0)
+        if n+1==16:
+            emit('cp_iota',ub.access_ptr('w',offset=1152),256)
+            T.pipe_barrier('V')
+            emit('cp_shift',ub.access_ptr('w',offset=896),ub.access_ptr('r',offset=1152),256)
+            T.pipe_barrier('V')
+            emit('cp_sub',ub.access_ptr('w',offset=1152),ub.access_ptr('r',offset=1152),ub.access_ptr('r',offset=896),256)
+            T.pipe_barrier('V')
+            emit('cp_scale',ub.access_ptr('w',offset=1152),ub.access_ptr('r',offset=1152),256)
+            T.pipe_barrier('V')
+            emit('pv_gather_bits',ub.access_ptr('w',offset=896),ub.access_ptr('r',offset=640),ub.access_ptr('r',offset=1152),0,n*16)
+            T.pipe_barrier('V')
+            emit('cp_zero_pad',ub.access_ptr('w',offset=896),n)
+            T.pipe_barrier('V')
+            emit('pv_copy_ub_rows',ub.access_ptr('w'),ub.access_ptr('r',offset=896),n,16,0,24)
+            T.pipe_barrier('V')
         emit('pv_abs',ub.access_ptr('w',offset=640),ub.access_ptr('r'),count)
         T.pipe_barrier('V')
         emit('pv_reduce_max',ub.access_ptr('w',offset=1368),ub.access_ptr('r',offset=640),ub.access_ptr('rw',offset=1336),count)
@@ -61,12 +79,9 @@ def make_nopivot_macro():
                 emit('pv_reduce_sum',ub.access_ptr('w',offset=1368),ub.access_ptr('r',offset=640),ub.access_ptr('rw',offset=1336),count)
                 T.set_flag('V','S',0);T.wait_flag('V','S',0)
                 inverse_total=ub[1368]
-                ub[1368]=total
-                T.set_flag('S','V',0);T.wait_flag('S','V',0)
-                emit('pv_sqrt',ub.access_ptr('w',offset=1368),ub.access_ptr('r',offset=1368),1)
-                T.set_flag('V','S',0);T.wait_flag('V','S',0)
-                cutoff=T.max(ub[1368]*rtol,atol/power)
-                if not (inverse_total>T.float32(0) and inverse_total*cutoff*cutoff<T.float32(0.81)):valid=0
+                absolute=atol/power
+                cutoff=T.max(total*rtol*rtol,absolute*absolute)
+                if not (inverse_total>T.float32(0) and inverse_total*cutoff<T.float32(0.81)):valid=0
                 if valid!=0:
                     emit('pv_scale',ub.access_ptr('w'),ub.access_ptr('r'),T.float32(-1)/power,count)
                     T.pipe_barrier('V')

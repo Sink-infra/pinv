@@ -1,6 +1,26 @@
 #pragma once
 #include "pinv_dsl_common.h"
-__aicore__ inline void PvStageCompact( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_ADDR W_handle,  GM_ADDR S_handle, int32_t blocks, int32_t m, int32_t n, int32_t batch, float atol, float rtol, uint64_t fftsAddr) {
+namespace tl::ascend {
+__aicore__ inline void cp_zero_pad(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>,AscendC::LocalTensor<float>,int rows){uint64_t mask[2]={0x8000800080008000ULL,0};AscendC::Duplicate(d,0.0f,mask,uint8_t((rows+3)/4),1,8);}
+}
+
+namespace tl::ascend {
+__aicore__ inline void cp_scale(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>,int n){AscendC::Muls(d.ReinterpretCast<int32_t>(),a.ReinterpretCast<int32_t>(),int32_t(4),n);}
+}
+
+namespace tl::ascend {
+__aicore__ inline void cp_sub(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>b,int n){AscendC::Sub(d.ReinterpretCast<int32_t>(),a.ReinterpretCast<int32_t>(),b.ReinterpretCast<int32_t>(),n);}
+}
+
+namespace tl::ascend {
+__aicore__ inline void cp_shift(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>,int n){AscendC::ShiftRight(d.ReinterpretCast<int32_t>(),a.ReinterpretCast<int32_t>(),int32_t(4),n);}
+}
+
+namespace tl::ascend {
+__aicore__ inline void cp_iota(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>,AscendC::LocalTensor<float>,int n){AscendC::CreateVecIndex(d.ReinterpretCast<int32_t>(),int32_t(0),n);}
+}
+
+__aicore__ static __attribute__((noinline)) void PvStageCompact( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_ADDR W_handle,  GM_ADDR S_handle, int32_t blocks, int32_t m, int32_t n, int32_t batch, float atol, float rtol, uint64_t fftsAddr) {
   if (static_cast<int32_t>(AscendC::GetBlockIdx()) >= batch) return;
   AscendC::TPipe pipe;
 
@@ -57,9 +77,29 @@ __aicore__ inline void PvStageCompact( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_
             AscendC::PipeBarrier<PIPE_V>();
             AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(0);
             AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(0);
-            tl::ascend::pv_load_rows(pool[0], A[offset], pool[0], dimension, dimension, 0, 24, (0 < (dimension % 8)));
+            if (dimension == 15) {
+              tl::ascend::pv_load_rows(pool[640], A[offset], pool[640], 1, (dimension * dimension), 0, 0);
+            } else {
+              tl::ascend::pv_load_rows(pool[0], A[offset], pool[0], dimension, dimension, 0, 24, (0 < (dimension % 8)));
+            }
             AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(0);
             AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(0);
+            if (dimension == 15) {
+              tl::ascend::cp_iota(pool[1152], pool[1152], pool[1152], 256);
+              AscendC::PipeBarrier<PIPE_V>();
+              tl::ascend::cp_shift(pool[896], pool[1152], pool[896], 256);
+              AscendC::PipeBarrier<PIPE_V>();
+              tl::ascend::cp_sub(pool[1152], pool[1152], pool[896], 256);
+              AscendC::PipeBarrier<PIPE_V>();
+              tl::ascend::cp_scale(pool[1152], pool[1152], pool[1152], 256);
+              AscendC::PipeBarrier<PIPE_V>();
+              tl::ascend::pv_gather_bits(pool[896], pool[640], pool[1152], 0, (dimension * 16));
+              AscendC::PipeBarrier<PIPE_V>();
+              tl::ascend::cp_zero_pad(pool[896], pool[896], pool[896], dimension);
+              AscendC::PipeBarrier<PIPE_V>();
+              tl::ascend::pv_copy_ub_rows(pool[0], pool[896], pool[0], dimension, 16, 0, 24);
+              AscendC::PipeBarrier<PIPE_V>();
+            }
             tl::ascend::pv_abs(pool[640], pool[0], pool[640], count);
             AscendC::PipeBarrier<PIPE_V>();
             tl::ascend::pv_reduce_max(pool[1368], pool[640], pool[1336], count);
@@ -115,14 +155,9 @@ __aicore__ inline void PvStageCompact( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_
                 AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
                 AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
                 float inverse_total = pool.GetValue(1368);
-                pool.SetValue(1368, total);
-                AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
-                AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
-                tl::ascend::pv_sqrt(pool[1368], pool[1368], pool[1368], 1);
-                AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
-                AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
-                float cutoff = max((pool.GetValue(1368) * rtol), (atol / power));
-                if ((inverse_total <= 0.000000e+00f) || (8.100000e-01f <= ((inverse_total * cutoff) * cutoff))) {
+                float absolute = (atol / power);
+                float cutoff = max(((total * rtol) * rtol), (absolute * absolute));
+                if ((inverse_total <= 0.000000e+00f) || (8.100000e-01f <= (inverse_total * cutoff))) {
                   valid = 0;
                 }
                 if (valid != 0) {

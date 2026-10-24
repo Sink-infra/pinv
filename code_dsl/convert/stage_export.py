@@ -100,14 +100,15 @@ def export_stage(args,native,current,acceptance):
         body=function[function.index('{'):]
         metadata=re.findall(r'^  KERNEL_TASK_TYPE_DEFAULT\([^\n]+\);\n',body,re.M)
         if len(metadata)!=1:raise ValueError('unknown task metadata')
-        adapted=function.replace(DECLARATION,'__aicore__ inline void '+symbol+'(',1).replace(metadata[0],'',1)
+        linkage='static __attribute__((noinline))' if key in {'compact','local'} else 'inline'
+        adapted=function.replace(DECLARATION,'__aicore__ '+linkage+' void '+symbol+'(',1).replace(metadata[0],'',1)
         if adapted[adapted.index('{'):]!=body.replace(metadata[0],'',1):raise ValueError('device body changed')
         functions[key]='#pragma once\n#include "pinv_dsl_common.h"\n'+adapted
         sources[key]=raw
         records[key]={'source':'op_kernel/pinv_dsl_'+key+'.h','entry':symbol,
                       'jit_source_sha256':digest(raw.encode()),'jit_library_sha256':record['library_sha256'],
                       'callable_body_sha256':digest(adapted[adapted.index('{'):].encode()),
-                      'abi_changes':['global entry to inline function','remove launch-only metadata'],
+                      'abi_changes':['global entry to '+linkage+' function','remove launch-only metadata'],
                       'runtime_arguments':'shape, batch, strides, tolerance and launch geometry'}
     # All three JIT modules import identical numerical continuation functions.
     # Share their exact definitions, along with the peer primitives, once.
