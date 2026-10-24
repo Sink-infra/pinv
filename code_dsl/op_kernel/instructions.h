@@ -55,3 +55,16 @@ __aicore__ inline void lv_abs_nomask(AscendC::LocalTensor<float>d,AscendC::Local
 __aicore__ inline void lv_scale_nomask(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>,float scale){AscendC::Muls<float,false>(d,a,scale,uint64_t(64),1,AscendC::UnaryRepeatParams{1,1,8,8});}
 __aicore__ inline void lv_mad_nomask(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>b,int rows,int pitch){AscendC::MulAddDst<float,float,false>(d,a,b,uint64_t(64),uint8_t(rows),AscendC::BinaryRepeatParams{1,1,0,uint8_t(pitch),0,1});}
 }
+
+#include "kernel_operator.h"
+namespace tl::ascend {
+__aicore__ inline void cp_iota(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>,AscendC::LocalTensor<float>,int n){AscendC::CreateVecIndex(d.ReinterpretCast<int32_t>(),int32_t(0),n);}
+__aicore__ inline void cp_shift(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>,int n){AscendC::ShiftRight(d.ReinterpretCast<int32_t>(),a.ReinterpretCast<int32_t>(),int32_t(4),n);}
+__aicore__ inline void cp_sub(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>b,int n){AscendC::Sub(d.ReinterpretCast<int32_t>(),a.ReinterpretCast<int32_t>(),b.ReinterpretCast<int32_t>(),n);}
+__aicore__ inline void cp_scale(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>,int n){AscendC::Muls(d.ReinterpretCast<int32_t>(),a.ReinterpretCast<int32_t>(),int32_t(4),n);}
+__aicore__ inline void cp_zero_pad(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>,AscendC::LocalTensor<float>,int rows){uint64_t mask[2]={0x8000800080008000ULL,0};AscendC::Duplicate(d,0.0f,mask,uint8_t((rows+3)/4),1,8);}
+}
+
+namespace tl::ascend {
+__aicore__ inline void lv_mad_factor16(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>b,int rows,int pitch){AscendC::MulAddDst<float,float,false>(d,a,b,uint64_t(64),uint8_t(rows),AscendC::BinaryRepeatParams{1,1,0,uint8_t(pitch),0,2});}
+}

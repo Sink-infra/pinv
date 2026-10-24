@@ -1,6 +1,10 @@
 #pragma once
 #include "pinv_dsl_common.h"
-__aicore__ inline void PvStageLocal( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_ADDR W_handle,  GM_ADDR S_handle, int32_t blocks, int32_t m, int32_t n, int32_t batch, float atol, float rtol, uint64_t fftsAddr) {
+namespace tl::ascend {
+__aicore__ inline void lv_mad_factor16(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>b,int rows,int pitch){AscendC::MulAddDst<float,float,false>(d,a,b,uint64_t(64),uint8_t(rows),AscendC::BinaryRepeatParams{1,1,0,uint8_t(pitch),0,2});}
+}
+
+__aicore__ static __attribute__((noinline)) void PvStageLocal( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_ADDR W_handle,  GM_ADDR S_handle, int32_t blocks, int32_t m, int32_t n, int32_t batch, float atol, float rtol, uint64_t fftsAddr) {
   if (static_cast<int32_t>(AscendC::GetBlockIdx()) >= batch) return;
   AscendC::TPipe pipe;
 
@@ -102,7 +106,7 @@ __aicore__ inline void PvStageLocal( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_AD
             AscendC::PipeBarrier<PIPE_V>();
             AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(0);
             AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(0);
-            tl::ascend::pv_load_rows(pool[0], A[offset], pool[0], n_1, n_1, 0, (120 - dma_pad), (0 < (n_1 % 8)));
+            tl::ascend::pv_load_rows(pool[0], A[offset], pool[0], n_1, n_1, max((0 - n_1), 0), (120 - dma_pad), (0 < (n_1 % 8)));
             AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(0);
             AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(0);
             tl::ascend::pv_abs(pool[8704], pool[0], pool[8704], count);
@@ -287,10 +291,10 @@ __aicore__ inline void PvStageLocal( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_AD
                   if (consumed_2 != 0) {
                     active_2 = (active_2 - 8);
                   }
-                  tl::ascend::pv_brcb_rows(pool[17408], pool[19040], pool[17408], 64, 8);
+                  tl::ascend::pv_brcb_rows(pool[17408], pool[19040], pool[17408], 64, 16);
                   tl::ascend::lv_scale_nomask(pool[(pivot_2 * 80)], pool[(pivot_2 * 80)], pool[(pivot_2 * 80)], (-1.000000e+00f / divisor_1));
                   AscendC::PipeBarrier<PIPE_V>();
-                  tl::ascend::lv_mad_nomask(pool[0], pool[(pivot_2 * 80)], pool[17408], 64, 10);
+                  tl::ascend::lv_mad_factor16(pool[0], pool[(pivot_2 * 80)], pool[17408], 64, 10);
                   AscendC::PipeBarrier<PIPE_V>();
                 }
                 if (valid_1 != 0) {
@@ -348,7 +352,7 @@ __aicore__ inline void PvStageLocal( GM_ADDR A_handle,  GM_ADDR X_handle,  GM_AD
               AscendC::PipeBarrier<PIPE_V>();
               AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(0);
               AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(0);
-              tl::ascend::pv_load_rows(pool[0], A[offset], pool[0], n_2, n_2, 0, (72 - dma_pad_2), (0 < (n_2 % 8)));
+              tl::ascend::pv_load_rows(pool[0], A[offset], pool[0], n_2, n_2, max((0 - n_2), 0), (72 - dma_pad_2), (0 < (n_2 % 8)));
               AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(0);
               AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(0);
               tl::ascend::pv_abs(pool[8704], pool[0], pool[8704], count_2);

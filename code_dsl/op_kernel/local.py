@@ -114,14 +114,17 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
                     if consumed != 0:
                         active -= 8
                     if reuse_mask:
-                        emit('pv_brcb_rows',pool.access_ptr('w',offset=factors),pool.access_ptr('r',offset=norms),64,8)
+                        emit('pv_brcb_rows',pool.access_ptr('w',offset=factors),pool.access_ptr('r',offset=norms),64,factor_pitch)
                         emit('lv_scale_nomask',pool.access_ptr('w',offset=pivot*pitch),pool.access_ptr('r',offset=pivot*pitch),T.float32(-1)/divisor)
                     else:
                         emit('pv_scale', pool.access_ptr('w', offset=pivot * pitch + base), pool.access_ptr('r', offset=pivot * pitch + base), T.float32(-1) / divisor, active)
                         emit('pv_brcb_rows', pool.access_ptr('w', offset=factors), pool.access_ptr('r', offset=norms), pad, factor_pitch)
                     T.pipe_barrier('V')
                     if reuse_mask:
-                        emit('lv_mad_nomask',pool.access_ptr('rw'),pool.access_ptr('r',offset=pivot*pitch),pool.access_ptr('r',offset=factors),64,pitch//8)
+                        if factor_pitch==16:
+                            emit('lv_mad_factor16',pool.access_ptr('rw'),pool.access_ptr('r',offset=pivot*pitch),pool.access_ptr('r',offset=factors),64,pitch//8)
+                        else:
+                            emit('lv_mad_nomask',pool.access_ptr('rw'),pool.access_ptr('r',offset=pivot*pitch),pool.access_ptr('r',offset=factors),64,pitch//8)
                     else:
                         emit('pv_mad_strided', pool.access_ptr('rw', offset=base), pool.access_ptr('r', offset=pivot * pitch + base), pool.access_ptr('r', offset=factors), T.min(live, 64), n, 1, 1, 0, pitch//8, 0, factor_pitch//8)
                     if live > 64 and consumed == 0:
@@ -246,7 +249,7 @@ def make_local_quick_macro(unroll=1,factor_pitch=8,scalar_admission=False):
     import tilelang.language as T
     one_vector=_make_quick_schedule(56,factor_pitch,unroll,scalar_admission=scalar_admission)
     two_vectors=_make_quick_schedule(64,factor_pitch,unroll,scalar_admission=scalar_admission,fused=True)
-    two_vectors_aligned=_make_quick_schedule(64,8,unroll,full_tile=True,scalar_admission=scalar_admission,fused=True,row_padding=16,reuse_mask=True)
+    two_vectors_aligned=_make_quick_schedule(64,16,unroll,full_tile=True,scalar_admission=scalar_admission,fused=True,row_padding=16,reuse_mask=True)
 
     @T.macro
     def quick(A,X,pool,indices,order,accepted,offset,n,atol,rtol):
