@@ -9,7 +9,7 @@ from code_dsl.op_kernel.control import admission_writer
 from code_dsl.op_kernel.normalization import ceil_power_bits
 
 
-def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_admission=False,condition_metric=False,minimum_magnitude=0.1,fused=False,row_padding=8,reuse_mask=False):
+def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_admission=False,condition_metric=False,minimum_magnitude=0.1,fused=False,row_padding=8,reuse_mask=False,pack_tail=False):
     import tilelang.language as T
     store_admission=admission_writer(scalar_admission)
 
@@ -218,8 +218,18 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
                         T.pipe_barrier('V')
                         emit('bl_gather',pool.access_ptr('w',offset=lo),pool.access_ptr('r'),pool.access_ptr('r',offset=lo+pad*pad),pad*pad)
                         T.pipe_barrier('V')
+                        if pack_tail:
+                            if n%8!=0:
+                                emit('lv_pack_mask',pool.access_ptr('w',offset=lo+pad*pad),pool.access_ptr('r',offset=lo),n,pad)
+                                T.pipe_barrier('V')
                         T.set_flag('V','MTE3',0);T.wait_flag('V','MTE3',0)
-                        emit('pv_store_rows',X.access_ptr('w',offset=offset),pool.access_ptr('r',offset=lo),n,n,pad-dma_pad,0)
+                        if pack_tail:
+                            if n%8!=0:
+                                emit('pv_store_rows',X.access_ptr('w',offset=offset),pool.access_ptr('r',offset=lo+pad*pad),1,n*n,0,0)
+                            else:
+                                emit('pv_store_rows',X.access_ptr('w',offset=offset),pool.access_ptr('r',offset=lo),n,n,pad-dma_pad,0)
+                        else:
+                            emit('pv_store_rows',X.access_ptr('w',offset=offset),pool.access_ptr('r',offset=lo),n,n,pad-dma_pad,0)
                         T.set_flag('MTE3','V',0);T.wait_flag('MTE3','V',0)
                         T.set_flag('MTE3','MTE2',0);T.wait_flag('MTE3','MTE2',0)
                     else:
@@ -247,7 +257,7 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
 
 def make_local_quick_macro(unroll=1,factor_pitch=8,scalar_admission=False):
     import tilelang.language as T
-    one_vector=_make_quick_schedule(56,factor_pitch,unroll,scalar_admission=scalar_admission)
+    one_vector=_make_quick_schedule(56,factor_pitch,unroll,scalar_admission=scalar_admission,pack_tail=True)
     two_vectors=_make_quick_schedule(64,factor_pitch,unroll,scalar_admission=scalar_admission,fused=True)
     two_vectors_aligned=_make_quick_schedule(64,16,unroll,full_tile=True,scalar_admission=scalar_admission,fused=True,row_padding=16,reuse_mask=True)
 

@@ -5,12 +5,14 @@ its caller, which must invoke the precise/truncated continuation on rejection.
 It is not exported as a complete pseudoinverse until that continuation exists.
 """
 from code_dsl.op_kernel.intrinsics import emit
+from code_dsl.op_kernel.static_reduce import make_reduction
 from code_dsl.op_kernel.control import admission_writer
 from code_dsl.op_kernel.normalization import ceil_power_bits
 
 
 def make_light_macro(unroll=1,scalar_admission=False):
     import tilelang.language as T
+    reduce_max=make_reduction('max')
     store_admission=admission_writer(scalar_admission)
 
     @T.macro
@@ -33,7 +35,7 @@ def make_light_macro(unroll=1,scalar_admission=False):
         T.wait_flag('MTE2','V',0)
         emit('pv_abs',ub.access_ptr('w',offset=640),ub.access_ptr('r'),count)
         T.pipe_barrier('V')
-        emit('pv_reduce_max',ub.access_ptr('w',offset=1368),ub.access_ptr('r',offset=640),ub.access_ptr('rw',offset=1336),count)
+        reduce_max(ub,1368,640,1336,count)
         T.set_flag('V','S',0)
         T.wait_flag('V','S',0)
         scale=ub[1368]
@@ -49,10 +51,11 @@ def make_light_macro(unroll=1,scalar_admission=False):
             T.pipe_barrier('V')
             emit('pv_mul',ub.access_ptr('w',offset=640),ub.access_ptr('r'),ub.access_ptr('r'),count)
             T.pipe_barrier('V')
-            emit('pv_reduce_sum',ub.access_ptr('w',offset=1368),ub.access_ptr('r',offset=640),ub.access_ptr('rw',offset=1336),count)
+            emit('ns_sum',ub.access_ptr('w',offset=1368),ub.access_ptr('r',offset=640),count)
             T.set_flag('V','S',0)
             T.wait_flag('V','S',0)
-            total=ub[1368]
+            total=T.alloc_var('float32')
+            emit('ns_acc',ub.access_ptr('rw'),total.buffer.data)
             for i in T.serial(n):
                 ub[i*40+16+i]=T.float32(1)
                 index_word=T.alloc_var('uint32')
@@ -126,10 +129,11 @@ def make_light_macro(unroll=1,scalar_admission=False):
                 T.pipe_barrier('V')
                 emit('pv_square_padded_rows',ub.access_ptr('w',offset=640),ub.access_ptr('r',offset=16),16,n,40)
                 T.pipe_barrier('V')
-                emit('pv_reduce_sum',ub.access_ptr('w',offset=1368),ub.access_ptr('r',offset=640),ub.access_ptr('rw',offset=1336),count)
+                emit('ns_sum',ub.access_ptr('w',offset=1368),ub.access_ptr('r',offset=640),count)
                 T.set_flag('V','S',0)
                 T.wait_flag('V','S',0)
-                inverse_total=ub[1368]
+                inverse_total=T.alloc_var('float32')
+                emit('ns_acc',ub.access_ptr('rw'),inverse_total.buffer.data)
                 ub[1368]=total
                 T.set_flag('S','V',0)
                 T.wait_flag('S','V',0)

@@ -1,10 +1,12 @@
 """Guarded fixed-row trial before the pivoted compact continuation."""
 from code_dsl.op_kernel.intrinsics import emit
+from code_dsl.op_kernel.static_reduce import make_reduction
 from code_dsl.op_kernel.normalization import ceil_power_bits
 
 
 def make_nopivot_macro():
     import tilelang.language as T
+    reduce_max=make_reduction('max')
     @T.macro
     def operation(A,X,ub,indices,order,accepted,offset,n,atol,rtol):
         count=n*40
@@ -18,13 +20,13 @@ def make_nopivot_macro():
             emit('pv_load_rows',ub.access_ptr('w'),A.access_ptr('r',offset=offset),n,n,0,24,n%8!=0)
         T.set_flag('MTE2','V',0);T.wait_flag('MTE2','V',0)
         if n+1==16:
-            emit('cp_iota',ub.access_ptr('w',offset=1152),256)
+            for lane in T.unroll(16):
+                indices[lane]=T.Cast('uint32',lane*4)
+                indices[16+lane]=T.Cast('uint32',lane*60)
+            T.set_flag('S','V',0);T.wait_flag('S','V',0)
+            emit('bl_index_brcb',ub.access_ptr('w',offset=896),indices.access_ptr('r',offset=16),16)
             T.pipe_barrier('V')
-            emit('cp_shift',ub.access_ptr('w',offset=896),ub.access_ptr('r',offset=1152),256)
-            T.pipe_barrier('V')
-            emit('cp_sub',ub.access_ptr('w',offset=1152),ub.access_ptr('r',offset=1152),ub.access_ptr('r',offset=896),256)
-            T.pipe_barrier('V')
-            emit('cp_scale',ub.access_ptr('w',offset=1152),ub.access_ptr('r',offset=1152),256)
+            emit('bl_index_matrix',ub.access_ptr('w',offset=1152),ub.access_ptr('r',offset=896),indices.access_ptr('r'),16,16)
             T.pipe_barrier('V')
             emit('pv_gather_bits',ub.access_ptr('w',offset=896),ub.access_ptr('r',offset=640),ub.access_ptr('r',offset=1152),0,n*16)
             T.pipe_barrier('V')
@@ -34,7 +36,7 @@ def make_nopivot_macro():
             T.pipe_barrier('V')
         emit('pv_abs',ub.access_ptr('w',offset=640),ub.access_ptr('r'),count)
         T.pipe_barrier('V')
-        emit('pv_reduce_max',ub.access_ptr('w',offset=1368),ub.access_ptr('r',offset=640),ub.access_ptr('rw',offset=1336),count)
+        reduce_max(ub,1368,640,1336,count)
         T.set_flag('V','S',0);T.wait_flag('V','S',0)
         magnitude=ub[1368]
         power=T.alloc_var('float32');power=T.float32(1)
@@ -47,9 +49,10 @@ def make_nopivot_macro():
             T.pipe_barrier('V')
             emit('pv_mul',ub.access_ptr('w',offset=640),ub.access_ptr('r'),ub.access_ptr('r'),count)
             T.pipe_barrier('V')
-            emit('pv_reduce_sum',ub.access_ptr('w',offset=1368),ub.access_ptr('r',offset=640),ub.access_ptr('rw',offset=1336),count)
+            emit('ns_sum',ub.access_ptr('w',offset=1368),ub.access_ptr('r',offset=640),count)
             T.set_flag('V','S',0);T.wait_flag('V','S',0)
-            total=ub[1368]
+            total=T.alloc_var('float32')
+            emit('ns_acc',ub.access_ptr('rw'),total.buffer.data)
             for i in T.serial(n):
                 ub[i*40+16+i]=T.float32(1)
                 indices[i]=T.Cast('uint32',i*160)
@@ -76,9 +79,10 @@ def make_nopivot_macro():
                 T.pipe_barrier('V')
                 emit('pv_square_padded_rows',ub.access_ptr('w',offset=640),ub.access_ptr('r',offset=16),16,n,40)
                 T.pipe_barrier('V')
-                emit('pv_reduce_sum',ub.access_ptr('w',offset=1368),ub.access_ptr('r',offset=640),ub.access_ptr('rw',offset=1336),count)
+                emit('ns_sum',ub.access_ptr('w',offset=1368),ub.access_ptr('r',offset=640),count)
                 T.set_flag('V','S',0);T.wait_flag('V','S',0)
-                inverse_total=ub[1368]
+                inverse_total=T.alloc_var('float32')
+                emit('ns_acc',ub.access_ptr('rw'),inverse_total.buffer.data)
                 absolute=atol/power
                 cutoff=T.max(total*rtol*rtol,absolute*absolute)
                 if not (inverse_total>T.float32(0) and inverse_total*cutoff<T.float32(0.81)):valid=0

@@ -1,7 +1,7 @@
 #pragma once
 #include "pinv_dsl_common.h"
 namespace tl::ascend {
-__aicore__ inline void BlockQuick( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADDR W_handle,  GM_ADDR S_handle, int32_t blocks, int32_t job, int32_t m, int32_t n, int32_t batch, float atol, float rtol, uint64_t fftsAddr) {
+__aicore__ static __attribute__((noinline)) void BlockQuick( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADDR W_handle,  GM_ADDR S_handle, int32_t blocks, int32_t job, int32_t m, int32_t n, int32_t batch, float atol, float rtol, uint64_t fftsAddr) {
   AscendC::TPipe pipe;
 
   AscendC::GlobalTensor<float> A;

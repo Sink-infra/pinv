@@ -139,6 +139,9 @@ def composed_kernel(strategy,component_source,unroll=1,factor_pitch=8):
     import tilelang.language as T
     if strategy not in {'compact','local','rectangular'}:raise ValueError(strategy)
     instructions=component_source
+    if strategy=='compact':
+        from code_dsl.op_kernel.static_storage import MARKER
+        instructions+='\n'+MARKER
     lower=15 if strategy=='compact' else 33
     upper=16 if strategy=='compact' else 64
     maximum=32 if strategy=='compact' else 64
