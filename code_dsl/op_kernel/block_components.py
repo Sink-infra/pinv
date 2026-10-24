@@ -11,7 +11,8 @@ def adapt(source,symbol):
  function=source[source.index(DECLARATION):source.index(BOUNDARY)]
  metadata=re.findall(r'^  KERNEL_TASK_TYPE_DEFAULT\([^\n]+\);\n',function,re.M)
  if len(metadata)!=1:raise ValueError('block launch metadata changed')
- result=function.replace(DECLARATION,'__aicore__ inline void '+symbol+'(',1).replace(metadata[0],'',1)
+ linkage='static __attribute__((noinline))' if symbol=='BlockQuick' else 'inline'
+ result=function.replace(DECLARATION,'__aicore__ '+linkage+' void '+symbol+'(',1).replace(metadata[0],'',1)
  if function[function.index('{'):].replace(metadata[0],'',1)!=result[result.index('{'):]:raise ValueError('block numerical body changed')
  return result
 

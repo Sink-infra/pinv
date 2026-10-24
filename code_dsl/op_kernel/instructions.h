@@ -68,3 +68,7 @@ __aicore__ inline void cp_zero_pad(AscendC::LocalTensor<float>d,AscendC::LocalTe
 namespace tl::ascend {
 __aicore__ inline void lv_mad_factor16(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>b,int rows,int pitch){AscendC::MulAddDst<float,float,false>(d,a,b,uint64_t(64),uint8_t(rows),AscendC::BinaryRepeatParams{1,1,0,uint8_t(pitch),0,2});}
 }
+
+namespace tl::ascend {
+__aicore__ inline void lv_pack_mask(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>,int n,int pitch){uint64_t count=0;AscendC::GatherMask(d,a,uint8_t(7),true,uint32_t(n),AscendC::GatherMaskParams{1,uint16_t(n),uint16_t(pitch/8),0},count);}
+}

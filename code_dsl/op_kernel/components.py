@@ -161,7 +161,7 @@ def composed_kernel(strategy,component_source,unroll=1,factor_pitch=8):
     def kernel(A:T.Tensor((1,),'float32'),X:T.Tensor((1,),'float32'),W:T.Tensor((1,),'float32'),S:T.Tensor((1,),'float32'),
                blocks:T.int32,m:T.int32,n:T.int32,batch:T.int32,atol:T.float32,rtol:T.float32):
         T.func_attr({'global_symbol':'linalg_pinv_tilelang','pinv.strategy':strategy,
-                     'pinv.launch_policy':'compact_quarter_grid_local_native',
+                     'pinv.launch_policy':'compact_quarter_grid_local_aligned_jobs',
                      'pinv.component_source.sha256':sha256(instructions.encode()).hexdigest()})
         with T.Kernel(blocks,threads=1,is_npu=True) as bid:
             T.import_source(instructions)

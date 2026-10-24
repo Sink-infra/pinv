@@ -1,6 +1,10 @@
 #pragma once
 #include "pinv_dsl_common.h"
 namespace tl::ascend {
+__aicore__ inline void lv_pack_mask(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>,int n,int pitch){uint64_t count=0;AscendC::GatherMask(d,a,uint8_t(7),true,uint32_t(n),AscendC::GatherMaskParams{1,uint16_t(n),uint16_t(pitch/8),0},count);}
+}
+
+namespace tl::ascend {
 __aicore__ inline void lv_mad_factor16(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>b,int rows,int pitch){AscendC::MulAddDst<float,float,false>(d,a,b,uint64_t(64),uint8_t(rows),AscendC::BinaryRepeatParams{1,1,0,uint8_t(pitch),0,2});}
 }
 
@@ -206,9 +210,17 @@ __aicore__ static __attribute__((noinline)) void PvStageLocal( GM_ADDR A_handle,
                   AscendC::PipeBarrier<PIPE_V>();
                   tl::ascend::bl_gather(pool[8704], pool[0], pool[11840], 3136);
                   AscendC::PipeBarrier<PIPE_V>();
+                  if (0 < (n_1 % 8)) {
+                    tl::ascend::lv_pack_mask(pool[11840], pool[8704], pool[11840], n_1, 56);
+                    AscendC::PipeBarrier<PIPE_V>();
+                  }
                   AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(0);
                   AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(0);
-                  tl::ascend::pv_store_rows(X[offset], pool[8704], X[offset], n_1, n_1, (56 - dma_pad), 0);
+                  if (0 < (n_1 % 8)) {
+                    tl::ascend::pv_store_rows(X[offset], pool[11840], X[offset], 1, (n_1 * n_1), 0, 0);
+                  } else {
+                    tl::ascend::pv_store_rows(X[offset], pool[8704], X[offset], n_1, n_1, (56 - dma_pad), 0);
+                  }
                   AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(0);
                   AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(0);
                   AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(0);

@@ -281,6 +281,8 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
         }
     }
     // Partial DSL rollout: numerical strategy selection remains unchanged.
+    if(LOCAL && t->cols<=64 && t->cols%8==0)
+        context->SetBlockDim(std::min<uint64_t>(platform.GetCoreNumAiv(),batch));
     if(COMPACT || (LOCAL && t->cols<=64)) {
         if(COMPACT) {
         context->SetBlockDim(std::min<uint64_t>(platform.GetCoreNumAiv(),std::max<uint64_t>(batch,std::max<uint32_t>(1,platform.GetCoreNumAiv()/4))));
