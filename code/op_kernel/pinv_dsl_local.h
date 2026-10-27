@@ -320,11 +320,9 @@ __aicore__ static __attribute__((noinline)) void PvStageLocal( GM_ADDR A_handle,
                   pool.SetValue((((int64_t)previous_1) + (int64_t)63), recovered_1);
                   AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
                   AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
-                  tl::ascend::pv_fill(pool[8704], pool[8704], pool[8704], 0.000000e+00f, count_1);
+                  tl::ascend::lv_square_packed_rows(pool[8704], pool[0], pool[8704], 64, 64, 80);
                   AscendC::PipeBarrier<PIPE_V>();
-                  tl::ascend::pv_square_padded_rows(pool[8704], pool[0], pool[8704], 64, 64, 80);
-                  AscendC::PipeBarrier<PIPE_V>();
-                  tl::ascend::pv_reduce_sum(pool[19008], pool[8704], pool[18496], count_1);
+                  tl::ascend::pv_reduce_sum(pool[19008], pool[8704], pool[18496], 4096);
                   AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
                   AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
                   float inverse_total_1 = pool.GetValue(19008);

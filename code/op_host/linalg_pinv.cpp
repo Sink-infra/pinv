@@ -190,7 +190,8 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context) {
     if (LOCAL) context->SetBlockDim(std::min<uint64_t>(platform.GetCoreNumAiv(),
         std::max<uint64_t>(batch, platform.GetCoreNumAic())));
     if (LOCAL && t->cols<=64 && t->cols%64==0)
-        context->SetBlockDim(std::min<uint64_t>(batch,platform.GetCoreNumAiv()));
+        context->SetBlockDim(std::min<uint64_t>(platform.GetCoreNumAiv(),
+            std::max<uint64_t>(batch,std::max<uint64_t>(1,platform.GetCoreNumAiv()/4))));
     uint32_t factorRows = (t->resident + 7) / 8 * 8;
     uint32_t GROUP = !COMPACT && !LOCAL && !WAVE && t->groupCount
         && t->resident * t->stride >= 16 * t->stride

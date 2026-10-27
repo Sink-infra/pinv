@@ -86,3 +86,7 @@ namespace tl::ascend {
 __aicore__ inline void lv_index_iota(AscendC::LocalTensor<uint32_t>d,AscendC::LocalTensor<uint32_t>,AscendC::LocalTensor<uint32_t>,int n){AscendC::CreateVecIndex(d.ReinterpretCast<int32_t>(),int32_t(0),n);}
 __aicore__ inline void lv_index_scale(AscendC::LocalTensor<uint32_t>d,AscendC::LocalTensor<uint32_t>a,AscendC::LocalTensor<uint32_t>,int step,int n){AscendC::Muls(d.ReinterpretCast<int32_t>(),a.ReinterpretCast<int32_t>(),int32_t(step),n);}
 }
+
+namespace tl::ascend {
+__aicore__ inline void lv_square_packed_rows(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>,int width,int rows,int pitch){AscendC::Mul(d,a,a,uint64_t(width),uint8_t(rows),AscendC::BinaryRepeatParams{1,1,1,uint8_t(width/8),uint8_t(pitch/8),uint8_t(pitch/8)});}
+}
