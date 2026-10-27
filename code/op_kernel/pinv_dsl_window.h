@@ -41,10 +41,12 @@ __aicore__ inline void mma(LocalTensor<T>a,LocalTensor<T>b,LocalTensor<U>c,bool 
  if constexpr(sizeof(T)==4)SetHF32Mode(HF32Mode::DISABLE);
  MmadParams p;p.m=M;p.n=N;p.k=k;p.cmatrixInitVal=init;Mmad(c,a,b,p);
 }
-template<class T,class U,unsigned M,unsigned N,unsigned K,bool TA=false,bool TB=false>
-__aicore__ inline void gemm_v0(LocalTensor<T> const&a,LocalTensor<T> const&b,LocalTensor<U> const&c,TBuf<TPosition::A2>&ab,TBuf<TPosition::B2>&bb,bool init){
+template<class E,TPosition P> __aicore__ inline LocalTensor<E> PvCubeL0(TBuf<P>&x){return x.template Get<E>();}
+template<class E,class V> __aicore__ inline LocalTensor<E> PvCubeL0(LocalTensor<V>&x){return x.template ReinterpretCast<E>();}
+template<class T,class U,unsigned M,unsigned N,unsigned K,bool TA=false,bool TB=false,class AB,class BB>
+__aicore__ inline void gemm_v0(LocalTensor<T> const&a,LocalTensor<T> const&b,LocalTensor<U> const&c,AB&ab,BB&bb,bool init){
  static_assert((K==128 || (K%16==0 && K<=128 && sizeof(T)==4)) && !TA && !TB);
- auto aa=ab.Get<T>();auto ba=bb.Get<T>();
+ auto aa=PvCubeL0<T>(ab);auto ba=PvCubeL0<T>(bb);
  SetFlag<HardEvent::MTE2_MTE1>(0);WaitFlag<HardEvent::MTE2_MTE1>(0);
  SetFlag<HardEvent::FIX_M>(0);WaitFlag<HardEvent::FIX_M>(0);
  SetFlag<HardEvent::M_MTE1>(0);WaitFlag<HardEvent::M_MTE1>(0);
@@ -2175,7 +2177,7 @@ namespace tl::ascend {
 
 
 __aicore__ inline void BlockGemm( GM_ADDR A_handle,  GM_ADDR P_handle,  GM_ADDR C_handle, int32_t blocks,  GM_ADDR shape_hint, int64_t inner, int64_t cols, int64_t batch, int64_t rows, uint64_t fftsAddr) {
-  AscendC::TPipe pipe;
+  AscendC::InitSocState();
 
   AscendC::GlobalTensor<float> A;
   A.SetGlobalBuffer((__gm__ float*)A_handle);
@@ -2186,85 +2188,117 @@ __aicore__ inline void BlockGemm( GM_ADDR A_handle,  GM_ADDR P_handle,  GM_ADDR 
   AscendC::GlobalTensor<uint8_t> ShapeHint;
   ShapeHint.SetGlobalBuffer((__gm__ uint8_t*)shape_hint);
 
-  AscendC::TBuf<AscendC::TPosition::A2> ascend_l0a;
-  pipe.InitBuffer(ascend_l0a, 65536);
-  AscendC::TBuf<AscendC::TPosition::B2> ascend_l0b;
-  pipe.InitBuffer(ascend_l0b, 65536);
-  AscendC::TBuf<AscendC::TPosition::A1> ascend_l1; pipe.InitBuffer(ascend_l1, 524032);
-  AscendC::TBuf<AscendC::TPosition::CO1> ascend_l0c; pipe.InitBuffer(ascend_l0c, 131072);
-  AscendC::TBuf<AscendC::TPosition::VECCALC> ascend_ub; pipe.InitBuffer(ascend_ub, 196352);
+  AscendC::LocalTensor<float> ascend_l0a(AscendC::TPosition::A2, 0, 16384);
+  AscendC::LocalTensor<float> ascend_l0b(AscendC::TPosition::B2, 0, 16384);
+
+
+
   auto bid = AscendC::GetBlockIdx();
   if ASCEND_IS_AIV {
     }
+  int previous_job_k128 = 0;
+  int previous_column_k128 = 0;
   int previous_job_large = 0;
   int previous_column_large = 0;
   int previous_job_small = 0;
   int previous_column_small = 0;
-  auto b_large = ascend_l1.GetWithOffset<float>(32768, 0);
-  auto a_large = ascend_l1.GetWithOffset<float>(32768, 131072);
-  auto c_large = ascend_l0c.GetWithOffset<float>(16384, 0);
+  AscendC::LocalTensor<float> b_k128(AscendC::TPosition::A1, 0, 32768);
+  AscendC::LocalTensor<float> a_k128(AscendC::TPosition::A1, 131072, 32768);
+  AscendC::LocalTensor<float> c_k128(AscendC::TPosition::CO1, 0, 16384);
+  int clear_k128 = 0;
+  AscendC::LocalTensor<float> b_large(AscendC::TPosition::A1, 262144, 32768);
+  AscendC::LocalTensor<float> a_large(AscendC::TPosition::A1, 0, 32768);
+  AscendC::LocalTensor<float> c_large(AscendC::TPosition::CO1, 65536, 16384);
   int clear_large = 0;
-  auto b_small = ascend_l1.GetWithOffset<float>(32768, 262144);
-  auto a_small = ascend_l1.GetWithOffset<float>(16384, 393216);
-  auto c_small = ascend_l0c.GetWithOffset<float>(8192, 65536);
+  AscendC::LocalTensor<float> b_small(AscendC::TPosition::A1, 262144, 32768);
+  AscendC::LocalTensor<float> a_small(AscendC::TPosition::A1, 393216, 16384);
+  AscendC::LocalTensor<float> c_small(AscendC::TPosition::CO1, 0, 8192);
   int clear_small = 0;
   auto vid = AscendC::GetSubBlockIdx();
   if ASCEND_IS_AIC {
     if ((128 <= rows) && ((rows % 128) == 0)) {
-      previous_job_large = -1;
-      previous_column_large = -1;
-      for (int32_t iteration = 0; iteration < (((((batch * (rows / 128)) * (cols / 128)) + blocks) - 1) / blocks); ++iteration) {
-        if ((bid + (iteration * blocks)) < ((batch * (rows / 128)) * (cols / 128))) {
-          if ((((bid + (iteration * blocks)) / ((rows / 128) * (cols / 128))) != previous_job_large) || (((bid + (iteration * blocks)) % (cols / 128)) != previous_column_large)) {
-            for (int32_t kk = 0; kk < (inner / 64); ++kk) {
-              tl::ascend::copy_gm_to_l1<float, 64, 128>(b_large[(kk * 8192)], P[((((bid + (iteration * blocks)) % (cols / 128)) * 128) + (((kk * 64) + (((bid + (iteration * blocks)) / ((rows / 128) * (cols / 128))) * inner)) * cols))], cols, ((1 <= (((inner * (batch - ((bid + (iteration * blocks)) / ((rows / 128) * (cols / 128))))) / 64) - kk)) ? 64 : ((0 < ((inner * (batch - ((bid + (iteration * blocks)) / ((rows / 128) * (cols / 128))))) - (kk * 64))) ? ((inner * (batch - ((bid + (iteration * blocks)) / ((rows / 128) * (cols / 128))))) - (kk * 64)) : 0)), ((1 <= ((cols / 128) - ((bid + (iteration * blocks)) % (cols / 128)))) ? 128 : ((0 < (cols - (((bid + (iteration * blocks)) % (cols / 128)) * 128))) ? (cols - (((bid + (iteration * blocks)) % (cols / 128)) * 128)) : 0)));
+      if (((128 <= inner) && (inner <= 256)) && ((inner % 128) == 0)) {
+        previous_job_k128 = -1;
+        previous_column_k128 = -1;
+        for (int32_t iteration = 0; iteration < (((((batch * (rows / 128)) * (cols / 128)) + blocks) - 1) / blocks); ++iteration) {
+          if ((bid + (iteration * blocks)) < ((batch * (rows / 128)) * (cols / 128))) {
+            if ((((bid + (iteration * blocks)) / ((rows / 128) * (cols / 128))) != previous_job_k128) || (((bid + (iteration * blocks)) % (cols / 128)) != previous_column_k128)) {
+              for (int32_t kk = 0; kk < (inner / 128); ++kk) {
+                tl::ascend::copy_gm_to_l1<float, 128, 128>(b_k128[(kk * 16384)], P[((((bid + (iteration * blocks)) % (cols / 128)) * 128) + (((kk * 128) + (((bid + (iteration * blocks)) / ((rows / 128) * (cols / 128))) * inner)) * cols))], cols, ((1 <= (((inner * (batch - ((bid + (iteration * blocks)) / ((rows / 128) * (cols / 128))))) / 128) - kk)) ? 128 : ((0 < ((inner * (batch - ((bid + (iteration * blocks)) / ((rows / 128) * (cols / 128))))) - (kk * 128))) ? ((inner * (batch - ((bid + (iteration * blocks)) / ((rows / 128) * (cols / 128))))) - (kk * 128)) : 0)), ((1 <= ((cols / 128) - ((bid + (iteration * blocks)) % (cols / 128)))) ? 128 : ((0 < (cols - (((bid + (iteration * blocks)) % (cols / 128)) * 128))) ? (cols - (((bid + (iteration * blocks)) % (cols / 128)) * 128)) : 0)));
+              }
+              previous_job_k128 = ((bid + (iteration * blocks)) / ((rows / 128) * (cols / 128)));
+              previous_column_k128 = ((bid + (iteration * blocks)) % (cols / 128));
             }
-            previous_job_large = ((bid + (iteration * blocks)) / ((rows / 128) * (cols / 128)));
-            previous_column_large = ((bid + (iteration * blocks)) % (cols / 128));
-          }
-          tl::ascend::br_load_a_shape(a_large[0], A[((((((bid + (iteration * blocks)) / (cols / 128)) % (rows / 128)) * 128) + (((bid + (iteration * blocks)) / ((rows / 128) * (cols / 128))) * rows)) * inner)], a_large[0], inner, inner, 128);
-          AscendC::PipeBarrier<PIPE_ALL>();
-          for (int32_t kk_1 = 0; kk_1 < (inner / 64); ++kk_1) {
-            clear_large = 0;
-            if (kk_1 == 0) {
-              clear_large = 1;
+            tl::ascend::br_load_a_shape(a_k128[0], A[((((((bid + (iteration * blocks)) / (cols / 128)) % (rows / 128)) * 128) + (((bid + (iteration * blocks)) / ((rows / 128) * (cols / 128))) * rows)) * inner)], a_k128[0], inner, inner, 128);
+            AscendC::PipeBarrier<PIPE_ALL>();
+            for (int32_t kk_1 = 0; kk_1 < (inner / 128); ++kk_1) {
+              clear_k128 = 0;
+              if (kk_1 == 0) {
+                clear_k128 = 1;
+              }
+              tl::ascend::gemm_v0<float, float, 128, 128, 128, false, false>(a_k128[(kk_1 * 16384)], b_k128[(kk_1 * 16384)], c_k128[0], ascend_l0a, ascend_l0b, (clear_k128 != 0));
+              AscendC::PipeBarrier<PIPE_ALL>();
             }
-            tl::ascend::gemm_v0<float, float, 128, 128, 64, false, false>(a_large[(kk_1 * 8192)], b_large[(kk_1 * 8192)], c_large[0], ascend_l0a, ascend_l0b, (clear_large != 0));
+            tl::ascend::copy_l0c_to_gm<float, float, layout::RowMajor, 128, 128, 0>(C[((((bid + (iteration * blocks)) % (cols / 128)) * 128) + ((((((bid + (iteration * blocks)) / (cols / 128)) % (rows / 128)) * 128) + (((bid + (iteration * blocks)) / ((rows / 128) * (cols / 128))) * rows)) * cols))], c_k128[0], cols, ((1 <= (((rows * (batch - ((bid + (iteration * blocks)) / ((rows / 128) * (cols / 128))))) / 128) - (((bid + (iteration * blocks)) / (cols / 128)) % (rows / 128)))) ? 128 : ((0 < ((rows * (batch - ((bid + (iteration * blocks)) / ((rows / 128) * (cols / 128))))) - ((((bid + (iteration * blocks)) / (cols / 128)) % (rows / 128)) * 128))) ? ((rows * (batch - ((bid + (iteration * blocks)) / ((rows / 128) * (cols / 128))))) - ((((bid + (iteration * blocks)) / (cols / 128)) % (rows / 128)) * 128)) : 0)), ((1 <= ((cols / 128) - ((bid + (iteration * blocks)) % (cols / 128)))) ? 128 : ((0 < (cols - (((bid + (iteration * blocks)) % (cols / 128)) * 128))) ? (cols - (((bid + (iteration * blocks)) % (cols / 128)) * 128)) : 0)));
             AscendC::PipeBarrier<PIPE_ALL>();
           }
-          tl::ascend::copy_l0c_to_gm<float, float, layout::RowMajor, 128, 128, 0>(C[((((bid + (iteration * blocks)) % (cols / 128)) * 128) + ((((((bid + (iteration * blocks)) / (cols / 128)) % (rows / 128)) * 128) + (((bid + (iteration * blocks)) / ((rows / 128) * (cols / 128))) * rows)) * cols))], c_large[0], cols, ((1 <= (((rows * (batch - ((bid + (iteration * blocks)) / ((rows / 128) * (cols / 128))))) / 128) - (((bid + (iteration * blocks)) / (cols / 128)) % (rows / 128)))) ? 128 : ((0 < ((rows * (batch - ((bid + (iteration * blocks)) / ((rows / 128) * (cols / 128))))) - ((((bid + (iteration * blocks)) / (cols / 128)) % (rows / 128)) * 128))) ? ((rows * (batch - ((bid + (iteration * blocks)) / ((rows / 128) * (cols / 128))))) - ((((bid + (iteration * blocks)) / (cols / 128)) % (rows / 128)) * 128)) : 0)), ((1 <= ((cols / 128) - ((bid + (iteration * blocks)) % (cols / 128)))) ? 128 : ((0 < (cols - (((bid + (iteration * blocks)) % (cols / 128)) * 128))) ? (cols - (((bid + (iteration * blocks)) % (cols / 128)) * 128)) : 0)));
-          AscendC::PipeBarrier<PIPE_ALL>();
+        }
+      } else {
+        previous_job_large = -1;
+        previous_column_large = -1;
+        for (int32_t iteration_1 = 0; iteration_1 < (((((batch * (rows / 128)) * (cols / 128)) + blocks) - 1) / blocks); ++iteration_1) {
+          if ((bid + (iteration_1 * blocks)) < ((batch * (rows / 128)) * (cols / 128))) {
+            if ((((bid + (iteration_1 * blocks)) / ((rows / 128) * (cols / 128))) != previous_job_large) || (((bid + (iteration_1 * blocks)) % (cols / 128)) != previous_column_large)) {
+              for (int32_t kk_2 = 0; kk_2 < (inner / 64); ++kk_2) {
+                tl::ascend::copy_gm_to_l1<float, 64, 128>(b_large[(kk_2 * 8192)], P[((((bid + (iteration_1 * blocks)) % (cols / 128)) * 128) + (((kk_2 * 64) + (((bid + (iteration_1 * blocks)) / ((rows / 128) * (cols / 128))) * inner)) * cols))], cols, ((1 <= (((inner * (batch - ((bid + (iteration_1 * blocks)) / ((rows / 128) * (cols / 128))))) / 64) - kk_2)) ? 64 : ((0 < ((inner * (batch - ((bid + (iteration_1 * blocks)) / ((rows / 128) * (cols / 128))))) - (kk_2 * 64))) ? ((inner * (batch - ((bid + (iteration_1 * blocks)) / ((rows / 128) * (cols / 128))))) - (kk_2 * 64)) : 0)), ((1 <= ((cols / 128) - ((bid + (iteration_1 * blocks)) % (cols / 128)))) ? 128 : ((0 < (cols - (((bid + (iteration_1 * blocks)) % (cols / 128)) * 128))) ? (cols - (((bid + (iteration_1 * blocks)) % (cols / 128)) * 128)) : 0)));
+              }
+              previous_job_large = ((bid + (iteration_1 * blocks)) / ((rows / 128) * (cols / 128)));
+              previous_column_large = ((bid + (iteration_1 * blocks)) % (cols / 128));
+            }
+            tl::ascend::br_load_a_shape(a_large[0], A[((((((bid + (iteration_1 * blocks)) / (cols / 128)) % (rows / 128)) * 128) + (((bid + (iteration_1 * blocks)) / ((rows / 128) * (cols / 128))) * rows)) * inner)], a_large[0], inner, inner, 128);
+            AscendC::PipeBarrier<PIPE_ALL>();
+            for (int32_t kk_3 = 0; kk_3 < (inner / 64); ++kk_3) {
+              clear_large = 0;
+              if (kk_3 == 0) {
+                clear_large = 1;
+              }
+              tl::ascend::gemm_v0<float, float, 128, 128, 64, false, false>(a_large[(kk_3 * 8192)], b_large[(kk_3 * 8192)], c_large[0], ascend_l0a, ascend_l0b, (clear_large != 0));
+              AscendC::PipeBarrier<PIPE_ALL>();
+            }
+            tl::ascend::copy_l0c_to_gm<float, float, layout::RowMajor, 128, 128, 0>(C[((((bid + (iteration_1 * blocks)) % (cols / 128)) * 128) + ((((((bid + (iteration_1 * blocks)) / (cols / 128)) % (rows / 128)) * 128) + (((bid + (iteration_1 * blocks)) / ((rows / 128) * (cols / 128))) * rows)) * cols))], c_large[0], cols, ((1 <= (((rows * (batch - ((bid + (iteration_1 * blocks)) / ((rows / 128) * (cols / 128))))) / 128) - (((bid + (iteration_1 * blocks)) / (cols / 128)) % (rows / 128)))) ? 128 : ((0 < ((rows * (batch - ((bid + (iteration_1 * blocks)) / ((rows / 128) * (cols / 128))))) - ((((bid + (iteration_1 * blocks)) / (cols / 128)) % (rows / 128)) * 128))) ? ((rows * (batch - ((bid + (iteration_1 * blocks)) / ((rows / 128) * (cols / 128))))) - ((((bid + (iteration_1 * blocks)) / (cols / 128)) % (rows / 128)) * 128)) : 0)), ((1 <= ((cols / 128) - ((bid + (iteration_1 * blocks)) % (cols / 128)))) ? 128 : ((0 < (cols - (((bid + (iteration_1 * blocks)) % (cols / 128)) * 128))) ? (cols - (((bid + (iteration_1 * blocks)) % (cols / 128)) * 128)) : 0)));
+            AscendC::PipeBarrier<PIPE_ALL>();
+          }
         }
       }
     } else {
       previous_job_small = -1;
       previous_column_small = -1;
-      for (int32_t iteration_1 = 0; iteration_1 < (((((batch * (rows / 64)) * (cols / 128)) + blocks) - 1) / blocks); ++iteration_1) {
-        if ((bid + (iteration_1 * blocks)) < ((batch * (rows / 64)) * (cols / 128))) {
-          if ((((bid + (iteration_1 * blocks)) / ((rows / 64) * (cols / 128))) != previous_job_small) || (((bid + (iteration_1 * blocks)) % (cols / 128)) != previous_column_small)) {
-            for (int32_t kk_2 = 0; kk_2 < (inner / 64); ++kk_2) {
-              tl::ascend::copy_gm_to_l1<float, 64, 128>(b_small[(kk_2 * 8192)], P[((((bid + (iteration_1 * blocks)) % (cols / 128)) * 128) + (((kk_2 * 64) + (((bid + (iteration_1 * blocks)) / ((rows / 64) * (cols / 128))) * inner)) * cols))], cols, ((1 <= (((inner * (batch - ((bid + (iteration_1 * blocks)) / ((rows / 64) * (cols / 128))))) / 64) - kk_2)) ? 64 : ((0 < ((inner * (batch - ((bid + (iteration_1 * blocks)) / ((rows / 64) * (cols / 128))))) - (kk_2 * 64))) ? ((inner * (batch - ((bid + (iteration_1 * blocks)) / ((rows / 64) * (cols / 128))))) - (kk_2 * 64)) : 0)), ((1 <= ((cols / 128) - ((bid + (iteration_1 * blocks)) % (cols / 128)))) ? 128 : ((0 < (cols - (((bid + (iteration_1 * blocks)) % (cols / 128)) * 128))) ? (cols - (((bid + (iteration_1 * blocks)) % (cols / 128)) * 128)) : 0)));
+      for (int32_t iteration_2 = 0; iteration_2 < (((((batch * (rows / 64)) * (cols / 128)) + blocks) - 1) / blocks); ++iteration_2) {
+        if ((bid + (iteration_2 * blocks)) < ((batch * (rows / 64)) * (cols / 128))) {
+          if ((((bid + (iteration_2 * blocks)) / ((rows / 64) * (cols / 128))) != previous_job_small) || (((bid + (iteration_2 * blocks)) % (cols / 128)) != previous_column_small)) {
+            for (int32_t kk_4 = 0; kk_4 < (inner / 64); ++kk_4) {
+              tl::ascend::copy_gm_to_l1<float, 64, 128>(b_small[(kk_4 * 8192)], P[((((bid + (iteration_2 * blocks)) % (cols / 128)) * 128) + (((kk_4 * 64) + (((bid + (iteration_2 * blocks)) / ((rows / 64) * (cols / 128))) * inner)) * cols))], cols, ((1 <= (((inner * (batch - ((bid + (iteration_2 * blocks)) / ((rows / 64) * (cols / 128))))) / 64) - kk_4)) ? 64 : ((0 < ((inner * (batch - ((bid + (iteration_2 * blocks)) / ((rows / 64) * (cols / 128))))) - (kk_4 * 64))) ? ((inner * (batch - ((bid + (iteration_2 * blocks)) / ((rows / 64) * (cols / 128))))) - (kk_4 * 64)) : 0)), ((1 <= ((cols / 128) - ((bid + (iteration_2 * blocks)) % (cols / 128)))) ? 128 : ((0 < (cols - (((bid + (iteration_2 * blocks)) % (cols / 128)) * 128))) ? (cols - (((bid + (iteration_2 * blocks)) % (cols / 128)) * 128)) : 0)));
             }
-            previous_job_small = ((bid + (iteration_1 * blocks)) / ((rows / 64) * (cols / 128)));
-            previous_column_small = ((bid + (iteration_1 * blocks)) % (cols / 128));
+            previous_job_small = ((bid + (iteration_2 * blocks)) / ((rows / 64) * (cols / 128)));
+            previous_column_small = ((bid + (iteration_2 * blocks)) % (cols / 128));
           }
-          tl::ascend::br_load_a_shape(a_small[0], A[((((((bid + (iteration_1 * blocks)) / (cols / 128)) % (rows / 64)) * 64) + (((bid + (iteration_1 * blocks)) / ((rows / 64) * (cols / 128))) * rows)) * inner)], a_small[0], inner, inner, 64);
+          tl::ascend::br_load_a_shape(a_small[0], A[((((((bid + (iteration_2 * blocks)) / (cols / 128)) % (rows / 64)) * 64) + (((bid + (iteration_2 * blocks)) / ((rows / 64) * (cols / 128))) * rows)) * inner)], a_small[0], inner, inner, 64);
           AscendC::PipeBarrier<PIPE_ALL>();
-          for (int32_t kk_3 = 0; kk_3 < (inner / 64); ++kk_3) {
+          for (int32_t kk_5 = 0; kk_5 < (inner / 64); ++kk_5) {
             clear_small = 0;
-            if (kk_3 == 0) {
+            if (kk_5 == 0) {
               clear_small = 1;
             }
-            tl::ascend::gemm_v0<float, float, 64, 128, 64, false, false>(a_small[(kk_3 * 4096)], b_small[(kk_3 * 8192)], c_small[0], ascend_l0a, ascend_l0b, (clear_small != 0));
+            tl::ascend::gemm_v0<float, float, 64, 128, 64, false, false>(a_small[(kk_5 * 4096)], b_small[(kk_5 * 8192)], c_small[0], ascend_l0a, ascend_l0b, (clear_small != 0));
             AscendC::PipeBarrier<PIPE_ALL>();
           }
-          tl::ascend::copy_l0c_to_gm<float, float, layout::RowMajor, 64, 128, 0>(C[((((bid + (iteration_1 * blocks)) % (cols / 128)) * 128) + ((((((bid + (iteration_1 * blocks)) / (cols / 128)) % (rows / 64)) * 64) + (((bid + (iteration_1 * blocks)) / ((rows / 64) * (cols / 128))) * rows)) * cols))], c_small[0], cols, ((1 <= (((rows * (batch - ((bid + (iteration_1 * blocks)) / ((rows / 64) * (cols / 128))))) / 64) - (((bid + (iteration_1 * blocks)) / (cols / 128)) % (rows / 64)))) ? 64 : ((0 < ((rows * (batch - ((bid + (iteration_1 * blocks)) / ((rows / 64) * (cols / 128))))) - ((((bid + (iteration_1 * blocks)) / (cols / 128)) % (rows / 64)) * 64))) ? ((rows * (batch - ((bid + (iteration_1 * blocks)) / ((rows / 64) * (cols / 128))))) - ((((bid + (iteration_1 * blocks)) / (cols / 128)) % (rows / 64)) * 64)) : 0)), ((1 <= ((cols / 128) - ((bid + (iteration_1 * blocks)) % (cols / 128)))) ? 128 : ((0 < (cols - (((bid + (iteration_1 * blocks)) % (cols / 128)) * 128))) ? (cols - (((bid + (iteration_1 * blocks)) % (cols / 128)) * 128)) : 0)));
+          tl::ascend::copy_l0c_to_gm<float, float, layout::RowMajor, 64, 128, 0>(C[((((bid + (iteration_2 * blocks)) % (cols / 128)) * 128) + ((((((bid + (iteration_2 * blocks)) / (cols / 128)) % (rows / 64)) * 64) + (((bid + (iteration_2 * blocks)) / ((rows / 64) * (cols / 128))) * rows)) * cols))], c_small[0], cols, ((1 <= (((rows * (batch - ((bid + (iteration_2 * blocks)) / ((rows / 64) * (cols / 128))))) / 64) - (((bid + (iteration_2 * blocks)) / (cols / 128)) % (rows / 64)))) ? 64 : ((0 < ((rows * (batch - ((bid + (iteration_2 * blocks)) / ((rows / 64) * (cols / 128))))) - ((((bid + (iteration_2 * blocks)) / (cols / 128)) % (rows / 64)) * 64))) ? ((rows * (batch - ((bid + (iteration_2 * blocks)) / ((rows / 64) * (cols / 128))))) - ((((bid + (iteration_2 * blocks)) / (cols / 128)) % (rows / 64)) * 64)) : 0)), ((1 <= ((cols / 128) - ((bid + (iteration_2 * blocks)) % (cols / 128)))) ? 128 : ((0 < (cols - (((bid + (iteration_2 * blocks)) % (cols / 128)) * 128))) ? (cols - (((bid + (iteration_2 * blocks)) % (cols / 128)) * 128)) : 0)));
           AscendC::PipeBarrier<PIPE_ALL>();
         }
       }
     }
   }
-  pipe.Destroy();
+
 }
 
 

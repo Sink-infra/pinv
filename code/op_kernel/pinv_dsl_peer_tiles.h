@@ -164,13 +164,14 @@ __aicore__ inline void PvDslPeerTileRows( GM_ADDR A_handle,  GM_ADDR X_handle,  
             condval_3 = 8;
           }
           int32_t live_limit = (((((panel * 16) + ((column_2 / 8) * 8)) + condval_2) + k) + condval_3);
-          int32_t condval_4;
-          if (consumed) {
-            condval_4 = 8;
-          } else {
-            condval_4 = 0;
-          }
-          for (int32_t chunk_2 = 0; chunk_2 < (((((live_limit + 63) - condval_4) - ((column_2 / 8) * 8)) - (panel * 16)) / 64); ++chunk_2) {
+          for (int32_t row_group = 0; row_group < ((owned + 7) / 8); ++row_group) {
+            int32_t lane_rows = min((owned - (row_group * 8)), 8);
+            int32_t condval_4;
+            if (consumed) {
+              condval_4 = 8;
+            } else {
+              condval_4 = 0;
+            }
             int32_t condval_5;
             if (consumed) {
               condval_5 = 8;
@@ -183,13 +184,7 @@ __aicore__ inline void PvDslPeerTileRows( GM_ADDR A_handle,  GM_ADDR X_handle,  
             } else {
               condval_6 = 0;
             }
-            int32_t condval_7;
-            if (consumed) {
-              condval_7 = 8;
-            } else {
-              condval_7 = 0;
-            }
-            tl::ascend::pv_mad_strided(pool[((((chunk_2 * 64) + (panel * 16)) + ((column_2 / 8) * 8)) + condval_5)], pool[(((((chunk_2 * 64) + ((column_2 / 8) * 8)) + packets) + (column_2 * packet_stride)) + condval_6)], pool[factors], min(((((live_limit - condval_7) - ((column_2 / 8) * 8)) - (panel * 16)) - (chunk_2 * 64)), 64), owned, 1, 1, 0, 57, 0, 1);
+            tl::ascend::pv_mad_strided(pool[((((row_group * 3648) + (panel * 16)) + ((column_2 / 8) * 8)) + condval_4)], pool[((row_group * 64) + factors)], pool[(((((column_2 / 8) * 8) + packets) + (column_2 * packet_stride)) + condval_5)], (lane_rows * 8), ((((live_limit - condval_6) / 8) - (column_2 / 8)) - (panel * 2)), 57, 1, 0, 1, 0, 1);
           }
           if ((selected_1 % 9) == core) {
             tl::ascend::pv_copy(pool[(((selected_1 / 9) * 456) + (panel * 16))], pool[(packets + (column_2 * packet_stride))], pool[(((selected_1 / 9) * 456) + (panel * 16))], packet_stride);

@@ -184,7 +184,7 @@ template<class D,class A,class B> __aicore__ inline void br_cube_sync(D,A,B){Asc
 
 namespace tl::ascend {
 __aicore__ inline void BlockRowGemm( GM_ADDR A_handle,  GM_ADDR P_handle,  GM_ADDR C_handle, int32_t blocks,  GM_ADDR shape_hint, int64_t inner, int64_t cols, int64_t batch, int64_t rows, uint64_t fftsAddr) {
-  AscendC::TPipe pipe;
+  AscendC::InitSocState();
 
   AscendC::GlobalTensor<float> A;
   A.SetGlobalBuffer((__gm__ float*)A_handle);
@@ -195,19 +195,17 @@ __aicore__ inline void BlockRowGemm( GM_ADDR A_handle,  GM_ADDR P_handle,  GM_AD
   AscendC::GlobalTensor<uint8_t> ShapeHint;
   ShapeHint.SetGlobalBuffer((__gm__ uint8_t*)shape_hint);
 
-  AscendC::TBuf<AscendC::TPosition::A2> ascend_l0a;
-  pipe.InitBuffer(ascend_l0a, 65536);
-  AscendC::TBuf<AscendC::TPosition::B2> ascend_l0b;
-  pipe.InitBuffer(ascend_l0b, 65536);
-  AscendC::TBuf<AscendC::TPosition::A1> ascend_l1; pipe.InitBuffer(ascend_l1, 524032);
-  AscendC::TBuf<AscendC::TPosition::CO1> ascend_l0c; pipe.InitBuffer(ascend_l0c, 131072);
-  AscendC::TBuf<AscendC::TPosition::VECCALC> ascend_ub; pipe.InitBuffer(ascend_ub, 196352);
+  AscendC::LocalTensor<float> ascend_l0a(AscendC::TPosition::A2, 0, 16384);
+  AscendC::LocalTensor<float> ascend_l0b(AscendC::TPosition::B2, 0, 16384);
+
+
+
   auto bid = AscendC::GetBlockIdx();
   if ASCEND_IS_AIV {
     }
-  auto a = ascend_l1.GetWithOffset<float>(4096, 0);
-  auto b = ascend_l1.GetWithOffset<float>(16384, 16384);
-  auto c = ascend_l0c.GetWithOffset<float>(16384, 0);
+  AscendC::LocalTensor<float> a(AscendC::TPosition::A1, 0, 4096);
+  AscendC::LocalTensor<float> b(AscendC::TPosition::A1, 16384, 16384);
+  AscendC::LocalTensor<float> c(AscendC::TPosition::CO1, 0, 16384);
   auto vid = AscendC::GetSubBlockIdx();
   if ASCEND_IS_AIC {
     for (int32_t iteration = 0; iteration < (((((batch * (rows / 64)) * (cols / 256)) + blocks) - 1) / blocks); ++iteration) {
@@ -222,7 +220,7 @@ __aicore__ inline void BlockRowGemm( GM_ADDR A_handle,  GM_ADDR P_handle,  GM_AD
       }
     }
   }
-  pipe.Destroy();
+
 }
 }
 #define br_row_gemm(d,a,b,oa,ob,oc,bl,ba,m,k,n) BlockRowGemm((GM_ADDR)(d.GetPhyAddr()+oa),(GM_ADDR)(d.GetPhyAddr()+ob),(GM_ADDR)(d.GetPhyAddr()+oc),bl,(GM_ADDR)d.GetPhyAddr(),k,n,ba,m,fftsAddr)

@@ -106,9 +106,10 @@ def make_peer_tile_rows_macro(*, cache_peak=False):
                     consumed=pivot_column%8==7 or pivot_column+1==T.int32(200)
                     live_begin=pivot_column//8*8+T.if_then_else(consumed,8,0)
                     live_limit=live_begin+k+T.if_then_else(consumed,0,8)
-                    for chunk in T.serial(T.ceildiv(live_limit-live_begin,64)):
-                        col=live_begin+chunk*64
-                        emit('pv_mad_strided',pool.access_ptr('rw',offset=col),pool.access_ptr('r',offset=packets+column*packet_stride+col-first),pool.access_ptr('r',offset=factors),T.min(live_limit-col,64),owned,1,1,0,T.int32(456)//8,0,1)
+                    for row_group in T.serial(T.ceildiv(owned,8)):
+                        first_row=row_group*8
+                        lane_rows=T.min(owned-first_row,8)
+                        emit('pv_mad_strided',pool.access_ptr('rw',offset=first_row*T.int32(456)+live_begin),pool.access_ptr('r',offset=factors+first_row*8),pool.access_ptr('r',offset=packets+column*packet_stride+live_begin-first),lane_rows*8,(live_limit-live_begin)//8,T.int32(456)//8,1,0,1,0,1)
                     if selected%T.int32(9)==core:
                         emit('pv_copy',pool.access_ptr('w',offset=(selected//T.int32(9))*T.int32(456)+first),pool.access_ptr('r',offset=packets+column*packet_stride),packet_stride)
             if window>0 and first+rows==window_end and window_end<T.int32(200):

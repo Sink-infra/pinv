@@ -7,6 +7,7 @@ def row_gemm():
  def kernel(A:T.Tensor((B*M,K),'float32'),P:T.Tensor((B*K,N),'float32'),C:T.Tensor((B*M,N),'float32'),blocks:T.int32):
   T.func_attr({'global_symbol':'linalg_pinv_tilelang','pinv.scope':'row-owned K64 FP32 update product'})
   with T.Kernel(blocks,threads=1,is_npu=True) as bid:
+   T.import_source('#define PINV_STATIC_CUBE_STORAGE 1')
    with T.Scope('C'):
     a=T.alloc_L1((64,64),'float32');b=T.alloc_L1((64,256),'float32');c=T.alloc_L0C((64,256),'float32')
     tiles_r=M//64;tiles_c=N//256
