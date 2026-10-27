@@ -69,4 +69,6 @@ def cube_component_source(source):
     source=source.replace(early,'',1)
     boundary=source.index('\nvoid linalg_pinv_tilelang_kernel_tiling(',start)
     close=source.rfind('\n}',start,boundary)
-    return source[:close]+'\n  pipe.Destroy();'+source[close:]
+    result=source[:close]+'\n  pipe.Destroy();'+source[close:]
+    from code_dsl.op_kernel.cube_storage import MARKER,lower_source
+    return lower_source(result) if MARKER in result else result

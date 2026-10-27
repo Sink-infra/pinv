@@ -41,6 +41,7 @@ __aicore__ static __attribute__((noinline)) void PvStageLocal( GM_ADDR A_handle,
   auto order = ascend_ub.GetWithOffset<uint32_t>(128, 76832);
   int previous = 0;
   float recovered = 0.000000e+00f;
+  int rejected = 0;
   int count_1 = 0;
   int dma_pad_1 = 0;
   float condition_1 = 0.000000e+00f;
@@ -49,6 +50,7 @@ __aicore__ static __attribute__((noinline)) void PvStageLocal( GM_ADDR A_handle,
   uint32_t power_word_1 = (uint32_t)0;
   int previous_1 = 0;
   float recovered_1 = 0.000000e+00f;
+  int rejected_1 = 0;
   int count_2 = 0;
   int dma_pad_2 = 0;
   float condition_2 = 0.000000e+00f;
@@ -57,6 +59,7 @@ __aicore__ static __attribute__((noinline)) void PvStageLocal( GM_ADDR A_handle,
   uint32_t power_word_2 = (uint32_t)0;
   int previous_2 = 0;
   float recovered_2 = 0.000000e+00f;
+  int rejected_2 = 0;
   int decision = 0;
   float best = 0.000000e+00f;
   int pivot = 0;
@@ -197,7 +200,8 @@ __aicore__ static __attribute__((noinline)) void PvStageLocal( GM_ADDR A_handle,
                 AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
                 AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
                 float cutoff = max((pool.GetValue(19008) * rtol), (atol / power));
-                if ((inverse_total <= 0.000000e+00f) || (8.100000e-01f <= ((inverse_total * cutoff) * cutoff))) {
+                rejected = ((int32_t)((inverse_total <= 0.000000e+00f) || (8.100000e-01f <= ((inverse_total * cutoff) * cutoff))));
+                if (rejected != 0) {
                   valid = 0;
                 } else {
                   tl::ascend::pv_scale(pool[0], pool[0], pool[0], (-1.000000e+00f / power), count);
@@ -263,9 +267,10 @@ __aicore__ static __attribute__((noinline)) void PvStageLocal( GM_ADDR A_handle,
                 AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
                 AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
                 float total_1 = pool.GetValue(19008);
-                for (int32_t i_1 = 0; i_1 < 64; ++i_1) {
-                  indices.SetValue(i_1, ((uint32_t)(i_1 * 320)));
-                }
+                tl::ascend::lv_index_iota(indices[0], indices[0], indices[0], 64);
+                AscendC::PipeBarrier<PIPE_V>();
+                tl::ascend::lv_index_scale(indices[0], indices[0], indices[0], 320, 64);
+                AscendC::PipeBarrier<PIPE_V>();
                 tl::ascend::pv_fill(pool[19040], pool[19040], pool[19040], 0.000000e+00f, 64);
                 AscendC::PipeBarrier<PIPE_V>();
                 tl::ascend::pv_mask_begin(pool[0], pool[0], pool[0], 64);
@@ -315,22 +320,17 @@ __aicore__ static __attribute__((noinline)) void PvStageLocal( GM_ADDR A_handle,
                   pool.SetValue((((int64_t)previous_1) + (int64_t)63), recovered_1);
                   AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
                   AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
-                  tl::ascend::pv_fill(pool[8704], pool[8704], pool[8704], 0.000000e+00f, count_1);
+                  tl::ascend::lv_square_packed_rows(pool[8704], pool[0], pool[8704], 64, 64, 80);
                   AscendC::PipeBarrier<PIPE_V>();
-                  tl::ascend::pv_square_padded_rows(pool[8704], pool[0], pool[8704], 64, 64, 80);
-                  AscendC::PipeBarrier<PIPE_V>();
-                  tl::ascend::pv_reduce_sum(pool[19008], pool[8704], pool[18496], count_1);
+                  tl::ascend::pv_reduce_sum(pool[19008], pool[8704], pool[18496], 4096);
                   AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
                   AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
                   float inverse_total_1 = pool.GetValue(19008);
-                  pool.SetValue(19008, total_1);
-                  AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
-                  AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
-                  tl::ascend::pv_sqrt(pool[19008], pool[19008], pool[19008], 1);
-                  AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
-                  AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
-                  float cutoff_1 = max((pool.GetValue(19008) * rtol), (atol / power_1));
-                  if ((inverse_total_1 <= 0.000000e+00f) || (8.100000e-01f <= ((inverse_total_1 * cutoff_1) * cutoff_1))) {
+                  float relative = ((total_1 * rtol) * rtol);
+                  float absolute = (atol / power_1);
+                  float bound = max(relative, (absolute * absolute));
+                  rejected_1 = ((int32_t)((inverse_total_1 <= 0.000000e+00f) || (8.100000e-01f <= (inverse_total_1 * bound))));
+                  if (rejected_1 != 0) {
                     valid_1 = 0;
                   } else {
                     tl::ascend::pv_scale(pool[0], pool[0], pool[0], (-1.000000e+00f / power_1), count_1);
@@ -388,11 +388,11 @@ __aicore__ static __attribute__((noinline)) void PvStageLocal( GM_ADDR A_handle,
                 AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
                 AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
                 float total_2 = pool.GetValue(19008);
-                for (int32_t i_2 = 0; i_2 < 64; ++i_2) {
-                  indices.SetValue(i_2, ((uint32_t)(i_2 * 288)));
-                  if (n_2 <= i_2) {
-                    order.SetValue(i_2, (uint32_t)0);
-                    order.SetValue((i_2 + 64), (uint32_t)0);
+                for (int32_t i_1 = 0; i_1 < 64; ++i_1) {
+                  indices.SetValue(i_1, ((uint32_t)(i_1 * 288)));
+                  if (n_2 <= i_1) {
+                    order.SetValue(i_1, (uint32_t)0);
+                    order.SetValue((i_1 + 64), (uint32_t)0);
                   }
                 }
                 tl::ascend::pv_fill(pool[19040], pool[19040], pool[19040], 0.000000e+00f, 64);
@@ -458,8 +458,9 @@ __aicore__ static __attribute__((noinline)) void PvStageLocal( GM_ADDR A_handle,
                   tl::ascend::pv_sqrt(pool[19008], pool[19008], pool[19008], 1);
                   AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
                   AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
-                  float cutoff_2 = max((pool.GetValue(19008) * rtol), (atol / power_2));
-                  if ((inverse_total_2 <= 0.000000e+00f) || (8.100000e-01f <= ((inverse_total_2 * cutoff_2) * cutoff_2))) {
+                  float cutoff_1 = max((pool.GetValue(19008) * rtol), (atol / power_2));
+                  rejected_2 = ((int32_t)((inverse_total_2 <= 0.000000e+00f) || (8.100000e-01f <= ((inverse_total_2 * cutoff_1) * cutoff_1))));
+                  if (rejected_2 != 0) {
                     valid_2 = 0;
                   } else {
                     tl::ascend::pv_scale(pool[0], pool[0], pool[0], (-1.000000e+00f / power_2), count_2);

@@ -39,10 +39,12 @@ __aicore__ inline void mma(LocalTensor<T>a,LocalTensor<T>b,LocalTensor<U>c,bool 
  if constexpr(sizeof(T)==4)SetHF32Mode(HF32Mode::DISABLE);
  MmadParams p;p.m=M;p.n=N;p.k=k;p.cmatrixInitVal=init;Mmad(c,a,b,p);
 }
-template<class T,class U,unsigned M,unsigned N,unsigned K,bool TA=false,bool TB=false>
-__aicore__ inline void gemm_v0(LocalTensor<T> const&a,LocalTensor<T> const&b,LocalTensor<U> const&c,TBuf<TPosition::A2>&ab,TBuf<TPosition::B2>&bb,bool init){
+template<class E,TPosition P> __aicore__ inline LocalTensor<E> PvCubeL0(TBuf<P>&x){return x.template Get<E>();}
+template<class E,class V> __aicore__ inline LocalTensor<E> PvCubeL0(LocalTensor<V>&x){return x.template ReinterpretCast<E>();}
+template<class T,class U,unsigned M,unsigned N,unsigned K,bool TA=false,bool TB=false,class AB,class BB>
+__aicore__ inline void gemm_v0(LocalTensor<T> const&a,LocalTensor<T> const&b,LocalTensor<U> const&c,AB&ab,BB&bb,bool init){
  static_assert((K==128 || (K%16==0 && K<=128 && sizeof(T)==4)) && !TA && !TB);
- auto aa=ab.Get<T>();auto ba=bb.Get<T>();
+ auto aa=PvCubeL0<T>(ab);auto ba=PvCubeL0<T>(bb);
  SetFlag<HardEvent::MTE2_MTE1>(0);WaitFlag<HardEvent::MTE2_MTE1>(0);
  SetFlag<HardEvent::FIX_M>(0);WaitFlag<HardEvent::FIX_M>(0);
  SetFlag<HardEvent::M_MTE1>(0);WaitFlag<HardEvent::M_MTE1>(0);

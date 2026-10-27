@@ -9,7 +9,7 @@ from code_dsl.op_kernel.control import admission_writer
 from code_dsl.op_kernel.normalization import ceil_power_bits
 
 
-def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_admission=False,condition_metric=False,minimum_magnitude=0.1,fused=False,row_padding=8,reuse_mask=False,pack_tail=False):
+def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_admission=False,condition_metric=False,minimum_magnitude=0.1,fused=False,row_padding=8,reuse_mask=False,pack_tail=False,vector_indices=False,squared_guard=False,packed_inverse=False):
     import tilelang.language as T
     store_admission=admission_writer(scalar_admission)
 
@@ -57,13 +57,17 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
             emit('pv_reduce_sum',pool.access_ptr('w',offset=red),pool.access_ptr('r',offset=lo),pool.access_ptr('rw',offset=scratch),count)
             T.set_flag('V','S',0);T.wait_flag('V','S',0)
             total=pool[red]
-            for i in T.serial(pad):
-                # Gather consumes exactly n offsets; padded slots are never
-                # read. An unconditional ramp also avoids a per-lane branch.
-                indices[i]=T.Cast('uint32',i*pitch*4)
-                if pad>=56 and not full_tile:
-                    if i>=n:
-                        order[i]=T.Cast('uint32',0);order[pad+i]=T.Cast('uint32',0)
+            if vector_indices:
+                emit('lv_index_iota',indices.access_ptr('w'),64);T.pipe_barrier('V')
+                emit('lv_index_scale',indices.access_ptr('w'),indices.access_ptr('r'),pitch*4,64);T.pipe_barrier('V')
+            else:
+                for i in T.serial(pad):
+                    # Gather consumes exactly n offsets; padded slots are never
+                    # read. An unconditional ramp also avoids a per-lane branch.
+                    indices[i]=T.Cast('uint32',i*pitch*4)
+                    if pad>=56 and not full_tile:
+                        if i>=n:
+                            order[i]=T.Cast('uint32',0);order[pad+i]=T.Cast('uint32',0)
             emit('pv_fill',pool.access_ptr('w',offset=norms),T.float32(0),pad)
             T.pipe_barrier('V')
             emit('pv_mask_begin',pool.access_ptr('rw'),n)
@@ -191,20 +195,33 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
                     T.set_flag('V','S',0);T.wait_flag('V','S',0)
                     pool[previous + n - 1] = recovered
                     T.set_flag('S','V',0);T.wait_flag('S','V',0)
-                emit('pv_fill',pool.access_ptr('w',offset=lo),T.float32(0),count)
-                T.pipe_barrier('V')
-                emit('pv_square_padded_rows',pool.access_ptr('w',offset=lo),pool.access_ptr('r',offset=xbase),pad,n,pitch)
-                T.pipe_barrier('V')
-                emit('pv_reduce_sum',pool.access_ptr('w',offset=red),pool.access_ptr('r',offset=lo),pool.access_ptr('rw',offset=scratch),count)
+                if packed_inverse:
+                    emit('lv_square_packed_rows',pool.access_ptr('w',offset=lo),pool.access_ptr('r',offset=xbase),pad,n,pitch)
+                    T.pipe_barrier('V')
+                    emit('pv_reduce_sum',pool.access_ptr('w',offset=red),pool.access_ptr('r',offset=lo),pool.access_ptr('rw',offset=scratch),n*pad)
+                else:
+                    emit('pv_fill',pool.access_ptr('w',offset=lo),T.float32(0),count)
+                    T.pipe_barrier('V')
+                    emit('pv_square_padded_rows',pool.access_ptr('w',offset=lo),pool.access_ptr('r',offset=xbase),pad,n,pitch)
+                    T.pipe_barrier('V')
+                    emit('pv_reduce_sum',pool.access_ptr('w',offset=red),pool.access_ptr('r',offset=lo),pool.access_ptr('rw',offset=scratch),count)
                 T.set_flag('V','S',0);T.wait_flag('V','S',0)
                 inverse_total=pool[red]
                 if condition_metric:condition=total*inverse_total
-                pool[red]=total
-                T.set_flag('S','V',0);T.wait_flag('S','V',0)
-                emit('pv_sqrt',pool.access_ptr('w',offset=red),pool.access_ptr('r',offset=red),1)
-                T.set_flag('V','S',0);T.wait_flag('V','S',0)
-                cutoff=T.max(pool[red]*rtol,atol/power)
-                if not (inverse_total>T.float32(0) and inverse_total*cutoff*cutoff<T.float32(0.81)):
+                rejected=T.alloc_var('int32')
+                if squared_guard:
+                    relative=total*rtol*rtol
+                    absolute=atol/power
+                    bound=T.max(relative,absolute*absolute)
+                    rejected=T.Cast('int32',not (inverse_total>T.float32(0) and inverse_total*bound<T.float32(0.81)))
+                else:
+                    pool[red]=total
+                    T.set_flag('S','V',0);T.wait_flag('S','V',0)
+                    emit('pv_sqrt',pool.access_ptr('w',offset=red),pool.access_ptr('r',offset=red),1)
+                    T.set_flag('V','S',0);T.wait_flag('V','S',0)
+                    cutoff=T.max(pool[red]*rtol,atol/power)
+                    rejected=T.Cast('int32',not (inverse_total>T.float32(0) and inverse_total*cutoff*cutoff<T.float32(0.81)))
+                if rejected!=0:
                     valid=0
                 else:
                     emit('pv_scale',pool.access_ptr('w'),pool.access_ptr('r'),T.float32(-1)/power,count)
@@ -259,7 +276,7 @@ def make_local_quick_macro(unroll=1,factor_pitch=8,scalar_admission=False):
     import tilelang.language as T
     one_vector=_make_quick_schedule(56,factor_pitch,unroll,scalar_admission=scalar_admission,pack_tail=True)
     two_vectors=_make_quick_schedule(64,factor_pitch,unroll,scalar_admission=scalar_admission,fused=True)
-    two_vectors_aligned=_make_quick_schedule(64,16,unroll,full_tile=True,scalar_admission=scalar_admission,fused=True,row_padding=16,reuse_mask=True)
+    two_vectors_aligned=_make_quick_schedule(64,16,unroll,full_tile=True,scalar_admission=scalar_admission,fused=True,row_padding=16,reuse_mask=True,vector_indices=True,squared_guard=True,packed_inverse=True)
 
     @T.macro
     def quick(A,X,pool,indices,order,accepted,offset,n,atol,rtol):
