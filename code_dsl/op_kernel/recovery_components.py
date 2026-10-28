@@ -29,7 +29,7 @@ def recovery_device_functions(sources):
         if len(metadata)!=1:
             raise ValueError('unexpected component metadata: '+name)
         symbol='PvDslRectangular' if name=='fallback' else 'FusedPreparedRaw' if name=='prepared_raw' else 'Fused'+name.title()
-        linkage='static __attribute__((noinline))' if name=='fallback' else 'inline'
+        linkage='static __attribute__((noinline))' if name in {'fallback','raw','prepared_raw'} else 'inline'
         adapted=function.replace(DECLARATION,'__aicore__ '+linkage+' void '+symbol+'(',1).replace(metadata[0],'',1)
         before=function[function.index('{'):].replace(metadata[0],'',1)
         after=adapted[adapted.index('{'):]
