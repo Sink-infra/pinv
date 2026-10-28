@@ -20,7 +20,7 @@ def digest(text):
 
 
 def definition(text,name):
-    pattern=r'__aicore__ (?:inline|static __attribute__\(\(noinline\)\)) void '+name+r'\('
+    pattern=r'__aicore__ (?:inline|static __attribute__\(\(noinline\)\)) (?:void|int32_t) '+name+r'\('
     match=re.search(pattern,text)
     if match is None:
         raise ValueError('missing device definition: '+name)
@@ -31,7 +31,7 @@ def definition(text,name):
     return text[start:end]
 
 
-def callable_source(source,symbol,*,noinline=False):
+def callable_source(source,symbol,*,noinline=False,result_scalar=None):
     if source.count(DECLARATION)!=1 or source.count(BOUNDARY)!=1:
         raise ValueError('unexpected lowered device ABI')
     function=source[source.index(DECLARATION):source.index(BOUNDARY)]
@@ -42,6 +42,19 @@ def callable_source(source,symbol,*,noinline=False):
     adapted=function.replace(DECLARATION,'__aicore__ '+linkage+' void '+symbol+'(',1).replace(metadata[0],'',1)
     if function[function.index('{'):].replace(metadata[0],'',1)!=adapted[adapted.index('{'):]:
         raise ValueError('numerical device body changed')
+    if result_scalar is not None:
+        if symbol!='PvStageWindow' or result_scalar!='all_admitted':
+            raise ValueError('unknown window result ABI')
+        if adapted.count('int all_admitted = 0;')!=1:
+            raise ValueError('missing TileLang admission scalar')
+        original=adapted
+        adapted=adapted.replace('void '+symbol+'(','int32_t '+symbol+'(',1)
+        closing=adapted.rfind('}')
+        statement='  return all_admitted;\n'
+        adapted=adapted[:closing]+statement+adapted[closing:]
+        restored=adapted.replace('int32_t '+symbol+'(','void '+symbol+'(',1).replace(statement,'',1)
+        if restored!=original:
+            raise ValueError('window result ABI changed device arithmetic')
     return adapted
 
 
@@ -120,7 +133,7 @@ def export_window(args,native,current,acceptance):
             component=(args.window_build/'components'/name/'kernel.cpp').read_text()
             if digest(component)!=row['source_sha256']:raise ValueError('block component changed: '+name)
         header+=block+'\n'
-    root=callable_source(source,'PvStageWindow',noinline=True)
+    root=callable_source(source,'PvStageWindow',noinline=False,result_scalar='all_admitted')
     header+=root+'\n'
     (destination/'op_kernel/pinv_dsl_window.h').write_text(header)
     entry=destination/'op_kernel/linalg_pinv.cpp'
@@ -133,7 +146,8 @@ def export_window(args,native,current,acceptance):
         if(pinv_dsl::WindowSupported(data.m,data.n,data.batch,data.stride,data.local,GetBlockNum())) {
             GM_ADDR work=GetUserWorkspace(workspace);
             GM_ADDR status=work+pinv_dsl::WindowWorkFloats(data.batch,data.cols,data.stride,GetBlockNum())*sizeof(float);
-            PvStageWindow(A,A_pinv,work,status,GetBlockNum(),data.cols,data.batch,data.stride,data.local,data.atol,data.rtol,0,0);
+            int32_t windowAdmitted=PvStageWindow(A,A_pinv,work,status,GetBlockNum(),data.cols,data.batch,data.stride,data.local,data.atol,data.rtol,0,0);
+            if(windowAdmitted!=0)return;
             AscendC::GlobalTensor<float> flags;
             flags.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(status));
             bool admitted=true;

@@ -24,13 +24,11 @@ __aicore__ static __attribute__((noinline)) void BlockQuick( GM_ADDR A_handle,  
   int valid = 0;
   auto pool = ascend_ub.GetWithOffset<float>(19136, 32);
   float power = 0.000000e+00f;
-  uint32_t power_word = (uint32_t)0;
   auto indices = ascend_ub.GetWithOffset<uint32_t>(64, 76576);
   int previous = 0;
   float recovered = 0.000000e+00f;
   auto order = ascend_ub.GetWithOffset<uint32_t>(128, 76832);
-  int word = 0;
-  float metric = 0.000000e+00f;
+  int rejected = 0;
   float best = 0.000000e+00f;
   int pivot = 0;
   int consumed = 0;
@@ -41,6 +39,8 @@ __aicore__ static __attribute__((noinline)) void BlockQuick( GM_ADDR A_handle,  
   int consumed_1 = 0;
   int base_1 = 0;
   int active_1 = 0;
+  int word = 0;
+  float metric = 0.000000e+00f;
   auto vid = AscendC::GetSubBlockIdx();
   if ASCEND_IS_AIV {
     accepted.SetValue(0, 0);
@@ -55,30 +55,18 @@ __aicore__ static __attribute__((noinline)) void BlockQuick( GM_ADDR A_handle,  
     tl::ascend::pv_load_rows(pool[0], A[(job * 4096)], pool[0], 64, 64, max((m - 64), 0), (80 - dma_pad), (bool)0);
     AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(0);
     AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(0);
-    tl::ascend::pv_abs(pool[8704], pool[0], pool[8704], count);
-    AscendC::PipeBarrier<PIPE_V>();
-    tl::ascend::pv_reduce_max(pool[19008], pool[8704], pool[18496], count);
-    AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
-    AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
-    float magnitude = pool.GetValue(19008);
-    if ((magnitude < 1.000000e-30f) || (1.701412e+38f <= magnitude)) {
-      valid = 0;
-    }
     power = 1.000000e+00f;
     if (valid != 0) {
-      power_word = (((*(uint32_t *)(&(magnitude))) + (uint32_t)8388607) & (uint32_t)2139095040);
-      power = (*(float *)(&(power_word)));
-      tl::ascend::pv_scale(pool[0], pool[0], pool[0], (1.000000e+00f / power), count);
-      AscendC::PipeBarrier<PIPE_V>();
       tl::ascend::pv_mul(pool[8704], pool[0], pool[0], count);
       AscendC::PipeBarrier<PIPE_V>();
       tl::ascend::pv_reduce_sum(pool[19008], pool[8704], pool[18496], count);
       AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
       AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
       float total = pool.GetValue(19008);
-      for (int32_t i = 0; i < 64; ++i) {
-        indices.SetValue(i, ((uint32_t)(i * 320)));
-      }
+      tl::ascend::lv_index_iota(indices[0], indices[0], indices[0], 64);
+      AscendC::PipeBarrier<PIPE_V>();
+      tl::ascend::lv_index_scale(indices[0], indices[0], indices[0], 320, 64);
+      AscendC::PipeBarrier<PIPE_V>();
       tl::ascend::pv_fill(pool[19040], pool[19040], pool[19040], 0.000000e+00f, 64);
       AscendC::PipeBarrier<PIPE_V>();
       tl::ascend::pv_mask_begin(pool[0], pool[0], pool[0], 64);
@@ -117,9 +105,9 @@ __aicore__ static __attribute__((noinline)) void BlockQuick( GM_ADDR A_handle,  
           active = (active - 8);
         }
         tl::ascend::pv_scale(pool[((pivot * 80) + base)], pool[((pivot * 80) + base)], pool[((pivot * 80) + base)], (-1.000000e+00f / divisor), active);
-        tl::ascend::pv_brcb_rows(pool[17408], pool[19040], pool[17408], 64, 8);
+        tl::ascend::pv_brcb_rows(pool[17408], pool[19040], pool[17408], 64, 16);
         AscendC::PipeBarrier<PIPE_V>();
-        tl::ascend::pv_mad_strided(pool[base], pool[((pivot * 80) + base)], pool[17408], 64, 64, 1, 1, 0, 10, 0, 1);
+        tl::ascend::pv_mad_strided(pool[base], pool[((pivot * 80) + base)], pool[17408], 64, 64, 1, 1, 0, 10, 0, 2);
         AscendC::PipeBarrier<PIPE_V>();
       }
       if (valid != 0) {
@@ -143,7 +131,12 @@ __aicore__ static __attribute__((noinline)) void BlockQuick( GM_ADDR A_handle,  
         tl::ascend::pv_sqrt(pool[19008], pool[19008], pool[19008], 1);
         AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
         AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
-        if (inverse_total <= 0.000000e+00f) {
+        rejected = ((int32_t)(inverse_total <= 0.000000e+00f));
+        uint32_t inverse_bits = (*(uint32_t *)(&(inverse_total)));
+        if ((inverse_bits & (uint32_t)2139095040) == (uint32_t)2139095040) {
+          rejected = 1;
+        }
+        if (rejected != 0) {
           valid = 0;
         } else {
           tl::ascend::pv_scale(pool[0], pool[0], pool[0], (-1.000000e+00f / power), count);
@@ -175,6 +168,7 @@ __aicore__ static __attribute__((noinline)) void BlockQuick( GM_ADDR A_handle,  
   }
   pipe.Destroy();
 }
+
 }
 
 #include "kernel_operator.h"

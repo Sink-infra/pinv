@@ -75,7 +75,7 @@ def append_block(root,lower,digest):
   if not set(names)<=set(mapping):raise ValueError('block ABI changed: '+str(names))
   header+='namespace tl::ascend {\n'+body+'\n}\n'
   header+=f'#define {macro}(d,a,b,{formal}) '+symbol+'('+','.join(mapping[x] for x in names)+')'+('' if kwargs.get('cube') else ',tl::ascend::FrRestorePipe(&pipe)')+'\n'
- callback('block_pack',pack_kernel(instructions),'bf_pack','bl,n,ba',dict(shared,A_handle='(GM_ADDR)fr.input.GetPhyAddr()',Y_handle='(GM_ADDR)fr.output.GetPhyAddr()',AH_handle=ptr('2*'+all),YH_handle=ptr('3*'+all),YN_handle=ptr('8*'+all),S_handle='(GM_ADDR)fr.status.GetPhyAddr()'))
+ callback('block_pack',pack_kernel(instructions),'bf_pack','bl,n,ba,st,at,rt',dict(shared,stride='st',atol='at',rtol='rt',A_handle='(GM_ADDR)fr.input.GetPhyAddr()',Y_handle='(GM_ADDR)fr.output.GetPhyAddr()',AH_handle=ptr('0'),YH_handle=ptr('3*'+all),YN_handle=ptr('8*'+all),S_handle='(GM_ADDR)fr.status.GetPhyAddr()'))
  callback('block_product',product_kernel(),'bf_product','bl,n,ba',dict(shared,A_handle=ptr('2*'+all),Y_handle=ptr('3*'+all),P_handle=ptr('4*'+all)),cube=True)
  callback('block_decode',decode_kernel(instructions),'bf_decode','bl,n,ba',dict(shared,P_handle=ptr('4*'+all),R_handle=ptr('9*'+all)))
  callback('block_finish',finish_kernel(instructions),'bf_finish','bl,n,ba,st,at,rt',dict(shared,A_handle='(GM_ADDR)fr.input.GetPhyAddr()',Y_handle='(GM_ADDR)fr.output.GetPhyAddr()',W_handle='(GM_ADDR)d.GetPhyAddr()',S_handle='(GM_ADDR)fr.status.GetPhyAddr()',stride='st',atol='at',rtol='rt'))

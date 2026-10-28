@@ -18,6 +18,7 @@ def window_recovery_kernel(component_source):
       off=T.ceildiv(2*batch*n*stride+batch*8192,128)*128
       qa=0;qy=5*extent//4;pr=5*extent//2;rr=pr+25*extent;yh=rr+extent;rh=yh+extent//2;co=rh+extent//2;pa=co+extent;qn=pa+blocks*2*n
       blocked=T.alloc_var('int32');blocked=0
+      all_admitted=T.alloc_var('int32');all_admitted=0
       if use_block(n,stride,batch,blocks):blocked=1
       if blocked!=0:emit('bf_block',A.access_ptr('r'),X.access_ptr('rw'),W.access_ptr('rw'),blocks,n,batch)
       with T.Scope('C'):
@@ -26,20 +27,18 @@ def window_recovery_kernel(component_source):
         emit('pv_cross_wait2',W.access_ptr('rw'),8)
         emit('br_gemm',W.access_ptr('rw'),11*batch*n*n,8*batch*n*n,4*batch*n*n,blocks,batch,n,n,n)
         T.barrier_all();emit('pc_done',W.access_ptr('rw'))
-        # Third Neumann term prepared from the first residual: R1 = R0*R0 is
-        # added into R0 on the Vector pipe, so the single correction product
-        # below delivers Y0*(R0 + R0^2) and the residual becomes R0^3.
+        # One FP32 Newton correction Y0 + Y0*R0.
         emit('pv_cross_wait2',W.access_ptr('rw'),8)
-        emit('br_gemm',W.access_ptr('rw'),9*batch*n*n,10*batch*n*n,11*batch*n*n,blocks,batch,n,n,n)
-        T.barrier_all();emit('br_cube_sync',W.access_ptr('rw'))
-        emit('br_gemm',W.access_ptr('rw'),8*batch*n*n,11*batch*n*n,10*batch*n*n,blocks,batch,n,n,n)
+        emit('br_gemm',W.access_ptr('rw'),8*batch*n*n,9*batch*n*n,10*batch*n*n,blocks,batch,n,n,n)
         T.barrier_all();emit('pc_done',W.access_ptr('rw'))
        running=T.alloc_var('int32');running=1
        while running!=0:
         emit('pv_cross_wait2',W.access_ptr('rw'),8)
         emit('pc_invalidate',S.access_ptr('rw',offset=batch*512))
         next_job=T.Cast('int32',S[batch*512])
-        if next_job<0:running=0
+        if next_job<0:
+         all_admitted=T.Cast('int32',next_job==-2)
+         running=0
         else:
          emit('fr_integer',W.access_ptr('rw'),off,qa,qy,pr,blocks,n)
          T.barrier_all();emit('pc_done',W.access_ptr('rw'))
@@ -53,7 +52,9 @@ def window_recovery_kernel(component_source):
        if blocked!=0:
         emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10);emit('pv_sync_all',W.access_ptr('rw'))
         emit('bf_decode',W.access_ptr('rw'),blocks,n,batch)
-        emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10);emit('pv_sync_all',W.access_ptr('rw'))
+        emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8)
+        emit('bf_pack',W.access_ptr('rw'),blocks,n,batch,stride,atol,rtol)
+        emit('pv_cross_wait2',W.access_ptr('rw'),10);emit('pv_sync_all',W.access_ptr('rw'))
         emit('bf_finish',W.access_ptr('rw'),blocks,n,batch,stride,atol,rtol)
        else:
         if use_prepared(n,stride,batch,blocks,window):
@@ -62,7 +63,6 @@ def window_recovery_kernel(component_source):
          emit('fr_raw',W.access_ptr('rw'),blocks,n,batch,stride,window,atol,rtol,off+qn+blocks*32)
        cores=blocks*2
        group_size=cores//batch
-       all_admitted=T.alloc_var('int32');all_admitted=0
        if blocked!=0:
         all_admitted=1
         for job in T.serial(batch):
@@ -90,7 +90,7 @@ def window_recovery_kernel(component_source):
          cutoff=T.max(pool[3648]*rtol,atol/power)
          if not (inverse>T.float32(0) and inverse*cutoff*cutoff<T.float32(81) and inverse*total<T.float32(1e16)):valid=0
          refine=T.alloc_var('int32');refine=0
-         # The block strategy now delivers the R0^3 residual through its own
+         # The block strategy delivers a Newton-corrected inverse through its own
          # Cube correction, so exact digit recovery is reserved for inputs the
          # Frobenius gate itself cannot admit.
          if valid!=0 and inverse*total>=T.float32(1e15):refine=1
@@ -144,7 +144,7 @@ def window_recovery_kernel(component_source):
           T.set_flag('S','MTE3',0);T.wait_flag('S','MTE3',0)
           emit('pv_store_rows',S.access_ptr('w',offset=job*512+16),pool.access_ptr('r',offset=3616),1,8,0,0)
        if bid==0:
-        pool[3600]=T.float32(-1)
+        pool[3600]=T.float32(-1)-T.Cast('float32',all_admitted)
         T.set_flag('S','MTE3',0);T.wait_flag('S','MTE3',0)
         emit('pv_store_rows',S.access_ptr('w',offset=batch*512),pool.access_ptr('r',offset=3600),1,16,0,0)
        emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10)

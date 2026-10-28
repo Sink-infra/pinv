@@ -207,7 +207,8 @@ __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR worksp
         if(pinv_dsl::WindowSupported(data.m,data.n,data.batch,data.stride,data.local,GetBlockNum())) {
             GM_ADDR work=GetUserWorkspace(workspace);
             GM_ADDR status=work+pinv_dsl::WindowWorkFloats(data.batch,data.cols,data.stride,GetBlockNum())*sizeof(float);
-            PvStageWindow(A,A_pinv,work,status,GetBlockNum(),data.cols,data.batch,data.stride,data.local,data.atol,data.rtol,0,0);
+            int32_t windowAdmitted=PvStageWindow(A,A_pinv,work,status,GetBlockNum(),data.cols,data.batch,data.stride,data.local,data.atol,data.rtol,0,0);
+            if(windowAdmitted!=0)return;
             AscendC::GlobalTensor<float> flags;
             flags.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(status));
             bool admitted=true;
@@ -238,3 +239,7 @@ __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR worksp
     PvStageNative<DT_A,COMPACT,TAIL,WAVE,LOCAL,GROUP,PIPELINE,WINDOW,CUBE,RECT>(A,A_pinv,workspace,tiling);
     }
 }
+
+#if defined(__CCE_AICORE__)
+#define cce_kernel cce_kernel, aligned(16384)
+#endif
