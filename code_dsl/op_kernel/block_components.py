@@ -29,7 +29,7 @@ def append_block(root,lower,digest):
  from code_dsl.op_kernel.recovery_backend import composition_backend
  from code_dsl.op_kernel.backend import jit_compiler_options
  op=Path(__file__).parent;records={};parts=[]
- instructions=(op/'block_instructions.h').read_text()
+ instructions=(op/'block_instructions.h').read_text()+'\n'+(op/'block_atomic_instructions.h').read_text()+'\n'+(op/'block_chain_instructions.h').read_text()
  header=instructions+'\nusing uint=unsigned int;using uchar=unsigned char;using ushort=unsigned short;\n'
  def add(name,function,**kwargs):
   source=lower(name,function,**kwargs)
@@ -47,6 +47,14 @@ def append_block(root,lower,digest):
 #define br_gemm(d,a,b,oa,ob,oc,bl,ba,m,k,n) BlockGemm((GM_ADDR)(d.GetPhyAddr()+oa),(GM_ADDR)(d.GetPhyAddr()+ob),(GM_ADDR)(d.GetPhyAddr()+oc),bl,(GM_ADDR)d.GetPhyAddr(),k,n,ba,m,fftsAddr)
 #define br_row_gemm(d,a,b,oa,ob,oc,bl,ba,m,k,n) BlockRowGemm((GM_ADDR)(d.GetPhyAddr()+oa),(GM_ADDR)(d.GetPhyAddr()+ob),(GM_ADDR)(d.GetPhyAddr()+oc),bl,(GM_ADDR)d.GetPhyAddr(),k,n,ba,m,fftsAddr)
 """
+ from code_dsl.op_kernel.block_atomic_components import append_atomic
+ atomic_header,atomic_records=append_atomic(root,lower)
+ header+=atomic_header
+ records['atomic_products']=atomic_records
+ from code_dsl.op_kernel.block_chain_components import append_chain
+ chain_header,chain_record=append_chain(root,lower)
+ header+=chain_header
+ records['chain_products']=chain_record
  standalone=instruction_source()+'\n'+(op/'parallel_instructions.h').read_text()+'\n'+(op/'recovery_bindings.h').read_text()+'\n'+header
  destination=root/'components/block_raw';destination.mkdir(parents=True,exist_ok=False)
  f=raw_kernel(standalone).with_attr('pinv.dsl.sha256',digest).with_attr('pinv.jit.optimization_level',3)

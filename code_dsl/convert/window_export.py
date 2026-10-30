@@ -129,9 +129,13 @@ def export_window(args,native,current,acceptance):
         if digest(block)!=receipt['block']['header_sha256'] or source.count(block)!=1:
             raise ValueError('block JIT header changed')
         for name,row in receipt['block'].items():
-            if not isinstance(row,dict):continue
+            if not isinstance(row,dict) or name in {'atomic_products','chain_products'}:continue
             component=(args.window_build/'components'/name/'kernel.cpp').read_text()
             if digest(component)!=row['source_sha256']:raise ValueError('block component changed: '+name)
+        from code_dsl.convert.block_atomic_export import split_atomic
+        block=split_atomic(block,receipt,args.window_build,destination,callable_source)
+        from code_dsl.convert.block_chain_export import split_chain
+        block=split_chain(block,receipt,args.window_build,destination,callable_source)
         header+=block+'\n'
     root=callable_source(source,'PvStageWindow',noinline=False,result_scalar='all_admitted')
     header+=root+'\n'

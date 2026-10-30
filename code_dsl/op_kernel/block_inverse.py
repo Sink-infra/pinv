@@ -18,7 +18,7 @@ def raw_kernel(header):
    row_tile=T.alloc_var('int32');row_tile=8
    if batch*n>=cores*32:row_tile=32
    extent=n*n;aug=batch*extent*2
-   source=0;swapped=aug
+   source=T.alloc_var('int32');source=0;swapped=T.alloc_var('int32');swapped=aug
    ca=2*aug;ci=ca+batch*n*64
    diag=ci+batch*n*64
    panel_input=diag+batch*4096;panel=panel_input+batch*64*2*n
@@ -26,14 +26,12 @@ def raw_kernel(header):
    scores=update+aug;status=scores+batch*n
    with T.Scope('C'):
     emit('pv_sync_init',W.access_ptr('rw'))
+    cube_swap=T.alloc_var('int32');cube_swap=aug
     for stage in T.serial(n//64):
+     cube_swap=aug
+     if stage%2!=0:cube_swap=0
      emit('pv_cross_wait2',W.access_ptr('rw'),8)
-     emit('br_gemm',W.access_ptr('rw'),diag,panel_input,panel,blocks,batch,64,64,n)
-     T.barrier_all();emit('br_cube_sync',W.access_ptr('rw'))
-     if batch*n==blocks*64:
-      emit('br_row_gemm',W.access_ptr('rw'),factors,panel,update,blocks,batch,n,64,n)
-     else:
-      emit('br_gemm',W.access_ptr('rw'),factors,panel,update,blocks,batch,n,64,n)
+     emit('br_chain',W.access_ptr('rw'),factors,diag,panel_input,panel,cube_swap,blocks,batch,n,stage*64)
      T.barrier_all();emit('pc_done',W.access_ptr('rw'))
    with T.Scope('V'):
     T.reads(A[0],W[0],S[0]);T.writes(Y[0],W[0],S[0])
@@ -90,6 +88,9 @@ def raw_kernel(header):
     emit('pv_sync_all',W.access_ptr('rw'))
     for stage in T.serial(n//64):
      st=stage*64;remaining=n//64-stage;candidates=batch*remaining
+     source=0;swapped=aug
+     if stage%2!=0:
+      source=aug;swapped=0
      # All remaining block candidates are independent local64 DSL inverses.
      if bid<candidates:
       job=bid//remaining;position=st+bid%remaining*64
@@ -125,6 +126,7 @@ def raw_kernel(header):
        emit('pv_load_rows',pool.access_ptr('w',offset=16384),W.access_ptr('r',offset=source+job*extent+original*n),row_tile,64,n-64,0)
        T.set_flag('MTE2','V',0);T.wait_flag('MTE2','V',0)
        if i>=st and i<st+64:emit('pv_fill',pool.access_ptr('w',offset=16384),T.float32(0),row_tile*64)
+       else:emit('pv_scale',pool.access_ptr('w',offset=16384),pool.access_ptr('r',offset=16384),T.float32(-1),row_tile*64)
        T.set_flag('V','MTE3',0);T.wait_flag('V','MTE3',0)
        emit('pv_store_rows',W.access_ptr('w',offset=factors+row*64),pool.access_ptr('r',offset=16384),row_tile,64,0,0)
        emit('pv_fill',pool.access_ptr('w'),T.float32(0),row_tile*n)
@@ -144,23 +146,9 @@ def raw_kernel(header):
         emit('pv_store_rows',W.access_ptr('w',offset=diag+job*4096+(i-st)*64),pool.access_ptr('r',offset=16384),row_tile,64,0,0)
         emit('pv_all_barrier',W.access_ptr('rw'))
      emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10)
-     if batch*n!=blocks*64:emit('pv_sync_all',W.access_ptr('rw'))
-     for iteration in T.serial(T.ceildiv(batch*n//row_tile,cores)):
-      row=(bid+iteration*cores)*row_tile
-      if row<batch*n:
-       job=row//n;i=row%n
-       if i>=st and i<st+64:
-        emit('pv_load_rows',pool.access_ptr('w'),W.access_ptr('r',offset=panel+job*64*n+(i-st)*n),row_tile,n,0,0)
-        T.set_flag('MTE2','V',0);T.wait_flag('MTE2','V',0)
-       else:
-        emit('pv_load_rows',pool.access_ptr('w'),W.access_ptr('r',offset=swapped+row*n),row_tile,n,0,0)
-        emit('pv_load_rows',pool.access_ptr('w',offset=16384),W.access_ptr('r',offset=update+row*n),row_tile,n,0,0)
-        T.set_flag('MTE2','V',0);T.wait_flag('MTE2','V',0)
-        emit('br_sub',pool.access_ptr('w'),pool.access_ptr('r'),pool.access_ptr('r',offset=16384),row_tile*n)
-       emit('pv_all_barrier',W.access_ptr('rw'))
-       emit('pv_store_rows',W.access_ptr('w',offset=source+row*n),pool.access_ptr('r'),row_tile,n,0,0)
-       emit('pv_all_barrier',W.access_ptr('rw'))
      emit('pv_sync_all',W.access_ptr('rw'))
+    source=0
+    if (n//64)%2!=0:source=aug
     emit('pv_load_rows',pool.access_ptr('w',offset=22016),S.access_ptr('r',offset=512),1,512,0,0)
     T.set_flag('MTE2','S',0);T.wait_flag('MTE2','S',0)
     for iteration in T.serial(T.ceildiv(batch*n//row_tile,cores)):

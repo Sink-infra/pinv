@@ -6,7 +6,6 @@
 #include "linalg_pinv_tiling.h"
 using namespace AscendC;
 #include "pinv_cube_residual.h"
-#include "pinv_execution.h"
 #include "pinv_rect.h"
 #include "pinv_pipeline.h"
 
@@ -174,7 +173,7 @@ __aicore__ __attribute__((noinline)) void PvStageNative(GM_ADDR A, GM_ADDR A_pin
 #include "pinv_dsl_compact.h"
 #include "pinv_dsl_local.h"
 #include "pinv_dsl_half_pipeline.h"
-#include "pinv_dsl_peer_pipeline.h"
+#include "pinv_dsl_peer_tiles.h"
 #include "pinv_dsl_window.h"
 template <typename DT_A, bool COMPACT, bool TAIL, bool WAVE, bool LOCAL, bool GROUP, bool PIPELINE, bool WINDOW, bool CUBE, bool RECT>
 __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR workspace, GM_ADDR tiling) {
@@ -184,6 +183,11 @@ __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR worksp
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIV_1_0);
 #endif
     REGISTER_TILING_DEFAULT(LinalgPinvCubeTilingData);
+    if constexpr (COMPACT) {
+        // Keep the DSL inactive job guard ahead of the CANN tiling copy.
+        auto packet = reinterpret_cast<__gm__ const uint32_t *>(tiling);
+        if (GetBlockIdx() >= packet[offsetof(LinalgPinvTilingData, batch) / sizeof(uint32_t)]) return;
+    }
     GET_TILING_DATA_WITH_STRUCT(LinalgPinvTilingData, data, tiling);
     if constexpr (GROUP && PIPELINE && CUBE && !WINDOW && WAVE) {
         if ASCEND_IS_AIC {return;}

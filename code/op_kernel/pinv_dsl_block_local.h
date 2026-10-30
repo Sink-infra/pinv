@@ -13,7 +13,7 @@ __aicore__ static __attribute__((noinline)) void BlockQuick( GM_ADDR A_handle,  
   AscendC::GlobalTensor<float> S;
   S.SetGlobalBuffer((__gm__ float*)S_handle);
 
-  AscendC::TBuf<AscendC::TPosition::VECCALC> ascend_ub; pipe.InitBuffer(ascend_ub, 77344);
+  AscendC::TBuf<AscendC::TPosition::VECCALC> ascend_ub; pipe.InitBuffer(ascend_ub, 93984);
   auto cid = AscendC::GetBlockIdx();
   if ASCEND_IS_AIV {
     }
@@ -22,12 +22,12 @@ __aicore__ static __attribute__((noinline)) void BlockQuick( GM_ADDR A_handle,  
   int dma_pad = 0;
   float condition = 0.000000e+00f;
   int valid = 0;
-  auto pool = ascend_ub.GetWithOffset<float>(19136, 32);
+  auto pool = ascend_ub.GetWithOffset<float>(23296, 32);
   float power = 0.000000e+00f;
-  auto indices = ascend_ub.GetWithOffset<uint32_t>(64, 76576);
+  auto indices = ascend_ub.GetWithOffset<uint32_t>(64, 93216);
   int previous = 0;
   float recovered = 0.000000e+00f;
-  auto order = ascend_ub.GetWithOffset<uint32_t>(128, 76832);
+  auto order = ascend_ub.GetWithOffset<uint32_t>(128, 93472);
   int rejected = 0;
   float best = 0.000000e+00f;
   int pivot = 0;
@@ -59,27 +59,27 @@ __aicore__ static __attribute__((noinline)) void BlockQuick( GM_ADDR A_handle,  
     if (valid != 0) {
       tl::ascend::pv_mul(pool[8704], pool[0], pool[0], count);
       AscendC::PipeBarrier<PIPE_V>();
-      tl::ascend::pv_reduce_sum(pool[19008], pool[8704], pool[18496], count);
+      tl::ascend::pv_reduce_sum(pool[23168], pool[8704], pool[22656], count);
       AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
       AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
-      float total = pool.GetValue(19008);
+      float total = pool.GetValue(23168);
       tl::ascend::lv_index_iota(indices[0], indices[0], indices[0], 64);
       AscendC::PipeBarrier<PIPE_V>();
       tl::ascend::lv_index_scale(indices[0], indices[0], indices[0], 320, 64);
       AscendC::PipeBarrier<PIPE_V>();
-      tl::ascend::pv_fill(pool[19040], pool[19040], pool[19040], 0.000000e+00f, 64);
+      tl::ascend::pv_fill(pool[23200], pool[23200], pool[23200], 0.000000e+00f, 64);
       AscendC::PipeBarrier<PIPE_V>();
       tl::ascend::pv_mask_begin(pool[0], pool[0], pool[0], 64);
-      previous = 19105;
+      previous = 23265;
       recovered = 0.000000e+00f;
       AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
       AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
       for (int32_t pivot_tile = 0; pivot_tile < 64; ++pivot_tile) {
-        tl::ascend::pv_gather(pool[19040], pool[0], indices[0], (pivot_tile * 4), 64);
+        tl::ascend::pv_gather(pool[23200], pool[0], indices[0], (pivot_tile * 4), 64);
         AscendC::PipeBarrier<PIPE_V>();
-        tl::ascend::pv_abs(pool[18432], pool[19040], pool[18432], 64);
+        tl::ascend::pv_abs(pool[22592], pool[23200], pool[22592], 64);
         AscendC::PipeBarrier<PIPE_V>();
-        tl::ascend::pv_mask_reduce(pool[19008], pool[18432], pool[19008]);
+        tl::ascend::pv_mask_reduce(pool[23168], pool[22592], pool[23168]);
         AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
         AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
         tl::ascend::pv_reduce_scalars(pool[0], pool[0], pool[0], best, pivot);
@@ -92,12 +92,12 @@ __aicore__ static __attribute__((noinline)) void BlockQuick( GM_ADDR A_handle,  
         order.SetValue((pivot_tile + 64), ((uint32_t)(pivot * 320)));
         consumed = 0;
         base = 0;
-        float divisor = pool.GetValue((((int64_t)pivot) + (int64_t)19040));
+        float divisor = pool.GetValue((((int64_t)pivot) + (int64_t)23200));
         pool.SetValue(((((int64_t)pivot) * (int64_t)80) + ((int64_t)pivot_tile)), (divisor + 1.000000e+00f));
         pool.SetValue(((((int64_t)previous) + ((int64_t)pivot_tile)) - (int64_t)1), recovered);
         recovered = (-1.000000e+00f / divisor);
         previous = (pivot * 80);
-        pool.SetValue((((int64_t)pivot) + (int64_t)19040), 0.000000e+00f);
+        pool.SetValue((((int64_t)pivot) + (int64_t)23200), 0.000000e+00f);
         AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
         AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
         active = 64;
@@ -105,9 +105,9 @@ __aicore__ static __attribute__((noinline)) void BlockQuick( GM_ADDR A_handle,  
           active = (active - 8);
         }
         tl::ascend::pv_scale(pool[((pivot * 80) + base)], pool[((pivot * 80) + base)], pool[((pivot * 80) + base)], (-1.000000e+00f / divisor), active);
-        tl::ascend::pv_brcb_rows(pool[17408], pool[19040], pool[17408], 64, 16);
+        tl::ascend::pv_brcb_rows(pool[17472], pool[23200], pool[17472], 64, 80);
         AscendC::PipeBarrier<PIPE_V>();
-        tl::ascend::pv_mad_strided(pool[base], pool[((pivot * 80) + base)], pool[17408], 64, 64, 1, 1, 0, 10, 0, 2);
+        tl::ascend::pv_mad_strided(pool[base], pool[((pivot * 80) + base)], pool[17472], 64, 64, 1, 1, 0, 10, 0, 10);
         AscendC::PipeBarrier<PIPE_V>();
       }
       if (valid != 0) {
@@ -120,15 +120,15 @@ __aicore__ static __attribute__((noinline)) void BlockQuick( GM_ADDR A_handle,  
         AscendC::PipeBarrier<PIPE_V>();
         tl::ascend::pv_square_padded_rows(pool[8704], pool[0], pool[8704], 64, 64, 80);
         AscendC::PipeBarrier<PIPE_V>();
-        tl::ascend::pv_reduce_sum(pool[19008], pool[8704], pool[18496], count);
+        tl::ascend::pv_reduce_sum(pool[23168], pool[8704], pool[22656], count);
         AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
         AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
-        float inverse_total = pool.GetValue(19008);
+        float inverse_total = pool.GetValue(23168);
         condition = (total * inverse_total);
-        pool.SetValue(19008, total);
+        pool.SetValue(23168, total);
         AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
         AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
-        tl::ascend::pv_sqrt(pool[19008], pool[19008], pool[19008], 1);
+        tl::ascend::pv_sqrt(pool[23168], pool[23168], pool[23168], 1);
         AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
         AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
         rejected = ((int32_t)(inverse_total <= 0.000000e+00f));
@@ -143,9 +143,9 @@ __aicore__ static __attribute__((noinline)) void BlockQuick( GM_ADDR A_handle,  
           AscendC::PipeBarrier<PIPE_V>();
           AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
           AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
-          tl::ascend::bl_index_brcb(pool[17408], order[64], pool[17408], 64);
+          tl::ascend::bl_index_brcb(pool[17472], order[64], pool[17472], 64);
           AscendC::PipeBarrier<PIPE_V>();
-          tl::ascend::bl_index_matrix(pool[12800], pool[17408], order[0], 64, 64);
+          tl::ascend::bl_index_matrix(pool[12800], pool[17472], order[0], 64, 64);
           AscendC::PipeBarrier<PIPE_V>();
           tl::ascend::bl_gather(pool[8704], pool[0], pool[12800], 4096);
           AscendC::PipeBarrier<PIPE_V>();
@@ -168,6 +168,7 @@ __aicore__ static __attribute__((noinline)) void BlockQuick( GM_ADDR A_handle,  
   }
   pipe.Destroy();
 }
+
 
 }
 

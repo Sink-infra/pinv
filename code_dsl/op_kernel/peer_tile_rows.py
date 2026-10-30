@@ -66,6 +66,7 @@ def make_peer_tile_rows_macro(*, cache_peak=False):
                     for chunk in T.serial(T.ceildiv(owned*T.int32(456),16320)):
                         begin=chunk*16320
                         emit('pv_scale',pool.access_ptr('w',offset=begin),pool.access_ptr('r',offset=begin),T.float32(1)/power,T.min(owned*T.int32(456)-begin,16320))
+                        T.pipe_barrier('V')
                     T.pipe_barrier('V')
                     # The identity is inserted by the scalar pipe. A V barrier
                     # only orders Vector instructions: explicitly finish input
@@ -91,17 +92,23 @@ def make_peer_tile_rows_macro(*, cache_peak=False):
                 # serializing the Vector pipeline after each instruction.
                 for column in T.serial(rows):
                     emit('pv_gather_offsets',pool.access_ptr('w',offset=product),pool.access_ptr('r',offset=packets),pool.access_ptr('r',offset=packet_indices),column*4,rows)
+                    T.pipe_barrier('V')
                     reciprocal=pool[meta+16+column]
                     emit('pv_scale',pool.access_ptr('w',offset=packets+column*packet_stride),pool.access_ptr('r',offset=packets+column*packet_stride),-reciprocal,packet_stride)
+                    T.pipe_barrier('V')
                     if column+1<rows:
                         emit('pv_brcb_rows',pool.access_ptr('w',offset=factors),pool.access_ptr('r',offset=product),16,8)
+                        T.pipe_barrier('V')
                         for chunk in T.serial(T.ceildiv(packet_stride,64)):
                             col=chunk*64
                             emit('pv_mad_strided',pool.access_ptr('rw',offset=packets+(column+1)*packet_stride+col),pool.access_ptr('r',offset=packets+column*packet_stride+col),pool.access_ptr('r',offset=factors+(column+1)*8),T.min(packet_stride-col,64),rows-column-1,1,1,0,packet_stride//8,0,1)
+                        T.pipe_barrier('V')
                 for column in T.serial(rows):
                     selected=T.Cast('int32',pool[meta+column])
                     emit('pv_gather_offsets',pool.access_ptr('w',offset=vector),pool.access_ptr('r'),pool.access_ptr('r',offset=row_indices),(first+column)*4,factor_rows)
+                    T.pipe_barrier('V')
                     emit('pv_brcb_rows',pool.access_ptr('w',offset=factors),pool.access_ptr('r',offset=vector),factor_rows,8)
+                    T.pipe_barrier('V')
                     pivot_column=first+column
                     consumed=pivot_column%8==7 or pivot_column+1==T.int32(200)
                     live_begin=pivot_column//8*8+T.if_then_else(consumed,8,0)
@@ -110,8 +117,10 @@ def make_peer_tile_rows_macro(*, cache_peak=False):
                         first_row=row_group*8
                         lane_rows=T.min(owned-first_row,8)
                         emit('pv_mad_strided',pool.access_ptr('rw',offset=first_row*T.int32(456)+live_begin),pool.access_ptr('r',offset=factors+first_row*8),pool.access_ptr('r',offset=packets+column*packet_stride+live_begin-first),lane_rows*8,(live_limit-live_begin)//8,T.int32(456)//8,1,0,1,0,1)
+                    T.pipe_barrier('V')
                     if selected%T.int32(9)==core:
                         emit('pv_copy',pool.access_ptr('w',offset=(selected//T.int32(9))*T.int32(456)+first),pool.access_ptr('r',offset=packets+column*packet_stride),packet_stride)
+                        T.pipe_barrier('V')
             if window>0 and first+rows==window_end and window_end<T.int32(200):
                 emit('pv_all_barrier',pool.access_ptr('rw'))
                 emit('pv_cross_set0',pool.access_ptr('rw'),3)
@@ -133,6 +142,7 @@ def make_peer_tile_rows_macro(*, cache_peak=False):
             T.set_flag('S','V',0);T.wait_flag('S','V',0)
             emit('pv_scale',pool.access_ptr('w',offset=mapping),pool.access_ptr('r',offset=norms),T.float32(-4),T.int32(200))
             T.pipe_barrier('V')
+            T.pipe_barrier('V')
             emit('pv_add_scalar',pool.access_ptr('w',offset=mapping),pool.access_ptr('r',offset=mapping),T.float32(-4),T.int32(200))
             T.pipe_barrier('V')
             emit('pv_cast_indices',pool.access_ptr('w',offset=mapping),pool.access_ptr('r',offset=mapping),T.int32(200))
@@ -141,6 +151,7 @@ def make_peer_tile_rows_macro(*, cache_peak=False):
             T.pipe_barrier('V')
             for i in T.serial(owned):
                 emit('pv_gather_offsets',pool.access_ptr('w',offset=output+i*k),pool.access_ptr('r',offset=i*T.int32(456)+k),pool.access_ptr('r',offset=mapping),0,T.int32(200))
+                T.pipe_barrier('V')
                 T.pipe_barrier('V')
                 emit('pv_mul',pool.access_ptr('w',offset=product),pool.access_ptr('r',offset=output+i*k),pool.access_ptr('r',offset=output+i*k),T.int32(200))
                 T.pipe_barrier('V')
@@ -159,6 +170,7 @@ def make_peer_tile_rows_macro(*, cache_peak=False):
                 peak=pool[red]/power
             for i in T.serial(owned):
                 emit('pv_scale',pool.access_ptr('w',offset=output+i*k),pool.access_ptr('r',offset=output+i*k),T.float32(-1)/power,k)
+                T.pipe_barrier('V')
                 T.pipe_barrier('V')
                 target=T.Cast('int32',-pool[norms+core+i*T.int32(9)])-1
                 T.set_flag('V','MTE3',0);T.wait_flag('V','MTE3',0)

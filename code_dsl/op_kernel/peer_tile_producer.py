@@ -26,7 +26,7 @@ def make_peer_tile_producer_macro():
         pitch=72
         capacity=T.alloc_var('int32');capacity=200*pitch
         scratch=capacity
-        factors=scratch+4096
+        factors=scratch+16320
         vector=factors+8*k
         product=vector+wide
         temporary=product+wide
@@ -60,9 +60,9 @@ def make_peer_tile_producer_macro():
         local_scale=T.alloc_var('float32');local_scale=T.float32(0)
         local_total=T.alloc_var('float32');local_total=T.float32(0)
         local_power=T.alloc_var('float32');local_power=T.float32(1)
-        for chunk in T.serial(T.ceildiv(capacity,4096)):
-            begin=chunk*4096
-            count=T.min(capacity-begin,4096)
+        for chunk in T.serial(T.ceildiv(capacity,16320)):
+            begin=chunk*16320
+            count=T.min(capacity-begin,16320)
             emit('pv_abs',pool.access_ptr('w',offset=scratch),pool.access_ptr('r',offset=begin),count)
             T.pipe_barrier('V')
             emit('pv_reduce_max',pool.access_ptr('w',offset=red),pool.access_ptr('r',offset=scratch),pool.access_ptr('rw',offset=product),count)
@@ -75,9 +75,9 @@ def make_peer_tile_producer_macro():
             begin=chunk*16320
             emit('pv_scale',pool.access_ptr('w',offset=begin),pool.access_ptr('r',offset=begin),T.float32(1)/local_power,T.min(capacity-begin,16320))
         T.pipe_barrier('V')
-        for chunk in T.serial(T.ceildiv(capacity,4096)):
-            begin=chunk*4096
-            count=T.min(capacity-begin,4096)
+        for chunk in T.serial(T.ceildiv(capacity,16320)):
+            begin=chunk*16320
+            count=T.min(capacity-begin,16320)
             emit('pv_mul',pool.access_ptr('w',offset=scratch),pool.access_ptr('r',offset=begin),pool.access_ptr('r',offset=begin),count)
             T.pipe_barrier('V')
             emit('pv_reduce_sum',pool.access_ptr('w',offset=red),pool.access_ptr('r',offset=scratch),pool.access_ptr('rw',offset=product),count)

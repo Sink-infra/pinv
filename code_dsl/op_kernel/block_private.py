@@ -9,9 +9,10 @@ from code_dsl.op_kernel.control import admission_writer
 from code_dsl.op_kernel.normalization import ceil_power_bits
 
 
-def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_admission=False,condition_metric=False,minimum_magnitude=0.1,fused=False,row_padding=8,reuse_mask=False,pack_tail=False,vector_indices=False,squared_guard=False,packed_inverse=False):
+def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_admission=False,condition_metric=False,minimum_magnitude=0.1,fused=False,row_padding=8,reuse_mask=False,pack_tail=False,vector_indices=False,squared_guard=False,packed_inverse=False,factor_padding=0):
     import tilelang.language as T
     store_admission=admission_writer(scalar_admission)
+    factor_reserve=64*max(factor_pitch,16)
 
     @T.macro
     def quick(A,X,pool,indices,order,accepted,offset,runtime_n,atol,rtol,input_stride=0):
@@ -27,11 +28,11 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
         # advance from the actual transfer padding, not from tile capacity.
         dma_pad=T.alloc_var('int32');dma_pad=T.ceildiv(n,8)*8
         lo=8704
-        factors=17408
-        product=18432
-        scratch=18496
-        red=19008
-        norms=19040
+        factors=17408+factor_padding
+        product=factors+factor_reserve
+        scratch=product+64
+        red=scratch+512
+        norms=red+32
         condition=T.alloc_var('float32');condition=T.float32(1e30)
         valid=T.alloc_var('int32');valid=1
         emit('pv_fill',pool.access_ptr('w'),T.float32(0),count)

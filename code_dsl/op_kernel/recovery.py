@@ -27,9 +27,11 @@ def window_recovery_kernel(component_source):
         emit('pv_cross_wait2',W.access_ptr('rw'),8)
         emit('br_gemm',W.access_ptr('rw'),11*batch*n*n,8*batch*n*n,4*batch*n*n,blocks,batch,n,n,n)
         T.barrier_all();emit('pc_done',W.access_ptr('rw'))
-        # One FP32 Newton correction Y0 + Y0*R0.
+        # Preserve the cubic residual term when the initial inverse is inaccurate.
         emit('pv_cross_wait2',W.access_ptr('rw'),8)
-        emit('br_gemm',W.access_ptr('rw'),8*batch*n*n,9*batch*n*n,10*batch*n*n,blocks,batch,n,n,n)
+        emit('br_gemm',W.access_ptr('rw'),9*batch*n*n,10*batch*n*n,11*batch*n*n,blocks,batch,n,n,n)
+        T.barrier_all();emit('br_cube_sync',W.access_ptr('rw'))
+        emit('br_gemm',W.access_ptr('rw'),8*batch*n*n,11*batch*n*n,10*batch*n*n,blocks,batch,n,n,n)
         T.barrier_all();emit('pc_done',W.access_ptr('rw'))
        running=T.alloc_var('int32');running=1
        while running!=0:

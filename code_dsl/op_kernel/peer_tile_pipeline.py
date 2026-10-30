@@ -21,8 +21,19 @@ def tile_pipeline_kernel(component_source, fallback_source):
                 emit('pv_sync_init', W.access_ptr('rw'))
                 group_size = 13
                 workers = group_size - producers
-                job = bid // group_size
-                core = bid % group_size
+                job = T.alloc_var('int32')
+                core = T.alloc_var('int32')
+                producer_count = producers * batch
+                if bid < 2 * producer_count and bid % 2 == 0:
+                    producer_index = bid // 2
+                    job = producer_index // producers
+                    core = workers + producer_index % producers
+                else:
+                    worker_index = T.alloc_var('int32')
+                    worker_index = bid - producer_count
+                    if bid < 2 * producer_count:worker_index = bid // 2
+                    job = worker_index // workers
+                    core = worker_index % workers
                 if job < batch:
                     if core >= workers:
                         emit('pv_pipeline_peer', W.access_ptr('rw'), blocks, n, stride, batch, job, core, workers, window)

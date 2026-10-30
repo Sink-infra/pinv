@@ -4,11 +4,12 @@ from code_dsl.op_kernel.static_reduce import make_reduction
 from code_dsl.op_kernel.normalization import ceil_power_bits
 
 
-def make_nopivot_macro():
+def make_nopivot_macro(full_tile=False,unroll=1):
     import tilelang.language as T
     reduce_max=make_reduction('max')
     @T.macro
-    def operation(A,X,ub,indices,order,accepted,offset,n,atol,rtol):
+    def operation(A,X,ub,indices,order,accepted,offset,runtime_n,atol,rtol):
+        n=16 if full_tile else runtime_n
         count=n*40
         valid=T.alloc_var('int32');valid=1
         emit('pv_fill',ub.access_ptr('w'),T.float32(0),count)
@@ -58,22 +59,24 @@ def make_nopivot_macro():
                 indices[i]=T.Cast('uint32',i*160)
             emit('pv_fill',ub.access_ptr('w',offset=1416),T.float32(0),16)
             T.set_flag('S','V',0);T.wait_flag('S','V',0)
-            for column in T.serial(n):
-                emit('pv_gather',ub.access_ptr('w',offset=1416),ub.access_ptr('r'),indices.access_ptr('r'),column*4,n)
-                T.set_flag('V','S',0);T.wait_flag('V','S',0)
-                divisor=ub[1416+column]
-                if not (T.max(divisor,-divisor)>T.float32(0.00390625)):
-                    valid=0
-                    T.loop_break()
-                base=((column+1)//8)*8
-                live=32-base
-                emit('pv_scale',ub.access_ptr('w',offset=column*40+base),ub.access_ptr('r',offset=column*40+base),T.float32(-1)/divisor,live)
-                ub[1416+column]=T.float32(0)
-                T.set_flag('S','V',0);T.wait_flag('S','V',0)
-                emit('pv_brcb_rows',ub.access_ptr('w',offset=640),ub.access_ptr('r',offset=1416),16,40)
-                T.pipe_barrier('V')
-                emit('pv_gj_update',ub.access_ptr('rw',offset=base),ub.access_ptr('r',offset=column*40+base),ub.access_ptr('r',offset=640),live,n,40)
-                T.pipe_barrier('V')
+            for column_tile in T.serial(n//unroll):
+                for column_lane in T.unroll(unroll):
+                    column=column_tile*unroll+column_lane
+                    emit('pv_gather',ub.access_ptr('w',offset=1416),ub.access_ptr('r'),indices.access_ptr('r'),column*4,n)
+                    T.set_flag('V','S',0);T.wait_flag('V','S',0)
+                    divisor=ub[1416+column]
+                    if not (T.max(divisor,-divisor)>T.float32(0.00390625)):
+                        valid=0
+                        T.loop_break()
+                    base=((column+1)//8)*8
+                    live=32-base
+                    emit('pv_scale',ub.access_ptr('w',offset=column*40+base),ub.access_ptr('r',offset=column*40+base),T.float32(-1)/divisor,live)
+                    ub[1416+column]=T.float32(0)
+                    T.set_flag('S','V',0);T.wait_flag('S','V',0)
+                    emit('pv_brcb_rows',ub.access_ptr('w',offset=640),ub.access_ptr('r',offset=1416),16,40)
+                    T.pipe_barrier('V')
+                    emit('pv_gj_update',ub.access_ptr('rw',offset=base),ub.access_ptr('r',offset=column*40+base),ub.access_ptr('r',offset=640),live,n,40)
+                    T.pipe_barrier('V')
             if valid!=0:
                 emit('pv_fill',ub.access_ptr('w',offset=640),T.float32(0),count)
                 T.pipe_barrier('V')
