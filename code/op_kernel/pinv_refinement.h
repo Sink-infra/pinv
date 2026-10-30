@@ -1,5 +1,5 @@
 #pragma once
-#include "pinv_execution.h"
+#include "pinv_cube_residual.h"
 #if defined(TILING_KEY_VAR) && (TILING_KEY_VAR & PINV_KEY_CUBE) && (TILING_KEY_VAR & PINV_KEY_WINDOW)
     __aicore__ inline void CubeRefineRowNorms(LocalTensor<float> source,LocalTensor<float> dest,uint32_t owned){
         auto square=batchCalc[0],parts=batchCalc[1];

@@ -1,5 +1,5 @@
 #pragma once
-#include "pinv_execution.h"
+#include "pinv_cube_residual.h"
 #include "kernel_operator.h"
 #include "linalg_pinv_tiling.h"
 using namespace AscendC;
@@ -239,7 +239,7 @@ __aicore__ inline bool TryPipelinePinv(GM_ADDR in,GM_ADDR dst,GM_ADDR workspace,
 }
 
 
-#include "pinv_execution.h"
+#include "pinv_cube_residual.h"
 #if defined(TILING_KEY_VAR) && TILING_KEY_VAR==(PINV_KEY_GROUP | PINV_KEY_PIPELINE | PINV_KEY_CUBE)
 class PeerWindowProducer {
     TBuf<TPosition::VECCALC> mem;

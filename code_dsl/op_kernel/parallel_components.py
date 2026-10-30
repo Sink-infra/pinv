@@ -113,7 +113,9 @@ def parallel_device_functions(compiled):
         function=source[source.index(DECLARATION):source.index(BOUNDARY)]
         metadata='  KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);\n'
         if function.count(metadata)!=1:raise ValueError('unexpected launch metadata')
-        adapted=function.replace(DECLARATION,'__aicore__ inline void PvDslPipeline'+''.join(part.title() for part in name.split('_'))+'(',1).replace(metadata,'',1)
+        separate=name in {'tile_rows','tile_peer'} or (name in {'rows','peer'} and set(names)=={'rows','peer'})
+        linkage='static __attribute__((noinline))' if separate else 'inline'
+        adapted=function.replace(DECLARATION,'__aicore__ '+linkage+' void PvDslPipeline'+''.join(part.title() for part in name.split('_'))+'(',1).replace(metadata,'',1)
         if function[function.index('{'):].replace(metadata,'',1)!=adapted[adapted.index('{'):]:raise ValueError('component body changed')
         parts.append(adapted)
         records[name]={'source_sha256':sha256(source.encode()).hexdigest(),'callable_body_sha256':sha256(adapted[adapted.index('{'):].encode()).hexdigest()}

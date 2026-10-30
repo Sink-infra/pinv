@@ -19,9 +19,9 @@ def tiling_path(build_dir):
     return Path(build_dir) / "tmp/vendors/custom/op_impl/ai_core/tbe/op_tiling/lib/linux" / platform.machine() / "libcust_opmaster_rt2.0.so"
 
 
-def build_current(build_dir=DEFAULT_BUILD, jobs=8, compute_unit="ascend910b", source_layout="project"):
-    if not 1 <= jobs <= 64:
-        raise ValueError("jobs must be between 1 and 64")
+def build_current(build_dir=DEFAULT_BUILD, jobs=96, compute_unit="ascend910b", source_layout="project"):
+    if not 1 <= jobs <= 256:
+        raise ValueError("jobs must be between 1 and 256")
     if source_layout not in ("project", "standalone"):
         raise ValueError("unknown source layout")
     build_dir = Path(build_dir).resolve()
@@ -111,7 +111,7 @@ def main(argv=None):
     parser.add_argument("--backend", choices=("ascend", "jit"), default="ascend")
     parser.add_argument("--resume", action="store_true", help="reuse verified JIT modules when retrying an interrupted build")
     parser.add_argument("--build-dir", type=Path)
-    parser.add_argument("--jobs", type=int, default=8)
+    parser.add_argument("--jobs", type=int, default=96)
     parser.add_argument("--compute-unit", default="ascend910b")
     parser.add_argument("--source-layout", choices=("project", "standalone"), default="project")
     args = parser.parse_args(argv)

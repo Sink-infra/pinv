@@ -150,10 +150,13 @@ def composed_kernel(strategy,component_source,unroll=1,factor_pitch=8):
         pivoted=make_light_macro(unroll=unroll,scalar_admission=True)
         from code_dsl.op_kernel.compact_nopivot import make_nopivot_macro
         trial=make_nopivot_macro()
+        aligned_trial=make_nopivot_macro(full_tile=True,unroll=16)
         @T.macro
         def fast(A,X,pool,indices,order,accepted,offset,n,atol,rtol):
-            if n>0:
-                        trial(A,X,pool,indices,order,accepted,offset,n,atol,rtol)
+            if n==16:
+                aligned_trial(A,X,pool,indices,order,accepted,offset,n,atol,rtol)
+            elif n>0:
+                trial(A,X,pool,indices,order,accepted,offset,n,atol,rtol)
             if accepted[0]==0:
                 pivoted(A,X,pool,indices,order,accepted,offset,n,atol,rtol)
     else:
@@ -164,7 +167,7 @@ def composed_kernel(strategy,component_source,unroll=1,factor_pitch=8):
     def kernel(A:T.Tensor((1,),'float32'),X:T.Tensor((1,),'float32'),W:T.Tensor((1,),'float32'),S:T.Tensor((1,),'float32'),
                blocks:T.int32,m:T.int32,n:T.int32,batch:T.int32,atol:T.float32,rtol:T.float32):
         T.func_attr({'global_symbol':'linalg_pinv_tilelang','pinv.strategy':strategy,
-                     'pinv.launch_policy':'compact_quarter_grid_local_native',
+                     'pinv.launch_policy':'compact_job_grid_local_native',
                      'pinv.component_source.sha256':sha256(instructions.encode()).hexdigest()})
         with T.Kernel(blocks,threads=1,is_npu=True) as bid:
             T.import_source(instructions)

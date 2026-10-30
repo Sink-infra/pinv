@@ -3,14 +3,14 @@ from code_dsl.op_kernel.block_private import _make_quick_schedule
 from code_dsl.op_kernel.kernels import instruction_source
 def quick_kernel():
  import tilelang.language as T
- operation=_make_quick_schedule(64,16,1,full_tile=True,condition_metric=True,minimum_magnitude=1e-30,fused=True,row_padding=16,vector_indices=True)
+ operation=_make_quick_schedule(64,80,1,full_tile=True,condition_metric=True,minimum_magnitude=1e-30,fused=True,row_padding=16,vector_indices=True,factor_padding=64)
  @T.prim_func
  def kernel(A:T.Tensor((1,),'float32'),Y:T.Tensor((1,),'float32'),W:T.Tensor((1,),'float32'),S:T.Tensor((1,),'float32'),
             blocks:T.int32,job:T.int32,m:T.int32,n:T.int32,batch:T.int32,atol:T.float32,rtol:T.float32):
   T.func_attr({'global_symbol':'linalg_pinv_tilelang','pinv.component':'block_factor_inverse'})
   with T.Kernel(blocks,threads=1,is_npu=True):
    T.import_source(instruction_source())
-   pool=T.alloc_ub((19136,),'float32');indices=T.alloc_ub((64,),'uint32');order=T.alloc_ub((128,),'uint32');accepted=T.alloc_ub((8,),'int32')
+   pool=T.alloc_ub((23296,),'float32');indices=T.alloc_ub((64,),'uint32');order=T.alloc_ub((128,),'uint32');accepted=T.alloc_ub((8,),'int32')
    with T.Scope('V'):
     T.reads(A[0]);T.writes(Y[0],S[0])
     accepted[0]=0

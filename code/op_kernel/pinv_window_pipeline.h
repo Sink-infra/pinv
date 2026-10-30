@@ -1,5 +1,5 @@
 #pragma once
-#include "pinv_execution.h"
+#include "pinv_cube_residual.h"
 #include "kernel_operator.h"
 #include "linalg_pinv_tiling.h"
 using namespace AscendC;
