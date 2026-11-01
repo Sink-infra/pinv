@@ -2,7 +2,7 @@
 #include "pinv_dsl_common.h"
 namespace tl::ascend {
 __aicore__ static __attribute__((noinline)) void BlockQuick( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADDR W_handle,  GM_ADDR S_handle, int32_t blocks, int32_t job, int32_t m, int32_t n, int32_t batch, float atol, float rtol, uint64_t fftsAddr) {
-  AscendC::TPipe pipe;
+  AscendC::TPipe &pipe=*::GetTPipePtr();
 
   AscendC::GlobalTensor<float> A;
   A.SetGlobalBuffer((__gm__ float*)A_handle);
@@ -13,21 +13,21 @@ __aicore__ static __attribute__((noinline)) void BlockQuick( GM_ADDR A_handle,  
   AscendC::GlobalTensor<float> S;
   S.SetGlobalBuffer((__gm__ float*)S_handle);
 
-  AscendC::TBuf<AscendC::TPosition::VECCALC> ascend_ub; pipe.InitBuffer(ascend_ub, 93984);
+
   auto cid = AscendC::GetBlockIdx();
   if ASCEND_IS_AIV {
     }
-  auto accepted = ascend_ub.GetWithOffset<int>(8, 0);
+  AscendC::LocalTensor<int> accepted(AscendC::TPosition::VECCALC, 0, 8);
   int count = 0;
   int dma_pad = 0;
   float condition = 0.000000e+00f;
   int valid = 0;
-  auto pool = ascend_ub.GetWithOffset<float>(23296, 32);
+  AscendC::LocalTensor<float> pool(AscendC::TPosition::VECCALC, 32, 23296);
   float power = 0.000000e+00f;
-  auto indices = ascend_ub.GetWithOffset<uint32_t>(64, 93216);
+  AscendC::LocalTensor<uint32_t> indices(AscendC::TPosition::VECCALC, 93216, 64);
   int previous = 0;
   float recovered = 0.000000e+00f;
-  auto order = ascend_ub.GetWithOffset<uint32_t>(128, 93472);
+  AscendC::LocalTensor<uint32_t> order(AscendC::TPosition::VECCALC, 93472, 128);
   int rejected = 0;
   float best = 0.000000e+00f;
   int pivot = 0;
@@ -166,7 +166,7 @@ __aicore__ static __attribute__((noinline)) void BlockQuick( GM_ADDR A_handle,  
     metric = (*(float *)(&(word)));
     S.SetValue(((((int64_t)job) * (int64_t)32) + (int64_t)1), metric);
   }
-  pipe.Destroy();
+
 }
 
 
