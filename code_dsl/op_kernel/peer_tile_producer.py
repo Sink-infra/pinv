@@ -71,18 +71,8 @@ def make_peer_tile_producer_macro():
         if local_scale>T.float32(0) and local_scale<T.float32(1.7014118e38):
             while local_power<local_scale:local_power*=T.float32(2)
             while local_power*T.float32(0.5)>=local_scale:local_power*=T.float32(0.5)
-        for chunk in T.serial(T.ceildiv(capacity,16320)):
-            begin=chunk*16320
-            emit('pv_scale',pool.access_ptr('w',offset=begin),pool.access_ptr('r',offset=begin),T.float32(1)/local_power,T.min(capacity-begin,16320))
-        T.pipe_barrier('V')
-        for chunk in T.serial(T.ceildiv(capacity,16320)):
-            begin=chunk*16320
-            count=T.min(capacity-begin,16320)
-            emit('pv_mul',pool.access_ptr('w',offset=scratch),pool.access_ptr('r',offset=begin),pool.access_ptr('r',offset=begin),count)
-            T.pipe_barrier('V')
-            emit('pv_reduce_sum',pool.access_ptr('w',offset=red),pool.access_ptr('r',offset=scratch),pool.access_ptr('rw',offset=product),count)
-            T.set_flag('V','S',0);T.wait_flag('V','S',0)
-            local_total+=pool[red]
+        local_ratio=local_scale/local_power
+        local_total=T.Cast('float32',200*own_width)*local_ratio*local_ratio*T.float32(1.00001)
         pool[scratch]=local_scale
         pool[scratch+1]=local_total
         pool[scratch+2]=local_power
@@ -108,7 +98,7 @@ def make_peer_tile_producer_macro():
         total*=T.float32(1.00001)
         for chunk in T.serial(T.ceildiv(capacity,16320)):
             begin=chunk*16320
-            emit('pv_scale',pool.access_ptr('w',offset=begin),pool.access_ptr('r',offset=begin),local_power/power,T.min(capacity-begin,16320))
+            emit('pv_scale',pool.access_ptr('w',offset=begin),pool.access_ptr('r',offset=begin),T.float32(1)/power,T.min(capacity-begin,16320))
         T.pipe_barrier('V')
         for row in T.serial(k):pool[permutation+row]=T.Cast('float32',row)
         T.set_flag('S','V',0);T.wait_flag('S','V',0)

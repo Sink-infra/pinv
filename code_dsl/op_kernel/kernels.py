@@ -8,7 +8,7 @@ FLAT_TENSOR_METADATA='#ifndef K_MAX_SHAPE_DIM\n#define K_MAX_SHAPE_DIM 0\n#endif
 
 def instruction_source():
     root=Path(__file__).parent
-    return FLAT_TENSOR_METADATA+'\n'.join((root/name).read_text() for name in ['instructions.h','arithmetic.h','precision.h'])
+    return FLAT_TENSOR_METADATA+'\n'.join((root/name).read_text() for name in ['instructions.h','arithmetic.h','precision.h','local_input_instructions.h'])
 
 
 def rectangular_kernel():

@@ -2729,3 +2729,13 @@ __aicore__ inline void lv_index_scale(AscendC::LocalTensor<uint32_t>d,AscendC::L
 namespace tl::ascend {
 __aicore__ inline void lv_square_packed_rows(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>,int width,int rows,int pitch){AscendC::Mul(d,a,a,uint64_t(width),uint8_t(rows),AscendC::BinaryRepeatParams{1,1,1,uint8_t(width/8),uint8_t(pitch/8),uint8_t(pitch/8)});}
 }
+
+namespace tl::ascend {
+__aicore__ inline void pf_shift(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>,int bias,int n){AscendC::Adds(d.ReinterpretCast<int32_t>(),a.ReinterpretCast<int32_t>(),int32_t(bias),n);}
+__aicore__ inline void pf_indices(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>b,int width,int rows,int pitch){AscendC::Add(d.ReinterpretCast<int32_t>(),a.ReinterpretCast<int32_t>(),b.ReinterpretCast<int32_t>(),uint64_t(width),uint8_t(rows),AscendC::BinaryRepeatParams{1,0,1,uint8_t(pitch/8),1,0});}
+}
+
+namespace tl::ascend {
+__aicore__ inline void li_abs_packed(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>,int width,int rows,int pitch){AscendC::Abs(d,a,uint64_t(width),uint8_t(rows),AscendC::UnaryRepeatParams{1,1,uint8_t(width/8),uint8_t(pitch/8)});}
+__aicore__ inline void li_scale_rows(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>,float scale,int width,int rows,int pitch){AscendC::Muls(d,a,scale,uint64_t(width),uint8_t(rows),AscendC::UnaryRepeatParams{1,1,uint8_t(pitch/8),uint8_t(pitch/8)});}
+}

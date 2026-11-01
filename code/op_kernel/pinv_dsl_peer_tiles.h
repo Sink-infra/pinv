@@ -139,19 +139,8 @@ __aicore__ static __attribute__((noinline)) void PvDslPeerTileProducer( GM_ADDR 
         local_power = (local_power * 5.000000e-01f);
       }
     }
-    for (int32_t chunk_2 = 0; chunk_2 < ((capacity + 16319) / 16320); ++chunk_2) {
-      tl::ascend::pv_scale(pool[(chunk_2 * 16320)], pool[(chunk_2 * 16320)], pool[(chunk_2 * 16320)], (1.000000e+00f / local_power), min((capacity - (chunk_2 * 16320)), 16320));
-    }
-    AscendC::PipeBarrier<PIPE_V>();
-    for (int32_t chunk_3 = 0; chunk_3 < ((capacity + 16319) / 16320); ++chunk_3) {
-      int32_t count_1 = min((capacity - (chunk_3 * 16320)), 16320);
-      tl::ascend::pv_mul(pool[scratch], pool[(chunk_3 * 16320)], pool[(chunk_3 * 16320)], count_1);
-      AscendC::PipeBarrier<PIPE_V>();
-      tl::ascend::pv_reduce_sum(pool[(temporary + 32)], pool[scratch], pool[product], count_1);
-      AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
-      AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
-      local_total = (local_total + pool.GetValue((((int64_t)temporary) + (int64_t)32)));
-    }
+    float local_ratio = (local_scale / local_power);
+    local_total = (((((float)(own_width * 200)) * local_ratio) * local_ratio) * 1.000010e+00f);
     pool.SetValue(((int64_t)scratch), local_scale);
     pool.SetValue((((int64_t)scratch) + (int64_t)1), local_total);
     pool.SetValue((((int64_t)scratch) + (int64_t)2), local_power);
@@ -190,8 +179,8 @@ __aicore__ static __attribute__((noinline)) void PvDslPeerTileProducer( GM_ADDR 
       total = (total + ((pool.GetValue((((((int64_t)part_1) * (int64_t)8) + ((int64_t)scratch)) + (int64_t)1)) * ratio) * ratio));
     }
     total = (total * 1.000010e+00f);
-    for (int32_t chunk_4 = 0; chunk_4 < ((capacity + 16319) / 16320); ++chunk_4) {
-      tl::ascend::pv_scale(pool[(chunk_4 * 16320)], pool[(chunk_4 * 16320)], pool[(chunk_4 * 16320)], (local_power / power), min((capacity - (chunk_4 * 16320)), 16320));
+    for (int32_t chunk_2 = 0; chunk_2 < ((capacity + 16319) / 16320); ++chunk_2) {
+      tl::ascend::pv_scale(pool[(chunk_2 * 16320)], pool[(chunk_2 * 16320)], pool[(chunk_2 * 16320)], (1.000000e+00f / power), min((capacity - (chunk_2 * 16320)), 16320));
     }
     AscendC::PipeBarrier<PIPE_V>();
     for (int32_t row = 0; row < k; ++row) {
@@ -311,9 +300,9 @@ __aicore__ static __attribute__((noinline)) void PvDslPeerTileProducer( GM_ADDR 
             AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
             tl::ascend::pv_brcb_rows(pool[(scratch + 16320)], pool[vector], pool[(scratch + 16320)], (((remaining + 7) / 8) * 8), 8);
             AscendC::PipeBarrier<PIPE_V>();
-            for (int32_t chunk_5 = 0; chunk_5 < (((active_width + 63) - ((pivot / 8) * 8)) / 64); ++chunk_5) {
+            for (int32_t chunk_3 = 0; chunk_3 < (((active_width + 63) - ((pivot / 8) * 8)) / 64); ++chunk_3) {
               for (int32_t row_chunk = 0; row_chunk < ((remaining + 254) / 255); ++row_chunk) {
-                tl::ascend::pv_mad_strided(pool[((((chunk_5 * 64) + ((pivot / 8) * 8)) + matrix) + (((row_chunk * 255) + pivot) * pitch))], pool[(((chunk_5 * 64) + ((pivot / 8) * 8)) + scratch)], pool[(((row_chunk * 2040) + scratch) + 16320)], min(((active_width - ((pivot / 8) * 8)) - (chunk_5 * 64)), 64), min((remaining - (row_chunk * 255)), 255), 1, 1, 0, (pitch / 8), 0, 1);
+                tl::ascend::pv_mad_strided(pool[((((chunk_3 * 64) + ((pivot / 8) * 8)) + matrix) + (((row_chunk * 255) + pivot) * pitch))], pool[(((chunk_3 * 64) + ((pivot / 8) * 8)) + scratch)], pool[(((row_chunk * 2040) + scratch) + 16320)], min(((active_width - ((pivot / 8) * 8)) - (chunk_3 * 64)), 64), min((remaining - (row_chunk * 255)), 255), 1, 1, 0, (pitch / 8), 0, 1);
               }
             }
             AscendC::PipeBarrier<PIPE_V>();
