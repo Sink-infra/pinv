@@ -18,7 +18,7 @@ def adapt(source,symbol):
 
 def append_block(root,lower,digest):
  import tilelang
- from code_dsl.op_kernel.local import _make_quick_schedule
+ from code_dsl.op_kernel.borrowed_storage import lower_function
  from code_dsl.op_kernel.block_local import quick_kernel
  from code_dsl.op_kernel.block_gemm import block_gemm
  from code_dsl.op_kernel.block_row_gemm import row_gemm
@@ -29,13 +29,17 @@ def append_block(root,lower,digest):
  from code_dsl.op_kernel.recovery_backend import composition_backend
  from code_dsl.op_kernel.backend import jit_compiler_options
  op=Path(__file__).parent;records={};parts=[]
- instructions=(op/'block_instructions.h').read_text()+'\n'+(op/'block_atomic_instructions.h').read_text()+'\n'+(op/'block_chain_instructions.h').read_text()
+ instructions=(op/'block_instructions.h').read_text()+'\n'+(op/'block_atomic_instructions.h').read_text()+'\n'+(op/'block_chain_instructions.h').read_text()+'\n'+(op/'block_lookahead_instructions.h').read_text()
  header=instructions+'\nusing uint=unsigned int;using uchar=unsigned char;using ushort=unsigned short;\n'
  def add(name,function,**kwargs):
   source=lower(name,function,**kwargs)
   symbol={'block_quick':'BlockQuick','block_gemm':'BlockGemm','block_row_gemm':'BlockRowGemm','block_pack':'BlockPack','block_product':'BlockProduct','block_decode':'BlockDecode','block_finish':'BlockFinish','block_accumulate':'BlockAccumulate'}[name]
   body=adapt(source,symbol)
+  storage=None
+  if symbol in ('BlockQuick','BlockDecode','BlockPack','BlockFinish'):
+   body,storage=lower_function(body,98304)
   records[name]={'source_sha256':sha256(source.encode()).hexdigest(),'callable_body_sha256':sha256(body[body.index('{'):].encode()).hexdigest()}
+  if storage is not None:records[name]['storage_policy']=storage
   return source,body
  quick_source,quick=add('block_quick',quick_kernel())
  gemm_source,gemm=add('block_gemm',block_gemm(),cube=True)
@@ -55,20 +59,12 @@ def append_block(root,lower,digest):
  chain_header,chain_record=append_chain(root,lower)
  header+=chain_header
  records['chain_products']=chain_record
+ lookahead_header,lookahead_record=append_chain(root,lower,lookahead=True)
+ header+=lookahead_header
+ records['lookahead_products']=lookahead_record
  standalone=instruction_source()+'\n'+(op/'parallel_instructions.h').read_text()+'\n'+(op/'recovery_bindings.h').read_text()+'\n'+header
- destination=root/'components/block_raw';destination.mkdir(parents=True,exist_ok=False)
- f=raw_kernel(standalone).with_attr('pinv.dsl.sha256',digest).with_attr('pinv.jit.optimization_level',3)
- (destination/'kernel.tir').write_text(f.script())
- config={'tl.disable_safe_memory_legalize':True,'tl.ascend_auto_sync':False,'tl.ascend_memory_planning':True}
- with composition_backend(),jit_compiler_options(3) as compiler:
-  compiler.destination=destination
-  result=tilelang.compile(f,target='ascendc',platform='A2',out_idx=[],pass_configs=config)
-  if not compiler.commands:raise ValueError('fresh block lowering required')
-  source=result.get_kernel_source();(destination/'kernel.cpp').write_text(source)
-  shutil.copy2(result.adapter.lib._name,destination/'kernel.so')
-  records['block_raw']={'source_sha256':sha256(source.encode()).hexdigest(),'tir_sha256':sha256(f.script().encode()).hexdigest(),'compiler':compiler.commands}
- raw=adapt(source,'BlockRaw')
- records['block_raw']['callable_body_sha256']=sha256(raw[raw.index('{'):].encode()).hexdigest()
+ from code_dsl.op_kernel.block_raw_components import lower_raw
+ raw,records['block_raw']=lower_raw(root,digest,standalone)
  header+='namespace tl::ascend {\n'+raw+'\n}\n'
  header+='#define bf_block(d,a,b,bl,n,ba) BlockRaw((GM_ADDR)d.GetPhyAddr(),(GM_ADDR)a.GetPhyAddr(),(GM_ADDR)b.GetPhyAddr(),(GM_ADDR)S.GetPhyAddr(),bl,n,ba,fftsAddr)\n'
  all='(ba*n*n)'

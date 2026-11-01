@@ -13,15 +13,15 @@ def window_recovery_kernel(component_source):
      T.func_attr({'global_symbol':'linalg_pinv_tilelang','pinv.scope':'window inverse with certified precision recovery'})
      with T.Kernel(blocks,threads=1,is_npu=True) as bid:
       T.import_source(header)
-      pool=T.alloc_ub((4096,),'float32')
+      pool=T.alloc_ub((24576,),'float32')
       extent=n*n
       off=T.ceildiv(2*batch*n*stride+batch*8192,128)*128
       qa=0;qy=5*extent//4;pr=5*extent//2;rr=pr+25*extent;yh=rr+extent;rh=yh+extent//2;co=rh+extent//2;pa=co+extent;qn=pa+blocks*2*n
       blocked=T.alloc_var('int32');blocked=0
       all_admitted=T.alloc_var('int32');all_admitted=0
       if use_block(n,stride,batch,blocks):blocked=1
-      if blocked!=0:emit('bf_block',A.access_ptr('r'),X.access_ptr('rw'),W.access_ptr('rw'),blocks,n,batch)
       with T.Scope('C'):
+       if blocked!=0:emit('bf_block',A.access_ptr('r'),X.access_ptr('rw'),W.access_ptr('rw'),blocks,n,batch)
        emit('pv_sync_init',W.access_ptr('rw'))
        if blocked!=0:
         emit('pv_cross_wait2',W.access_ptr('rw'),8)
@@ -51,6 +51,7 @@ def window_recovery_kernel(component_source):
       with T.Scope('V'):
        T.reads(A[0],W[0],S[0]);T.writes(X[0],W[0],S[0])
        emit('fr_bind',A.access_ptr('r'),X.access_ptr('rw'),W.access_ptr('rw'))
+       if blocked!=0:emit('bf_block',A.access_ptr('r'),X.access_ptr('rw'),W.access_ptr('rw'),blocks,n,batch)
        if blocked!=0:
         emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10);emit('pv_sync_all',W.access_ptr('rw'))
         emit('bf_decode',W.access_ptr('rw'),blocks,n,batch)

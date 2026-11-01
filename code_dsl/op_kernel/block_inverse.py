@@ -13,6 +13,8 @@ def raw_kernel(header):
   T.func_attr({'global_symbol':'linalg_pinv_tilelang','pinv.scope':'private block inverse with lazy identity columns'})
   with T.Kernel(blocks,threads=1,is_npu=True) as bid:
    T.import_source(header)
+   lookahead=T.alloc_var('int32');lookahead=0
+   if batch*n==blocks*64:lookahead=1
    pool=T.alloc_ub((24576,),'float32')
    cores=blocks*2
    row_tile=T.alloc_var('int32');row_tile=8
@@ -31,8 +33,11 @@ def raw_kernel(header):
      cube_swap=aug
      if stage%2!=0:cube_swap=0
      emit('pv_cross_wait2',W.access_ptr('rw'),8)
-     emit('br_chain',W.access_ptr('rw'),factors,diag,panel_input,panel,cube_swap,blocks,batch,n,stage*64)
-     T.barrier_all();emit('pc_done',W.access_ptr('rw'))
+     if lookahead!=0:emit('br_lookahead_chain',W.access_ptr('rw'),factors,diag,panel_input,panel,cube_swap,blocks,batch,n,stage*64)
+     else:emit('br_chain',W.access_ptr('rw'),factors,diag,panel_input,panel,cube_swap,blocks,batch,n,stage*64)
+     T.barrier_all()
+     if lookahead!=0:emit('br_late',W.access_ptr('rw'))
+     else:emit('pc_done',W.access_ptr('rw'))
    with T.Scope('V'):
     T.reads(A[0],W[0],S[0]);T.writes(Y[0],W[0],S[0])
     emit('fr_bind',A.access_ptr('r'),Y.access_ptr('rw'),W.access_ptr('rw'))
@@ -92,17 +97,26 @@ def raw_kernel(header):
      if stage%2!=0:
       source=aug;swapped=0
      # All remaining block candidates are independent local64 DSL inverses.
-     if bid<candidates:
-      job=bid//remaining;position=st+bid%remaining*64
-      emit('br_quick_strided',W.access_ptr('rw'),source+job*extent+position*n,ci+bid*4096,status+bid*32,blocks,n)
-      admitted=T.alloc_var('int32');admitted=T.Cast('int32',W[status+bid*32])
+     quick_index=T.alloc_var('int32');quick_index=bid
+     quick_active=T.alloc_var('int32');quick_active=T.Cast('int32',bid<candidates)
+     if lookahead!=0:
+      owner=bid//2;block_row=owner%(n//64)
+      quick_index=owner//(n//64)*remaining+block_row-stage
+      quick_active=1
+      if bid%2!=0 or block_row<stage:quick_active=0
+     if quick_active!=0:
+      job=quick_index//remaining;position=st+quick_index%remaining*64
+      emit('br_quick_strided',W.access_ptr('rw'),source+job*extent+position*n,ci+quick_index*4096,status+quick_index*32,blocks,n)
+      admitted=T.alloc_var('int32');admitted=T.Cast('int32',W[status+quick_index*32])
       cost=T.alloc_var('float32');cost=T.float32(1e30)
-      if admitted!=0:cost=W[status+bid*32+1]
+      if admitted!=0:cost=W[status+quick_index*32+1]
       pool[0]=cost
       T.set_flag('S','MTE3',0);T.wait_flag('S','MTE3',0)
-      emit('pv_store_rows',W.access_ptr('w',offset=scores+bid*8),pool.access_ptr('r'),1,8,0,0)
+      emit('pv_store_rows',W.access_ptr('w',offset=scores+quick_index*8),pool.access_ptr('r'),1,8,0,0)
       emit('pv_all_barrier',W.access_ptr('rw'))
      emit('pv_sync_all',W.access_ptr('rw'))
+     if lookahead!=0:
+      if stage>0:emit('pv_cross_wait2',W.access_ptr('rw'),12)
      emit('pv_load_rows',pool.access_ptr('w',offset=18432),W.access_ptr('r',offset=scores),1,candidates*8,0,0)
      T.set_flag('MTE2','S',0);T.wait_flag('MTE2','S',0)
      for iteration in T.serial(T.ceildiv(batch*n//row_tile,cores)):
@@ -146,7 +160,8 @@ def raw_kernel(header):
         emit('pv_store_rows',W.access_ptr('w',offset=diag+job*4096+(i-st)*64),pool.access_ptr('r',offset=16384),row_tile,64,0,0)
         emit('pv_all_barrier',W.access_ptr('rw'))
      emit('pv_sync_all',W.access_ptr('rw'));emit('pv_cross_set2',W.access_ptr('rw'),8);emit('pv_cross_wait2',W.access_ptr('rw'),10)
-     emit('pv_sync_all',W.access_ptr('rw'))
+     if lookahead==0:emit('pv_sync_all',W.access_ptr('rw'))
+    if lookahead!=0:emit('pv_cross_wait2',W.access_ptr('rw'),12)
     source=0
     if (n//64)%2!=0:source=aug
     emit('pv_load_rows',pool.access_ptr('w',offset=22016),S.access_ptr('r',offset=512),1,512,0,0)

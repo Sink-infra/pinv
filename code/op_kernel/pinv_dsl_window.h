@@ -2311,262 +2311,7 @@ __aicore__ inline void BlockGemm( GM_ADDR A_handle,  GM_ADDR P_handle,  GM_ADDR 
 #include "pinv_dsl_block_atomic.h"
 
 namespace tl::ascend {
-__aicore__ inline void BlockRaw( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADDR W_handle,  GM_ADDR S_handle, int32_t blocks, int32_t n, int32_t batch, uint64_t fftsAddr) {
 
-  AscendC::GlobalTensor<float> A;
-  A.SetGlobalBuffer((__gm__ float*)A_handle);
-  AscendC::GlobalTensor<float> Y;
-  Y.SetGlobalBuffer((__gm__ float*)Y_handle);
-  AscendC::GlobalTensor<float> W;
-  W.SetGlobalBuffer((__gm__ float*)W_handle);
-  AscendC::GlobalTensor<float> S;
-  S.SetGlobalBuffer((__gm__ float*)S_handle);
-
-  auto bid = AscendC::GetBlockIdx();
-  if ASCEND_IS_AIV {
-    }
-  int row_tile = 0;
-  int source = 0;
-  int swapped = 0;
-  int cube_swap = 0;
-  float magnitude = 0.000000e+00f;
-  int begin = 0;
-  int count = 0;
-  float magnitude_1 = 0.000000e+00f;
-  float power = 0.000000e+00f;
-  int admitted = 0;
-  float cost = 0.000000e+00f;
-  int chosen = 0;
-  float best = 0.000000e+00f;
-  int original = 0;
-  auto vid = AscendC::GetSubBlockIdx();
-  row_tile = 8;
-  if ((blocks * 64) <= (batch * n)) {
-    row_tile = 32;
-  }
-  source = 0;
-  swapped = (((batch * n) * n) * 2);
-  if ASCEND_IS_AIC {
-    tl::ascend::pv_sync_init(W[0], W[0], W[0]);
-    cube_swap = (((batch * n) * n) * 2);
-    for (int32_t stage = 0; stage < (n / 64); ++stage) {
-      cube_swap = (((batch * n) * n) * 2);
-      if (0 < (stage % 2)) {
-        cube_swap = 0;
-      }
-      tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 8);
-      tl::ascend::br_chain(W[0], W[0], W[0], (((batch * 4096) + ((batch * n) * 384)) + (((batch * n) * n) * 4)), (((batch * n) * 128) + (((batch * n) * n) * 4)), (((batch * 4096) + ((batch * n) * 128)) + (((batch * n) * n) * 4)), (((batch * 4096) + ((batch * n) * 256)) + (((batch * n) * n) * 4)), cube_swap, blocks, batch, n, (stage * 64));
-      AscendC::PipeBarrier<PIPE_ALL>();
-      tl::ascend::pc_done(W[0], W[0], W[0]);
-    }
-  }
-  if ASCEND_IS_AIV {
-    AscendC::TPipe pipe;
-    AscendC::TBuf<AscendC::TPosition::VECCALC> ascend_ub; pipe.InitBuffer(ascend_ub, 98304);
-    auto pool = ascend_ub.GetWithOffset<float>(24576, 0);
-    tl::ascend::fr_bind(A[0], Y[0], W[0]);
-    tl::ascend::pv_sync_init(W[0], W[0], W[0]);
-    if (bid < (batch * ((blocks * 2) / batch))) {
-      magnitude = 0.000000e+00f;
-      for (int32_t chunk = 0; chunk < ((((((blocks * 2) / batch) * 4096) + (n * n)) - 1) / (((blocks * 2) / batch) * 4096)); ++chunk) {
-        begin = (((bid % ((blocks * 2) / batch)) * 4096) + ((chunk * ((blocks * 2) / batch)) * 4096));
-        if (begin < (n * n)) {
-          count = ((n * n) - begin);
-          if (4096 < count) {
-            count = 4096;
-          }
-          tl::ascend::pv_load_rows(pool[0], A[((((bid / ((blocks * 2) / batch)) * n) * n) + begin)], pool[0], 1, count, 0, 0);
-          AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(0);
-          AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(0);
-          tl::ascend::pv_abs(pool[0], pool[0], pool[0], count);
-          AscendC::PipeBarrier<PIPE_V>();
-          tl::ascend::pv_reduce_max(pool[16384], pool[0], pool[4096], count);
-          AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
-          AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
-          magnitude = max(magnitude, pool.GetValue(16384));
-        }
-      }
-      pool.SetValue(0, magnitude);
-      AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(0);
-      AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(0);
-      tl::ascend::pv_store_rows(S[((batch * 32) + (bid * 8))], pool[0], S[((batch * 32) + (bid * 8))], 1, 8, 0, 0);
-      tl::ascend::pv_all_barrier(W[0], W[0], W[0]);
-    }
-    tl::ascend::pv_sync_all(W[0], W[0], W[0]);
-    if (bid < batch) {
-      tl::ascend::pv_load_rows(pool[0], S[((batch * 32) + ((bid * ((blocks * 2) / batch)) * 8))], pool[0], 1, (((blocks * 2) / batch) * 8), 0, 0);
-      AscendC::SetFlag<AscendC::HardEvent::MTE2_S>(0);
-      AscendC::WaitFlag<AscendC::HardEvent::MTE2_S>(0);
-      magnitude_1 = 0.000000e+00f;
-      for (int32_t lane = 0; lane < ((blocks * 2) / batch); ++lane) {
-        magnitude_1 = max(magnitude_1, pool.GetValue((((int64_t)lane) * (int64_t)8)));
-      }
-      power = 1.000000e+00f;
-      if ((0.000000e+00f < magnitude_1) && (magnitude_1 < 1.000000e+30f)) {
-        while (1) {
-          if (!((power < magnitude_1))) { break; }
-          power = (power * 2.000000e+00f);
-        }
-        while (1) {
-          if (!((magnitude_1 <= (power * 5.000000e-01f)))) { break; }
-          power = (power * 5.000000e-01f);
-        }
-      }
-      pool.SetValue(0, power);
-      AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(0);
-      AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(0);
-      tl::ascend::pv_store_rows(S[(bid * 32)], pool[0], S[(bid * 32)], 1, 8, 0, 0);
-      tl::ascend::pv_all_barrier(W[0], W[0], W[0]);
-    }
-    tl::ascend::pv_sync_all(W[0], W[0], W[0]);
-    tl::ascend::pv_load_rows(pool[20480], S[0], pool[20480], 1, (batch * 32), 0, 0);
-    AscendC::SetFlag<AscendC::HardEvent::MTE2_S>(0);
-    AscendC::WaitFlag<AscendC::HardEvent::MTE2_S>(0);
-    for (int32_t iteration = 0; iteration < ((((blocks * 2) + ((batch * n) / row_tile)) - 1) / (blocks * 2)); ++iteration) {
-      int32_t row = ((((iteration * blocks) * 2) + bid) * row_tile);
-      if (row < (batch * n)) {
-        float power_1 = pool.GetValue((((((int64_t)row) / ((int64_t)n)) * (int64_t)32) + (int64_t)20480));
-        tl::ascend::pv_load_rows(pool[0], A[(row * n)], pool[0], row_tile, n, 0, 0);
-        AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(0);
-        AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(0);
-        tl::ascend::pv_scale(pool[0], pool[0], pool[0], (1.000000e+00f / power_1), (row_tile * n));
-        AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(0);
-        AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(0);
-        tl::ascend::pv_store_rows(W[(source + (row * n))], pool[0], W[(source + (row * n))], row_tile, n, 0, 0);
-        tl::ascend::pv_store_rows(W[((((batch * n) * n) * 11) + (row * n))], pool[0], W[((((batch * n) * n) * 11) + (row * n))], row_tile, n, 0, 0);
-        tl::ascend::pv_all_barrier(W[0], W[0], W[0]);
-      }
-    }
-    tl::ascend::pv_sync_all(W[0], W[0], W[0]);
-    for (int32_t stage_1 = 0; stage_1 < (n / 64); ++stage_1) {
-      source = 0;
-      swapped = (((batch * n) * n) * 2);
-      if (0 < (stage_1 % 2)) {
-        source = (((batch * n) * n) * 2);
-        swapped = 0;
-      }
-      if (bid < (batch * ((n / 64) - stage_1))) {
-        tl::ascend::br_quick_strided(W[0], W[0], W[0], ((((((bid % ((n / 64) - stage_1)) + stage_1) * n) * 64) + source) + (((bid / ((n / 64) - stage_1)) * n) * n)), (((bid * 4096) + ((batch * n) * 64)) + (((batch * n) * n) * 4)), ((((batch * 4096) + ((batch * n) * 449)) + (bid * 32)) + (((batch * n) * n) * 6)), blocks, n);
-        admitted = ((int32_t)W.GetValue(((((((int64_t)batch) * (int64_t)4096) + ((((int64_t)batch) * ((int64_t)n)) * (int64_t)449)) + (((int64_t)bid) * (int64_t)32)) + (((((int64_t)batch) * ((int64_t)n)) * ((int64_t)n)) * (int64_t)6))));
-        cost = 1.000000e+30f;
-        if (admitted != 0) {
-          cost = W.GetValue((((((((int64_t)batch) * (int64_t)4096) + ((((int64_t)batch) * ((int64_t)n)) * (int64_t)449)) + (((int64_t)bid) * (int64_t)32)) + (((((int64_t)batch) * ((int64_t)n)) * ((int64_t)n)) * (int64_t)6)) + (int64_t)1));
-        }
-        pool.SetValue(0, cost);
-        AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(0);
-        AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(0);
-        tl::ascend::pv_store_rows(W[((((batch * 4096) + ((batch * n) * 448)) + (bid * 8)) + (((batch * n) * n) * 6))], pool[0], W[((((batch * 4096) + ((batch * n) * 448)) + (bid * 8)) + (((batch * n) * n) * 6))], 1, 8, 0, 0);
-        tl::ascend::pv_all_barrier(W[0], W[0], W[0]);
-      }
-      tl::ascend::pv_sync_all(W[0], W[0], W[0]);
-      tl::ascend::pv_load_rows(pool[18432], W[(((batch * 4096) + ((batch * n) * 448)) + (((batch * n) * n) * 6))], pool[18432], 1, ((batch * ((n / 64) - stage_1)) * 8), 0, 0);
-      AscendC::SetFlag<AscendC::HardEvent::MTE2_S>(0);
-      AscendC::WaitFlag<AscendC::HardEvent::MTE2_S>(0);
-      for (int32_t iteration_1 = 0; iteration_1 < ((((blocks * 2) + ((batch * n) / row_tile)) - 1) / (blocks * 2)); ++iteration_1) {
-        int32_t row_1 = ((((iteration_1 * blocks) * 2) + bid) * row_tile);
-        if (row_1 < (batch * n)) {
-          chosen = 0;
-          best = 1.000000e+30f;
-          for (int32_t candidate = 0; candidate < ((n / 64) - stage_1); ++candidate) {
-            float cost_1 = pool.GetValue((((((((int64_t)row_1) / ((int64_t)n)) * ((((int64_t)n) / (int64_t)64) - ((int64_t)stage_1))) * (int64_t)8) + (((int64_t)candidate) * (int64_t)8)) + (int64_t)18432));
-            if ((0.000000e+00f <= cost_1) && (cost_1 < best)) {
-              chosen = candidate;
-              best = cost_1;
-            }
-          }
-          int32_t position = ((chosen * 64) + (stage_1 * 64));
-          if ((row_1 % n) == (stage_1 * 64)) {
-            pool.SetValue(0, best);
-            pool.SetValue(1, ((float)position));
-            AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(0);
-            AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(0);
-            tl::ascend::pv_store_rows(S[((((stage_1 * batch) * 32) + ((row_1 / n) * 32)) + 512)], pool[0], S[((((stage_1 * batch) * 32) + ((row_1 / n) * 32)) + 512)], 1, 8, 0, 0);
-            tl::ascend::pv_all_barrier(W[0], W[0], W[0]);
-          }
-          original = (row_1 % n);
-          if (((stage_1 * 64) <= (row_1 % n)) && ((row_1 % n) < ((stage_1 * 64) + 64))) {
-            original = ((position + (row_1 % n)) - (stage_1 * 64));
-          } else {
-            if ((position <= (row_1 % n)) && ((row_1 % n) < (position + 64))) {
-              original = (((stage_1 * 64) + (row_1 % n)) - position);
-            }
-          }
-          tl::ascend::pv_load_rows(pool[16384], W[((source + (((row_1 / n) * n) * n)) + (original * n))], pool[16384], row_tile, 64, (n - 64), 0);
-          AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(0);
-          AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(0);
-          if (((stage_1 * 64) <= (row_1 % n)) && ((row_1 % n) < ((stage_1 * 64) + 64))) {
-            tl::ascend::pv_fill(pool[16384], pool[16384], pool[16384], 0.000000e+00f, (row_tile * 64));
-          } else {
-            tl::ascend::pv_scale(pool[16384], pool[16384], pool[16384], -1.000000e+00f, (row_tile * 64));
-          }
-          AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(0);
-          AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(0);
-          tl::ascend::pv_store_rows(W[((((batch * 4096) + ((batch * n) * 384)) + (row_1 * 64)) + (((batch * n) * n) * 4))], pool[16384], W[((((batch * 4096) + ((batch * n) * 384)) + (row_1 * 64)) + (((batch * n) * n) * 4))], row_tile, 64, 0, 0);
-          tl::ascend::pv_fill(pool[0], pool[0], pool[0], 0.000000e+00f, (row_tile * n));
-          AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(0);
-          AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(0);
-          tl::ascend::pv_load_rows(pool[0], W[(((source + (((row_1 / n) * n) * n)) + (original * n)) + 64)], pool[0], row_tile, (n - 64), 64, 64);
-          AscendC::SetFlag<AscendC::HardEvent::MTE2_S>(0);
-          AscendC::WaitFlag<AscendC::HardEvent::MTE2_S>(0);
-          if (((stage_1 * 64) <= (row_1 % n)) && ((row_1 % n) < ((stage_1 * 64) + 64))) {
-            for (int32_t lane_1 = 0; lane_1 < row_tile; ++lane_1) {
-              pool.SetValue((((((((int64_t)n) * (((int64_t)lane_1) + (int64_t)1)) + (((int64_t)row_1) % ((int64_t)n))) + ((int64_t)lane_1)) - (((int64_t)stage_1) * (int64_t)64)) - (int64_t)64), 1.000000e+00f);
-            }
-          }
-          AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(0);
-          AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(0);
-          tl::ascend::pv_store_rows(W[(swapped + (row_1 * n))], pool[0], W[(swapped + (row_1 * n))], row_tile, n, 0, 0);
-          tl::ascend::pv_all_barrier(W[0], W[0], W[0]);
-          if (((stage_1 * 64) <= (row_1 % n)) && ((row_1 % n) < ((stage_1 * 64) + 64))) {
-            tl::ascend::pv_store_rows(W[(((((batch * 4096) + ((batch * n) * 128)) + (((row_1 / n) * n) * 64)) + (((batch * n) * n) * 4)) + (((row_1 % n) - (stage_1 * 64)) * n))], pool[0], W[(((((batch * 4096) + ((batch * n) * 128)) + (((row_1 / n) * n) * 64)) + (((batch * n) * n) * 4)) + (((row_1 % n) - (stage_1 * 64)) * n))], row_tile, n, 0, 0);
-            tl::ascend::pv_all_barrier(W[0], W[0], W[0]);
-            tl::ascend::pv_load_rows(pool[16384], W[((((((((row_1 / n) * ((n / 64) - stage_1)) * 4096) + (chosen * 4096)) + ((row_1 % n) * 64)) + ((batch * n) * 64)) + (((batch * n) * n) * 4)) - (stage_1 * 4096))], pool[16384], row_tile, 64, 0, 0);
-            AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE3>(0);
-            AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE3>(0);
-            tl::ascend::pv_store_rows(W[((((((row_1 / n) * 4096) + ((batch * n) * 128)) + ((row_1 % n) * 64)) + (((batch * n) * n) * 4)) - (stage_1 * 4096))], pool[16384], W[((((((row_1 / n) * 4096) + ((batch * n) * 128)) + ((row_1 % n) * 64)) + (((batch * n) * n) * 4)) - (stage_1 * 4096))], row_tile, 64, 0, 0);
-            tl::ascend::pv_all_barrier(W[0], W[0], W[0]);
-          }
-        }
-      }
-      tl::ascend::pv_sync_all(W[0], W[0], W[0]);
-      tl::ascend::pv_cross_set2(W[0], W[0], W[0], 8);
-      tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 10);
-      tl::ascend::pv_sync_all(W[0], W[0], W[0]);
-    }
-    source = 0;
-    if (63 < (n % 128)) {
-      source = (((batch * n) * n) * 2);
-    }
-    tl::ascend::pv_load_rows(pool[22016], S[512], pool[22016], 1, 512, 0, 0);
-    AscendC::SetFlag<AscendC::HardEvent::MTE2_S>(0);
-    AscendC::WaitFlag<AscendC::HardEvent::MTE2_S>(0);
-    for (int32_t iteration_2 = 0; iteration_2 < ((((blocks * 2) + ((batch * n) / row_tile)) - 1) / (blocks * 2)); ++iteration_2) {
-      int32_t row_2 = ((((iteration_2 * blocks) * 2) + bid) * row_tile);
-      if (row_2 < (batch * n)) {
-        for (int32_t col = 0; col < (n / 64); ++col) {
-          pool.SetValue((col + 21200), ((float)col));
-        }
-        for (int32_t stage_2 = 0; stage_2 < (n / 64); ++stage_2) {
-          int32_t chosen_1 = (((int32_t)pool.GetValue(((((((int64_t)stage_2) * ((int64_t)batch)) * (int64_t)32) + ((((int64_t)row_2) / ((int64_t)n)) * (int64_t)32)) + (int64_t)22017))) / 64);
-          float old = pool.GetValue((stage_2 + 21200));
-          pool.SetValue((stage_2 + 21200), pool.GetValue((((int64_t)chosen_1) + (int64_t)21200)));
-          pool.SetValue((((int64_t)chosen_1) + (int64_t)21200), old);
-        }
-        for (int32_t col_1 = 0; col_1 < (n / 64); ++col_1) {
-          int32_t original_1 = ((int32_t)pool.GetValue((col_1 + 21200)));
-          tl::ascend::pv_load_rows(pool[0], W[(((col_1 * 64) + source) + (row_2 * n))], pool[0], row_tile, 64, (n - 64), 0);
-          AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE3>(0);
-          AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE3>(0);
-          tl::ascend::pv_store_rows(W[(((original_1 * 64) + (((batch * n) * n) * 8)) + (row_2 * n))], pool[0], W[(((original_1 * 64) + (((batch * n) * n) * 8)) + (row_2 * n))], row_tile, 64, 0, (n - 64));
-          tl::ascend::pv_all_barrier(W[0], W[0], W[0]);
-        }
-      }
-    }
-    tl::ascend::pv_sync_all(W[0], W[0], W[0]);
-    pipe.Destroy();
-  }
-  AscendC::PipeBarrier<PIPE_ALL>();
-}
 
 
 
@@ -2575,7 +2320,7 @@ __aicore__ inline void BlockRaw( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADDR W
 #define bf_block(d,a,b,bl,n,ba) BlockRaw((GM_ADDR)d.GetPhyAddr(),(GM_ADDR)a.GetPhyAddr(),(GM_ADDR)b.GetPhyAddr(),(GM_ADDR)S.GetPhyAddr(),bl,n,ba,fftsAddr)
 namespace tl::ascend {
 __aicore__ inline void BlockPack( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADDR AH_handle,  GM_ADDR YH_handle,  GM_ADDR YN_handle,  GM_ADDR S_handle, int32_t blocks, int32_t n, int32_t batch, int32_t stride, float atol, float rtol, uint64_t fftsAddr) {
-  AscendC::TPipe pipe;
+  AscendC::TPipe &pipe=*::GetTPipePtr();
 
   AscendC::GlobalTensor<float> A;
   A.SetGlobalBuffer((__gm__ float*)A_handle);
@@ -2590,14 +2335,14 @@ __aicore__ inline void BlockPack( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADDR 
   AscendC::GlobalTensor<float> S;
   S.SetGlobalBuffer((__gm__ float*)S_handle);
 
-  AscendC::TBuf<AscendC::TPosition::VECCALC> ascend_ub; pipe.InitBuffer(ascend_ub, 98304);
+
   auto bid = AscendC::GetBlockIdx();
   if ASCEND_IS_AIV {
     }
   float inverse = 0.000000e+00f;
   float total = 0.000000e+00f;
   float residual = 0.000000e+00f;
-  auto pool = ascend_ub.GetWithOffset<float>(24576, 0);
+  AscendC::LocalTensor<float> pool(AscendC::TPosition::VECCALC, 0, 24576);
   int valid = 0;
   float inverse_1 = 0.000000e+00f;
   float total_1 = 0.000000e+00f;
@@ -2714,7 +2459,7 @@ __aicore__ inline void BlockPack( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADDR 
       tl::ascend::pv_store_rows(S[(((bid / ((blocks * 2) / batch)) * 512) + 16)], pool[528], S[(((bid / ((blocks * 2) / batch)) * 512) + 16)], 1, 8, 0, 0);
     }
   }
-  pipe.Destroy();
+
 }
 
 }
@@ -2779,19 +2524,19 @@ __aicore__ inline void BlockProduct( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_AD
 #define bf_product(d,a,b,bl,n,ba) BlockProduct((GM_ADDR)(d.GetPhyAddr()+2*(ba*n*n)),(GM_ADDR)(d.GetPhyAddr()+3*(ba*n*n)),(GM_ADDR)(d.GetPhyAddr()+4*(ba*n*n)),bl,(GM_ADDR)d.GetPhyAddr(),n,ba,fftsAddr)
 namespace tl::ascend {
 __aicore__ inline void BlockDecode( GM_ADDR P_handle,  GM_ADDR R_handle, int32_t blocks, int32_t n, int32_t batch, uint64_t fftsAddr) {
-  AscendC::TPipe pipe;
+  AscendC::TPipe &pipe=*::GetTPipePtr();
 
   AscendC::GlobalTensor<float> P;
   P.SetGlobalBuffer((__gm__ float*)P_handle);
   AscendC::GlobalTensor<float> R;
   R.SetGlobalBuffer((__gm__ float*)R_handle);
 
-  AscendC::TBuf<AscendC::TPosition::VECCALC> ascend_ub; pipe.InitBuffer(ascend_ub, 32768);
+
   auto bid = AscendC::GetBlockIdx();
   if ASCEND_IS_AIV {
     }
-  auto value = ascend_ub.GetWithOffset<float>(4096, 0);
-  auto identity = ascend_ub.GetWithOffset<float>(4096, 16384);
+  AscendC::LocalTensor<float> value(AscendC::TPosition::VECCALC, 0, 4096);
+  AscendC::LocalTensor<float> identity(AscendC::TPosition::VECCALC, 16384, 4096);
   auto vid = AscendC::GetSubBlockIdx();
   if ASCEND_IS_AIV {
     for (int32_t iteration = 0; iteration < ((((blocks * 2) + (((batch * n) * n) / 4096)) - 1) / (blocks * 2)); ++iteration) {
@@ -2825,14 +2570,14 @@ __aicore__ inline void BlockDecode( GM_ADDR P_handle,  GM_ADDR R_handle, int32_t
       }
     }
   }
-  pipe.Destroy();
+
 }
 
 }
 #define bf_decode(d,a,b,bl,n,ba) BlockDecode((GM_ADDR)(d.GetPhyAddr()+4*(ba*n*n)),(GM_ADDR)(d.GetPhyAddr()+9*(ba*n*n)),bl,n,ba,fftsAddr),tl::ascend::FrRestorePipe(&pipe)
 namespace tl::ascend {
 __aicore__ inline void BlockFinish( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADDR W_handle,  GM_ADDR S_handle, int32_t blocks, int32_t n, int32_t batch, int32_t stride, float atol, float rtol, uint64_t fftsAddr) {
-  AscendC::TPipe pipe;
+  AscendC::TPipe &pipe=*::GetTPipePtr();
 
   AscendC::GlobalTensor<float> A;
   A.SetGlobalBuffer((__gm__ float*)A_handle);
@@ -2843,11 +2588,11 @@ __aicore__ inline void BlockFinish( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADD
   AscendC::GlobalTensor<float> S;
   S.SetGlobalBuffer((__gm__ float*)S_handle);
 
-  AscendC::TBuf<AscendC::TPosition::VECCALC> ascend_ub; pipe.InitBuffer(ascend_ub, 98304);
+
   auto bid = AscendC::GetBlockIdx();
   if ASCEND_IS_AIV {
     }
-  auto pool = ascend_ub.GetWithOffset<float>(24576, 0);
+  AscendC::LocalTensor<float> pool(AscendC::TPosition::VECCALC, 0, 24576);
   auto vid = AscendC::GetSubBlockIdx();
   if ASCEND_IS_AIV {
     if ((bid / ((blocks * 2) / batch)) < batch) {
@@ -2872,7 +2617,7 @@ __aicore__ inline void BlockFinish( GM_ADDR A_handle,  GM_ADDR Y_handle,  GM_ADD
     }
     tl::ascend::pv_sync_all(W[0], W[0], W[0]);
   }
-  pipe.Destroy();
+
 }
 
 }
@@ -2946,10 +2691,10 @@ __aicore__ inline int32_t PvStageWindow( GM_ADDR A_handle,  GM_ADDR X_handle,  G
   if (((((((((256 <= n) && (n <= 256)) && ((n % 128) == 0)) && (batch <= 16)) && (((blocks * 2) % batch) == 0)) && (((batch * n) / 64) <= (blocks * 2))) && ((batch * n) <= 2561)) && (((((batch * n) * n) * 11) <= ((((((((((batch * 8256) + (blocks * 32)) + ((n * n) * 27)) + (((n * n) / 2) * 2)) + ((blocks * n) * 2)) + (((n * n) * 5) / 2)) + 127) / 128) * 128) + (((((batch * n) * stride) + 63) / 64) * 128))) || (0 <= ((batch * n) * n)))) && (15 <= ((n - 1) / max((((blocks * 2) / batch) - 1), 1)))) {
     blocked = 1;
   }
-  if (blocked != 0) {
-    tl::ascend::bf_block(A[0], X[0], W[0], blocks, n, batch);
-  }
   if ASCEND_IS_AIC {
+    if (blocked != 0) {
+      tl::ascend::bf_block(A[0], X[0], W[0], blocks, n, batch);
+    }
     tl::ascend::pv_sync_init(W[0], W[0], W[0]);
     if (blocked != 0) {
       tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 8);
@@ -2986,9 +2731,12 @@ __aicore__ inline int32_t PvStageWindow( GM_ADDR A_handle,  GM_ADDR X_handle,  G
   }
   if ASCEND_IS_AIV {
     AscendC::TPipe pipe;
-    AscendC::TBuf<AscendC::TPosition::VECCALC> ascend_ub; pipe.InitBuffer(ascend_ub, 16384);
-    auto pool = ascend_ub.GetWithOffset<float>(4096, 0);
+    AscendC::TBuf<AscendC::TPosition::VECCALC> ascend_ub; pipe.InitBuffer(ascend_ub, 98304);
+    auto pool = ascend_ub.GetWithOffset<float>(24576, 0);
     tl::ascend::fr_bind(A[0], X[0], W[0]);
+    if (blocked != 0) {
+      tl::ascend::bf_block(A[0], X[0], W[0], blocks, n, batch);
+    }
     if (blocked != 0) {
       tl::ascend::pv_cross_set2(W[0], W[0], W[0], 8);
       tl::ascend::pv_cross_wait2(W[0], W[0], W[0], 10);
