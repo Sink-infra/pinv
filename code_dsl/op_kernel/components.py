@@ -150,7 +150,8 @@ def composed_kernel(strategy,component_source,unroll=1,factor_pitch=8):
         pivoted=make_light_macro(unroll=unroll,scalar_admission=True)
         from code_dsl.op_kernel.compact_nopivot import make_nopivot_macro
         trial=make_nopivot_macro()
-        aligned_trial=make_nopivot_macro(full_tile=True,unroll=16)
+        from code_dsl.op_kernel.compact_aligned import make_aligned_macro
+        aligned_trial=make_aligned_macro(full_tile=True,unroll=16)
         @T.macro
         def fast(A,X,pool,indices,order,accepted,offset,n,atol,rtol):
             if n==16:
