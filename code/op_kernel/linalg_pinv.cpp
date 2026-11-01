@@ -202,7 +202,10 @@ __global__ __aicore__ void linalg_pinv(GM_ADDR A, GM_ADDR A_pinv, GM_ADDR worksp
             // TileLang UB buffers, including rank/truncation continuations.
             GM_ADDR work=nullptr;
             GM_ADDR status=nullptr;
-            if constexpr (COMPACT) PvStageCompact(A,A_pinv,work,status,GetBlockNum(),data.m,data.n,data.batch,data.atol,data.rtol,0);
+            if constexpr (COMPACT) {
+                if constexpr (TAIL) PvStageCompact(A,A_pinv,work,status,GetBlockNum(),data.m,data.n,data.batch,data.atol,data.rtol,0);
+                else PvStageCompactAligned(A,A_pinv,work,status,GetBlockNum(),data.m,data.n,data.batch,data.atol,data.rtol,0);
+            }
             else PvStageLocal(A,A_pinv,work,status,GetBlockNum(),data.m,data.n,data.batch,data.atol,data.rtol,0);
             return;
         }
