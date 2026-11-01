@@ -9,7 +9,7 @@ from code_dsl.op_kernel.control import admission_writer
 from code_dsl.op_kernel.normalization import ceil_power_bits
 
 
-def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_admission=False,condition_metric=False,minimum_magnitude=0.1,fused=False,row_padding=8,reuse_mask=False,pack_tail=False,vector_indices=False,squared_guard=False,packed_inverse=False):
+def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_admission=False,condition_metric=False,minimum_magnitude=0.1,fused=False,row_padding=8,reuse_mask=False,pack_tail=False,vector_indices=False,squared_guard=False,packed_inverse=False,packed_input=False):
     import tilelang.language as T
     store_admission=admission_writer(scalar_admission)
 
@@ -39,9 +39,13 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
         T.set_flag('V','MTE2',0);T.wait_flag('V','MTE2',0)
         emit('pv_load_rows',pool.access_ptr('w'),A.access_ptr('r',offset=offset),n,n,T.max(input_stride-n,0),pitch-dma_pad,n%8!=0)
         T.set_flag('MTE2','V',0);T.wait_flag('MTE2','V',0)
-        emit('pv_abs',pool.access_ptr('w',offset=lo),pool.access_ptr('r'),count)
+        norm_count=n*pad if packed_input else count
+        if packed_input:
+            emit('li_abs_packed',pool.access_ptr('w',offset=lo),pool.access_ptr('r'),pad,n,pitch)
+        else:
+            emit('pv_abs',pool.access_ptr('w',offset=lo),pool.access_ptr('r'),count)
         T.pipe_barrier('V')
-        emit('pv_reduce_max',pool.access_ptr('w',offset=red),pool.access_ptr('r',offset=lo),pool.access_ptr('rw',offset=scratch),count)
+        emit('pv_reduce_max',pool.access_ptr('w',offset=red),pool.access_ptr('r',offset=lo),pool.access_ptr('rw',offset=scratch),norm_count)
         T.set_flag('V','S',0);T.wait_flag('V','S',0)
         magnitude=pool[red]
         if not (magnitude>=T.float32(minimum_magnitude) and magnitude<T.float32(1.7014118e38)):valid=0
@@ -50,16 +54,25 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
             power_word=T.alloc_var('uint32')
             power_word=ceil_power_bits(magnitude)
             power=T.reinterpret('float32',power_word)
-            emit('pv_scale',pool.access_ptr('w'),pool.access_ptr('r'),T.float32(1)/power,count)
+            if packed_input:
+                emit('li_scale_rows',pool.access_ptr('w'),pool.access_ptr('r'),T.float32(1)/power,pad,n,pitch)
+            else:
+                emit('pv_scale',pool.access_ptr('w'),pool.access_ptr('r'),T.float32(1)/power,count)
             T.pipe_barrier('V')
-            emit('pv_mul',pool.access_ptr('w',offset=lo),pool.access_ptr('r'),pool.access_ptr('r'),count)
+            if packed_input:
+                emit('lv_square_packed_rows',pool.access_ptr('w',offset=lo),pool.access_ptr('r'),pad,n,pitch)
+            else:
+                emit('pv_mul',pool.access_ptr('w',offset=lo),pool.access_ptr('r'),pool.access_ptr('r'),count)
             T.pipe_barrier('V')
-            emit('pv_reduce_sum',pool.access_ptr('w',offset=red),pool.access_ptr('r',offset=lo),pool.access_ptr('rw',offset=scratch),count)
+            emit('pv_reduce_sum',pool.access_ptr('w',offset=red),pool.access_ptr('r',offset=lo),pool.access_ptr('rw',offset=scratch),norm_count)
             T.set_flag('V','S',0);T.wait_flag('V','S',0)
             total=pool[red]
             if vector_indices:
                 emit('lv_index_iota',indices.access_ptr('w'),64);T.pipe_barrier('V')
                 emit('lv_index_scale',indices.access_ptr('w'),indices.access_ptr('r'),pitch*4,64);T.pipe_barrier('V')
+                if pad>=56 and not full_tile:
+                    for i in T.serial(pad-n):
+                        order[n+i]=T.Cast('uint32',0);order[pad+n+i]=T.Cast('uint32',0)
             else:
                 for i in T.serial(pad):
                     # Gather consumes exactly n offsets; padded slots are never
@@ -274,7 +287,7 @@ def _make_quick_schedule(tile_pad, factor_pitch, unroll, full_tile=False,scalar_
 
 def make_local_quick_macro(unroll=1,factor_pitch=8,scalar_admission=False):
     import tilelang.language as T
-    one_vector=_make_quick_schedule(56,factor_pitch,unroll,scalar_admission=scalar_admission,pack_tail=True)
+    one_vector=_make_quick_schedule(56,factor_pitch,unroll,scalar_admission=scalar_admission,pack_tail=True,vector_indices=True,packed_inverse=True,squared_guard=True,packed_input=True)
     two_vectors=_make_quick_schedule(64,factor_pitch,unroll,scalar_admission=scalar_admission,fused=True)
     two_vectors_aligned=_make_quick_schedule(64,16,unroll,full_tile=True,scalar_admission=scalar_admission,fused=True,row_padding=16,reuse_mask=True,vector_indices=True,squared_guard=True,packed_inverse=True)
 

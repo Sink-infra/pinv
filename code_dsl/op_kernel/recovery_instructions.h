@@ -8,8 +8,12 @@ template<class T,unsigned M,unsigned N>
 __aicore__ inline void copy_gm_to_l1(LocalTensor<T>d,GlobalTensor<T>s,unsigned stride,unsigned rows=0,unsigned cols=0){
  if constexpr(sizeof(T)==4 && M>16){
   unsigned live=rows?rows:M;
-  for(unsigned part=0;part<M/16;++part)if(live>part*16)
-   copy_gm_to_l1<T,16,N>(d[part*16*N],s[part*16*stride],stride,(live-part*16<16?live-part*16:16),cols);
+  if(live%16==0){
+   Nd2NzParams p;p.ndNum=live/16;p.nValue=16;p.dValue=cols?cols:N;p.srcDValue=stride;p.srcNdMatrixStride=16*stride;p.dstNzC0Stride=16;p.dstNzNStride=1;p.dstNzMatrixStride=16*N;DataCopy(d,s,p);
+  }else{
+   for(unsigned part=0;part<M/16;++part)if(live>part*16)
+    copy_gm_to_l1<T,16,N>(d[part*16*N],s[part*16*stride],stride,(live-part*16<16?live-part*16:16),cols);
+  }
  }else{
   Nd2NzParams p;p.ndNum=1;p.nValue=rows?rows:M;p.dValue=cols?cols:N;p.srcDValue=stride;p.srcNdMatrixStride=0;p.dstNzC0Stride=M;p.dstNzNStride=1;p.dstNzMatrixStride=0;DataCopy(d,s,p);
  }

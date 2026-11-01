@@ -29,7 +29,7 @@ def append_block(root,lower,digest):
  from code_dsl.op_kernel.recovery_backend import composition_backend
  from code_dsl.op_kernel.backend import jit_compiler_options
  op=Path(__file__).parent;records={};parts=[]
- instructions=(op/'block_instructions.h').read_text()+'\n'+(op/'block_atomic_instructions.h').read_text()+'\n'+(op/'block_chain_instructions.h').read_text()+'\n'+(op/'block_lookahead_instructions.h').read_text()
+ instructions=(op/'block_gemm_pipeline_instructions.h').read_text()+'\n'+(op/'block_instructions.h').read_text()+'\n'+(op/'block_atomic_instructions.h').read_text()+'\n'+(op/'block_chain_instructions.h').read_text()+'\n'+(op/'block_lookahead_instructions.h').read_text()
  header=instructions+'\nusing uint=unsigned int;using uchar=unsigned char;using ushort=unsigned short;\n'
  def add(name,function,**kwargs):
   source=lower(name,function,**kwargs)
@@ -42,7 +42,10 @@ def append_block(root,lower,digest):
   if storage is not None:records[name]['storage_policy']=storage
   return source,body
  quick_source,quick=add('block_quick',quick_kernel())
- gemm_source,gemm=add('block_gemm',block_gemm(),cube=True)
+ gemm_source,legacy=add('block_gemm',block_gemm(),cube=True)
+ from code_dsl.op_kernel.explicit_cube import lower_pipeline
+ pipeline_source,records['block_gemm_pipeline']=lower_pipeline(root,digest)
+ gemm=legacy.replace('BlockGemm(','BlockGemmLegacy(',1)+'\n#define bg_legacy(d,a,b,blocks,ba,m,k,n) BlockGemmLegacy((GM_ADDR)d.GetPhyAddr(),(GM_ADDR)a.GetPhyAddr(),(GM_ADDR)b.GetPhyAddr(),blocks,(GM_ADDR)d.GetPhyAddr(),k,n,ba,m,fftsAddr)\n'+adapt(pipeline_source,'BlockGemm')
  row_source,row=add('block_row_gemm',row_gemm(),cube=True)
  header+='namespace tl::ascend {\n'+quick+'\n'+gemm+'\n'+row+'\n}\n'
  header+="""

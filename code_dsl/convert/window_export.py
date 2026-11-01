@@ -20,7 +20,7 @@ def digest(text):
 
 
 def definition(text,name):
-    pattern=r'__aicore__ (?:inline|static __attribute__\(\(noinline\)\)) (?:void|int32_t) '+name+r'\('
+    pattern=r'__aicore__ (?:inline|static __attribute__\(\(noinline\)\)|__attribute__\(\((?:weak,)?noinline\)\)) (?:void|int32_t) '+name+r'\('
     match=re.search(pattern,text)
     if match is None:
         raise ValueError('missing device definition: '+name)

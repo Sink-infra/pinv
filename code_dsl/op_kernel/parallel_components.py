@@ -5,7 +5,7 @@ from code_dsl.op_kernel.kernels import instruction_source
 
 
 def parallel_instruction_source():
-    return instruction_source()+'\n'+Path(__file__).with_name('parallel_instructions.h').read_text()+'\n'+Path(__file__).with_name('peer_mailbox.h').read_text()
+    return instruction_source()+'\n'+Path(__file__).with_name('parallel_instructions.h').read_text()+'\n'+Path(__file__).with_name('peer_mailbox.h').read_text()+'\n'+Path(__file__).with_name('peer_finish_instructions.h').read_text()
 
 
 def rows_kernel(operation=None):

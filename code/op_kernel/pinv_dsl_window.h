@@ -10,8 +10,12 @@ template<class T,unsigned M,unsigned N>
 __aicore__ inline void copy_gm_to_l1(LocalTensor<T>d,GlobalTensor<T>s,unsigned stride,unsigned rows=0,unsigned cols=0){
  if constexpr(sizeof(T)==4 && M>16){
   unsigned live=rows?rows:M;
-  for(unsigned part=0;part<M/16;++part)if(live>part*16)
-   copy_gm_to_l1<T,16,N>(d[part*16*N],s[part*16*stride],stride,(live-part*16<16?live-part*16:16),cols);
+  if(live%16==0){
+   Nd2NzParams p;p.ndNum=live/16;p.nValue=16;p.dValue=cols?cols:N;p.srcDValue=stride;p.srcNdMatrixStride=16*stride;p.dstNzC0Stride=16;p.dstNzNStride=1;p.dstNzMatrixStride=16*N;DataCopy(d,s,p);
+  }else{
+   for(unsigned part=0;part<M/16;++part)if(live>part*16)
+    copy_gm_to_l1<T,16,N>(d[part*16*N],s[part*16*stride],stride,(live-part*16<16?live-part*16:16),cols);
+  }
  }else{
   Nd2NzParams p;p.ndNum=1;p.nValue=rows?rows:M;p.dValue=cols?cols:N;p.srcDValue=stride;p.srcNdMatrixStride=0;p.dstNzC0Stride=M;p.dstNzNStride=1;p.dstNzMatrixStride=0;DataCopy(d,s,p);
  }
@@ -2176,7 +2180,13 @@ namespace tl::ascend {
 
 
 
-__aicore__ inline void BlockGemm( GM_ADDR A_handle,  GM_ADDR P_handle,  GM_ADDR C_handle, int32_t blocks,  GM_ADDR shape_hint, int64_t inner, int64_t cols, int64_t batch, int64_t rows, uint64_t fftsAddr) {
+__aicore__ inline void br_load_b_batch(AscendC::LocalTensor<float>d,AscendC::GlobalTensor<float>s,AscendC::LocalTensor<float>,int rows,int cols,int stride){
+ AscendC::Nd2NzParams p;p.ndNum=rows/16;p.nValue=16;p.dValue=cols;p.srcNdMatrixStride=16*stride;p.srcDValue=stride;p.dstNzC0Stride=16;p.dstNzNStride=1;p.dstNzMatrixStride=16*cols;AscendC::DataCopy(d,s,p);
+}
+__aicore__ inline void bg_copy_a(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>){copy_l1_to_l0a<float,128,64>(d,a,128,64);}
+__aicore__ inline void bg_copy_b(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>){copy_l1_to_l0b<float,64,128>(d,a,64,128);}
+__aicore__ inline void bg_mma(AscendC::LocalTensor<float>d,AscendC::LocalTensor<float>a,AscendC::LocalTensor<float>b,int clear){mma<float,float,128,128>(a,b,d,clear!=0,64);}
+__aicore__ inline void BlockGemmLegacy( GM_ADDR A_handle,  GM_ADDR P_handle,  GM_ADDR C_handle, int32_t blocks,  GM_ADDR shape_hint, int64_t inner, int64_t cols, int64_t batch, int64_t rows, uint64_t fftsAddr) {
   AscendC::InitSocState();
 
   AscendC::GlobalTensor<float> A;
@@ -2296,6 +2306,78 @@ __aicore__ inline void BlockGemm( GM_ADDR A_handle,  GM_ADDR P_handle,  GM_ADDR 
           AscendC::PipeBarrier<PIPE_ALL>();
         }
       }
+    }
+  }
+
+}
+#define bg_legacy(d,a,b,blocks,ba,m,k,n) BlockGemmLegacy((GM_ADDR)d.GetPhyAddr(),(GM_ADDR)a.GetPhyAddr(),(GM_ADDR)b.GetPhyAddr(),blocks,(GM_ADDR)d.GetPhyAddr(),k,n,ba,m,fftsAddr)
+__aicore__ inline void BlockGemm( GM_ADDR A_handle,  GM_ADDR P_handle,  GM_ADDR C_handle, int32_t blocks,  GM_ADDR shape_hint, int64_t inner, int64_t cols, int64_t batch, int64_t rows, uint64_t fftsAddr) {
+  AscendC::InitSocState();
+
+  AscendC::GlobalTensor<float> A;
+  A.SetGlobalBuffer((__gm__ float*)A_handle);
+  AscendC::GlobalTensor<float> P;
+  P.SetGlobalBuffer((__gm__ float*)P_handle);
+  AscendC::GlobalTensor<float> C;
+  C.SetGlobalBuffer((__gm__ float*)C_handle);
+  AscendC::GlobalTensor<uint8_t> ShapeHint;
+  ShapeHint.SetGlobalBuffer((__gm__ uint8_t*)shape_hint);
+
+  AscendC::LocalTensor<float> ascend_l0a(AscendC::TPosition::A2, 0, 16384);
+  AscendC::LocalTensor<float> ascend_l0b(AscendC::TPosition::B2, 0, 16384);
+
+
+
+  auto bid = AscendC::GetBlockIdx();
+  if ASCEND_IS_AIV {
+    }
+  AscendC::LocalTensor<float> b(AscendC::TPosition::A1, 0, 32768);
+  AscendC::LocalTensor<float> a(AscendC::TPosition::A1, 131072, 32768);
+  AscendC::LocalTensor<float> c(AscendC::TPosition::CO1, 0, 16384);
+  AscendC::LocalTensor<float> la(AscendC::TPosition::A2, 0, 16384);
+  AscendC::LocalTensor<float> lb(AscendC::TPosition::B2, 0, 16384);
+  int clear = 0;
+  auto vid = AscendC::GetSubBlockIdx();
+  if ASCEND_IS_AIC {
+    if ((((((128 <= rows) && ((rows % 128) == 0)) && ((cols % 128) == 0)) && (64 <= inner)) && (inner <= 256)) && ((inner % 64) == 0)) {
+      for (int32_t iteration = 0; iteration < (((((batch * (rows / 128)) * (cols / 128)) + blocks) - 1) / blocks); ++iteration) {
+        if ((bid + (iteration * blocks)) < ((batch * (rows / 128)) * (cols / 128))) {
+          for (int32_t kk = 0; kk < (inner / 64); ++kk) {
+            tl::ascend::br_load_b_batch(b[(kk * 8192)], P[((((bid + (iteration * blocks)) % (cols / 128)) * 128) + (((kk * 64) + (((bid + (iteration * blocks)) / ((rows / 128) * (cols / 128))) * inner)) * cols))], b[(kk * 8192)], 64, 128, cols);
+          }
+          tl::ascend::br_load_a_shape(a[0], A[((((((bid + (iteration * blocks)) / (cols / 128)) % (rows / 128)) * 128) + (((bid + (iteration * blocks)) / ((rows / 128) * (cols / 128))) * rows)) * inner)], a[0], inner, inner, 128);
+          AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE1>(0);
+          AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE1>(0);
+          AscendC::SetFlag<AscendC::HardEvent::FIX_M>(0);
+          AscendC::WaitFlag<AscendC::HardEvent::FIX_M>(0);
+          AscendC::SetFlag<AscendC::HardEvent::M_MTE1>(0);
+          AscendC::SetFlag<AscendC::HardEvent::M_MTE1>(1);
+          for (int32_t kk_1 = 0; kk_1 < (inner / 64); ++kk_1) {
+            AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>((kk_1 % 2));
+            tl::ascend::bg_copy_a(la[((kk_1 % 2) * 8192)], a[(kk_1 * 8192)], la[((kk_1 % 2) * 8192)]);
+            tl::ascend::bg_copy_b(lb[((kk_1 % 2) * 8192)], b[(kk_1 * 8192)], lb[((kk_1 % 2) * 8192)]);
+            AscendC::SetFlag<AscendC::HardEvent::MTE1_M>((kk_1 % 2));
+            AscendC::WaitFlag<AscendC::HardEvent::MTE1_M>((kk_1 % 2));
+            AscendC::PipeBarrier<PIPE_M>();
+            clear = 0;
+            if (kk_1 == 0) {
+              clear = 1;
+            }
+            tl::ascend::bg_mma(c[0], la[((kk_1 % 2) * 8192)], lb[((kk_1 % 2) * 8192)], clear);
+            AscendC::SetFlag<AscendC::HardEvent::M_MTE1>((kk_1 % 2));
+          }
+          AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(0);
+          AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(1);
+          AscendC::SetFlag<AscendC::HardEvent::MTE1_MTE2>(0);
+          AscendC::WaitFlag<AscendC::HardEvent::MTE1_MTE2>(0);
+          AscendC::SetFlag<AscendC::HardEvent::M_FIX>(0);
+          AscendC::WaitFlag<AscendC::HardEvent::M_FIX>(0);
+          tl::ascend::copy_l0c_to_gm<float, float, layout::RowMajor, 128, 128, 0>(C[((((bid + (iteration * blocks)) % (cols / 128)) * 128) + ((((((bid + (iteration * blocks)) / (cols / 128)) % (rows / 128)) * 128) + (((bid + (iteration * blocks)) / ((rows / 128) * (cols / 128))) * rows)) * cols))], c[0], cols, ((1 <= (((rows * (batch - ((bid + (iteration * blocks)) / ((rows / 128) * (cols / 128))))) / 128) - (((bid + (iteration * blocks)) / (cols / 128)) % (rows / 128)))) ? 128 : ((0 < ((rows * (batch - ((bid + (iteration * blocks)) / ((rows / 128) * (cols / 128))))) - ((((bid + (iteration * blocks)) / (cols / 128)) % (rows / 128)) * 128))) ? ((rows * (batch - ((bid + (iteration * blocks)) / ((rows / 128) * (cols / 128))))) - ((((bid + (iteration * blocks)) / (cols / 128)) % (rows / 128)) * 128)) : 0)), ((1 <= ((cols / 128) - ((bid + (iteration * blocks)) % (cols / 128)))) ? 128 : ((0 < (cols - (((bid + (iteration * blocks)) % (cols / 128)) * 128))) ? (cols - (((bid + (iteration * blocks)) % (cols / 128)) * 128)) : 0)));
+          AscendC::PipeBarrier<PIPE_ALL>();
+        }
+      }
+    } else {
+      tl::ascend::bg_legacy(A[0], P[0], C[0], blocks, batch, rows, inner, cols);
     }
   }
 

@@ -224,29 +224,28 @@ __aicore__ static __attribute__((noinline)) void PvDslPeerTileRows( GM_ADDR A_ha
       AscendC::PipeBarrier<PIPE_V>();
       tl::ascend::pv_cast_indices(pool[(packet_indices + 16)], pool[(packet_indices + 16)], pool[(packet_indices + 16)], 200);
       AscendC::PipeBarrier<PIPE_V>();
-      tl::ascend::pv_fill(pool[accumulator], pool[accumulator], pool[accumulator], 0.000000e+00f, wide);
+      tl::ascend::pf_shift(pool[(packet_indices + 16)], pool[(packet_indices + 16)], pool[(packet_indices + 16)], (k * 4), 200);
       AscendC::PipeBarrier<PIPE_V>();
-      for (int32_t i_2 = 0; i_2 < owned; ++i_2) {
-        tl::ascend::pv_gather_offsets(pool[(output + (i_2 * k))], pool[((i_2 * 456) + k)], pool[(packet_indices + 16)], 0, 200);
-        AscendC::PipeBarrier<PIPE_V>();
-        AscendC::PipeBarrier<PIPE_V>();
-        tl::ascend::pv_mul(pool[product], pool[(output + (i_2 * k))], pool[(output + (i_2 * k))], 200);
-        AscendC::PipeBarrier<PIPE_V>();
-        tl::ascend::pv_add(pool[accumulator], pool[accumulator], pool[product], 200);
-        AscendC::PipeBarrier<PIPE_V>();
+      tl::ascend::pv_brcb_rows(pool[factors], pool[(red + 32)], pool[factors], factor_rows, 8);
+      AscendC::PipeBarrier<PIPE_V>();
+      for (int32_t chunk_2 = 0; chunk_2 < ((k + 63) / 64); ++chunk_2) {
+        tl::ascend::pf_indices(pool[((chunk_2 * 64) + 33000)], pool[factors], pool[(((chunk_2 * 64) + packet_indices) + 16)], min((k - (chunk_2 * 64)), 64), owned, k);
       }
-      tl::ascend::pv_reduce_sum(pool[red], pool[accumulator], pool[scratch], k);
+      AscendC::PipeBarrier<PIPE_V>();
+      tl::ascend::pv_gather_offsets(pool[output], pool[0], pool[33000], 0, (owned * k));
+      AscendC::PipeBarrier<PIPE_V>();
+      tl::ascend::pv_mul(pool[0], pool[output], pool[output], (owned * k));
+      AscendC::PipeBarrier<PIPE_V>();
+      tl::ascend::pv_reduce_sum(pool[red], pool[0], pool[(owned * k)], (owned * k));
       AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
       AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
-      inverse = pool.GetValue(((int64_t)red));
-      for (int32_t i_3 = 0; i_3 < owned; ++i_3) {
-        tl::ascend::pv_scale(pool[(output + (i_3 * k))], pool[(output + (i_3 * k))], pool[(output + (i_3 * k))], (-1.000000e+00f / power), k);
-        AscendC::PipeBarrier<PIPE_V>();
-        AscendC::PipeBarrier<PIPE_V>();
-        int32_t target = (((int32_t)(pool.GetValue(((((((int64_t)i_3) * (int64_t)9) + ((int64_t)meta)) + ((int64_t)core)) + (int64_t)64)) * -1.000000e+00f)) - 1);
-        AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(0);
-        AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(0);
-        tl::ascend::pv_store_rows(X[((((int64_t)job) * (int64_t)40000) + (((int64_t)target) * (int64_t)200))], pool[(output + (i_3 * k))], X[((((int64_t)job) * (int64_t)40000) + (((int64_t)target) * (int64_t)200))], 1, 200, 0, 0);
+      inverse = (pool.GetValue(((int64_t)red)) * 1.000010e+00f);
+      tl::ascend::pv_scale(pool[output], pool[output], pool[output], (-1.000000e+00f / power), (owned * k));
+      AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(0);
+      AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(0);
+      for (int32_t i_2 = 0; i_2 < owned; ++i_2) {
+        int32_t target = (((int32_t)(pool.GetValue(((((((int64_t)i_2) * (int64_t)9) + ((int64_t)meta)) + ((int64_t)core)) + (int64_t)64)) * -1.000000e+00f)) - 1);
+        tl::ascend::pv_store_rows(X[((((int64_t)job) * (int64_t)40000) + (((int64_t)target) * (int64_t)200))], pool[(output + (i_2 * k))], X[((((int64_t)job) * (int64_t)40000) + (((int64_t)target) * (int64_t)200))], 1, 200, 0, 0);
       }
       tl::ascend::pv_all_barrier(pool[0], pool[0], pool[0]);
     }

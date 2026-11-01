@@ -147,19 +147,21 @@ def make_peer_tile_rows_macro(*, cache_peak=False):
             T.pipe_barrier('V')
             emit('pv_cast_indices',pool.access_ptr('w',offset=mapping),pool.access_ptr('r',offset=mapping),T.int32(200))
             T.pipe_barrier('V')
-            emit('pv_fill',pool.access_ptr('w',offset=accumulator),T.float32(0),wide)
+            emit('pf_shift',pool.access_ptr('w',offset=mapping),pool.access_ptr('r',offset=mapping),k*4,200)
             T.pipe_barrier('V')
-            for i in T.serial(owned):
-                emit('pv_gather_offsets',pool.access_ptr('w',offset=output+i*k),pool.access_ptr('r',offset=i*T.int32(456)+k),pool.access_ptr('r',offset=mapping),0,T.int32(200))
-                T.pipe_barrier('V')
-                T.pipe_barrier('V')
-                emit('pv_mul',pool.access_ptr('w',offset=product),pool.access_ptr('r',offset=output+i*k),pool.access_ptr('r',offset=output+i*k),T.int32(200))
-                T.pipe_barrier('V')
-                emit('pv_add',pool.access_ptr('w',offset=accumulator),pool.access_ptr('r',offset=accumulator),pool.access_ptr('r',offset=product),T.int32(200))
-                T.pipe_barrier('V')
-            emit('pv_reduce_sum',pool.access_ptr('w',offset=red),pool.access_ptr('r',offset=accumulator),pool.access_ptr('rw',offset=scratch),k)
+            emit('pv_brcb_rows',pool.access_ptr('w',offset=factors),pool.access_ptr('r',offset=row_indices),factor_rows,8)
+            T.pipe_barrier('V')
+            for chunk in T.serial(T.ceildiv(k,64)):
+                col=chunk*64
+                emit('pf_indices',pool.access_ptr('w',offset=33000+col),pool.access_ptr('r',offset=factors),pool.access_ptr('r',offset=mapping+col),T.min(k-col,64),owned,k)
+            T.pipe_barrier('V')
+            emit('pv_gather_offsets',pool.access_ptr('w',offset=output),pool.access_ptr('r'),pool.access_ptr('r',offset=33000),0,owned*k)
+            T.pipe_barrier('V')
+            emit('pv_mul',pool.access_ptr('w'),pool.access_ptr('r',offset=output),pool.access_ptr('r',offset=output),owned*k)
+            T.pipe_barrier('V')
+            emit('pv_reduce_sum',pool.access_ptr('w',offset=red),pool.access_ptr('r'),pool.access_ptr('rw',offset=owned*k),owned*k)
             T.set_flag('V','S',0);T.wait_flag('V','S',0)
-            inverse=pool[red]
+            inverse=pool[red]*T.float32(1.00001)
             if cache_peak:
                 # The original augmented rows are dead after the output gather.
                 # Their two halves hold absolute values and reduction scratch.
@@ -168,12 +170,10 @@ def make_peer_tile_rows_macro(*, cache_peak=False):
                 emit('pv_reduce_max',pool.access_ptr('w',offset=red),pool.access_ptr('r'),pool.access_ptr('rw',offset=owned*k),owned*k)
                 T.set_flag('V','S',0);T.wait_flag('V','S',0)
                 peak=pool[red]/power
+            emit('pv_scale',pool.access_ptr('w',offset=output),pool.access_ptr('r',offset=output),T.float32(-1)/power,owned*k)
+            T.set_flag('V','MTE3',0);T.wait_flag('V','MTE3',0)
             for i in T.serial(owned):
-                emit('pv_scale',pool.access_ptr('w',offset=output+i*k),pool.access_ptr('r',offset=output+i*k),T.float32(-1)/power,k)
-                T.pipe_barrier('V')
-                T.pipe_barrier('V')
                 target=T.Cast('int32',-pool[norms+core+i*T.int32(9)])-1
-                T.set_flag('V','MTE3',0);T.wait_flag('V','MTE3',0)
                 emit('pv_store_rows',X.access_ptr('w',offset=T.Cast('int64',job)*T.int32(200)*T.int32(200)+target*T.int32(200)),pool.access_ptr('r',offset=output+i*k),1,T.int32(200),0,0)
             emit('pv_all_barrier',pool.access_ptr('rw'))
         pool[0]=T.Cast('float32',valid)
